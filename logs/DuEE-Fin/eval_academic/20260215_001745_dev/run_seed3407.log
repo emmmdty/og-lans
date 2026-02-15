@@ -1,0 +1,95 @@
+/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/evaluate.py:915: UserWarning: WARNING: Unsloth should be imported before [transformers] to ensure all optimizations are applied. Your code may run slower or encounter memory issues without these optimizations.
+
+Please restructure your imports with 'import unsloth' at the top of your file.
+  from unsloth import FastLanguageModel
+🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
+⚙️  Running in WANDB offline mode
+🦥 Unsloth Zoo will now patch everything to make training faster!
+📊 数据集: DuEE-Fin | 划分: dev
+📂 Schema: ./data/raw/DuEE-Fin/duee_fin_event_schema.json
+🆔 Run ID: 20260215_001756_dev_seed3407_p1353069
+💾 结果保存至: logs/DuEE-Fin/eval_academic/20260215_001745_dev/eval_results_dev_seed3407.jsonl
+📜 Protocol: configs/eval_protocol.yaml
+🎯 Primary Metric: strict_f1
+🧭 Canonical Metric Mode: analysis_only
+
+🔄 加载模型...
+2026-02-15 00:17:56,718 - modelscope - INFO - PyTorch version 2.6.0+cu118 Found.
+2026-02-15 00:17:56,719 - modelscope - INFO - Loading ast index from /home/pc3048/.cache/modelscope/ast_indexer
+2026-02-15 00:17:56,748 - modelscope - INFO - Loading done! Current index file version is 1.13.0, with md5 836ec9fa04cf4276bd35d82776b63d0a and a total number of 972 components indexed
+2026-02-15 00:17:56,750 - modelscope - WARNING - Authentication has expired, please re-login if you need to access private models or datasets.
+==((====))==  Unsloth 2026.1.4: Fast Qwen3 patching. Transformers: 4.57.6.
+   \\   /|    NVIDIA RTX A6000. Num GPUs = 1. Max memory: 47.528 GB. Platform: Linux.
+O^O/ \_/ \    Torch: 2.6.0+cu118. CUDA: 8.6. CUDA Toolkit: 11.8. Triton: 3.2.0
+\        /    Bfloat16 = TRUE. FA [Xformers = None. FA2 = True]
+ "-____-"     Free license: http://github.com/unslothai/unsloth
+Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
+Loading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s]Loading checkpoint shards:  33%|███▎      | 1/3 [00:04<00:08,  4.02s/it]Loading checkpoint shards:  67%|██████▋   | 2/3 [00:08<00:04,  4.27s/it]Loading checkpoint shards: 100%|██████████| 3/3 [00:08<00:00,  2.38s/it]Loading checkpoint shards: 100%|██████████| 3/3 [00:08<00:00,  2.86s/it]
+ℹ️ 检测到量化模型，跳过 model.to(device)（由 from_pretrained 自动放置设备）。
+🖥️ 推理设备: cuda
+🔧 EOS Token: <|im_end|> | EOS Token ID: 151645
+
+📚 加载数据...
+   加载 1171 条样本
+
+🚀 开始推理 (Batch Size: 16, 解码策略: 确定性解码 (Greedy))...
+评估进度:   0%|          | 0/74 [00:00<?, ?it/s]/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/software/anaconda3/envs/tjk_ee/lib/python3.10/site-packages/unsloth/kernels/utils.py:970: UserWarning: An output with one or more elements was resized since it had shape [1, 16, 2560], which does not match the required output shape [16, 1, 2560]. This behavior is deprecated, and in a future PyTorch release outputs will not be resized unless they have zero elements. You can explicitly reuse an out tensor t by resizing it, inplace, to zero elements with t.resize_(0). (Triggered internally at /pytorch/aten/src/ATen/native/Resize.cpp:30.)
+  out = torch_matmul(X, W, out = out)
+评估进度:   1%|▏         | 1/74 [02:15<2:45:05, 135.70s/it]评估进度:   3%|▎         | 2/74 [04:28<2:40:40, 133.89s/it]评估进度:   4%|▍         | 3/74 [06:37<2:36:02, 131.86s/it]评估进度:   5%|▌         | 4/74 [08:31<2:25:37, 124.82s/it]评估进度:   7%|▋         | 5/74 [10:22<2:17:29, 119.56s/it]评估进度:   8%|▊         | 6/74 [12:52<2:27:30, 130.15s/it]评估进度:   9%|▉         | 7/74 [14:43<2:18:21, 123.90s/it]评估进度:  11%|█         | 8/74 [16:56<2:19:15, 126.60s/it]评估进度:  12%|█▏        | 9/74 [19:15<2:21:37, 130.74s/it]评估进度:  14%|█▎        | 10/74 [22:25<2:38:56, 149.01s/it]评估进度:  15%|█▍        | 11/74 [25:25<2:46:23, 158.47s/it]评估进度:  16%|█▌        | 12/74 [27:44<2:37:23, 152.32s/it]评估进度:  18%|█▊        | 13/74 [29:50<2:26:51, 144.45s/it]评估进度:  19%|█▉        | 14/74 [33:07<2:40:15, 160.26s/it]评估进度:  20%|██        | 15/74 [35:19<2:29:21, 151.89s/it]/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/software/anaconda3/envs/tjk_ee/lib/python3.10/site-packages/unsloth/kernels/utils.py:970: UserWarning: An output with one or more elements was resized since it had shape [1, 16, 2560], which does not match the required output shape [16, 1, 2560]. This behavior is deprecated, and in a future PyTorch release outputs will not be resized unless they have zero elements. You can explicitly reuse an out tensor t by resizing it, inplace, to zero elements with t.resize_(0). (Triggered internally at /pytorch/aten/src/ATen/native/Resize.cpp:30.)
+  out = torch_matmul(X, W, out = out)
+评估进度:  22%|██▏       | 16/74 [38:38<2:40:24, 165.94s/it]评估进度:  23%|██▎       | 17/74 [41:55<2:46:42, 175.48s/it]评估进度:  24%|██▍       | 18/74 [43:43<2:24:41, 155.02s/it]评估进度:  26%|██▌       | 19/74 [46:37<2:27:17, 160.68s/it]评估进度:  27%|██▋       | 20/74 [48:25<2:10:35, 145.10s/it]评估进度:  28%|██▊       | 21/74 [50:43<2:06:07, 142.78s/it]评估进度:  30%|██▉       | 22/74 [52:24<1:52:49, 130.18s/it]评估进度:  31%|███       | 23/74 [54:24<1:48:07, 127.20s/it]评估进度:  32%|███▏      | 24/74 [56:16<1:42:15, 122.71s/it]评估进度:  34%|███▍      | 25/74 [58:15<1:39:12, 121.49s/it]评估进度:  35%|███▌      | 26/74 [1:01:34<1:55:45, 144.70s/it]评估进度:  36%|███▋      | 27/74 [1:03:45<1:50:08, 140.60s/it]评估进度:  38%|███▊      | 28/74 [1:05:59<1:46:25, 138.81s/it]评估进度:  39%|███▉      | 29/74 [1:07:50<1:37:49, 130.43s/it]评估进度:  41%|████      | 30/74 [1:10:12<1:38:04, 133.74s/it]评估进度:  42%|████▏     | 31/74 [1:12:06<1:31:43, 127.99s/it]评估进度:  43%|████▎     | 32/74 [1:14:04<1:27:23, 124.85s/it]评估进度:  45%|████▍     | 33/74 [1:16:30<1:29:36, 131.14s/it]评估进度:  46%|████▌     | 34/74 [1:19:41<1:39:29, 149.23s/it]评估进度:  47%|████▋     | 35/74 [1:21:36<1:30:15, 138.86s/it]评估进度:  49%|████▊     | 36/74 [1:23:58<1:28:39, 139.99s/it]评估进度:  50%|█████     | 37/74 [1:25:59<1:22:43, 134.15s/it]评估进度:  51%|█████▏    | 38/74 [1:28:20<1:21:40, 136.13s/it]评估进度:  53%|█████▎    | 39/74 [1:30:34<1:19:10, 135.72s/it]评估进度:  54%|█████▍    | 40/74 [1:32:26<1:12:52, 128.59s/it]评估进度:  55%|█████▌    | 41/74 [1:35:45<1:22:20, 149.72s/it]评估进度:  57%|█████▋    | 42/74 [1:39:04<1:27:45, 164.55s/it]评估进度:  58%|█████▊    | 43/74 [1:41:28<1:21:47, 158.31s/it]评估进度:  59%|█████▉    | 44/74 [1:43:59<1:18:00, 156.02s/it]评估进度:  61%|██████    | 45/74 [1:46:44<1:16:44, 158.79s/it]评估进度:  62%|██████▏   | 46/74 [1:48:57<1:10:28, 151.01s/it]评估进度:  64%|██████▎   | 47/74 [1:50:38<1:01:11, 135.97s/it]评估进度:  65%|██████▍   | 48/74 [1:52:31<55:53, 128.98s/it]  评估进度:  66%|██████▌   | 49/74 [1:54:45<54:25, 130.61s/it]评估进度:  68%|██████▊   | 50/74 [1:56:39<50:16, 125.70s/it]评估进度:  69%|██████▉   | 51/74 [1:58:50<48:45, 127.18s/it]评估进度:  70%|███████   | 52/74 [2:00:25<43:05, 117.51s/it]评估进度:  72%|███████▏  | 53/74 [2:03:19<47:03, 134.44s/it]评估进度:  73%|███████▎  | 54/74 [2:04:56<41:06, 123.34s/it]评估进度:  74%|███████▍  | 55/74 [2:07:17<40:41, 128.49s/it]评估进度:  76%|███████▌  | 56/74 [2:10:02<41:54, 139.70s/it]评估进度:  77%|███████▋  | 57/74 [2:12:16<39:01, 137.74s/it]评估进度:  78%|███████▊  | 58/74 [2:14:13<35:04, 131.52s/it]评估进度:  80%|███████▉  | 59/74 [2:17:30<37:47, 151.18s/it]评估进度:  81%|████████  | 60/74 [2:19:28<32:59, 141.38s/it]评估进度:  82%|████████▏ | 61/74 [2:21:03<27:34, 127.28s/it]评估进度:  84%|████████▍ | 62/74 [2:22:55<24:32, 122.68s/it]评估进度:  85%|████████▌ | 63/74 [2:25:37<24:40, 134.62s/it]评估进度:  86%|████████▋ | 64/74 [2:27:28<21:13, 127.39s/it]评估进度:  88%|████████▊ | 65/74 [2:30:47<22:20, 148.92s/it]评估进度:  89%|████████▉ | 66/74 [2:32:52<18:55, 141.94s/it]评估进度:  91%|█████████ | 67/74 [2:35:46<17:40, 151.48s/it]评估进度:  92%|█████████▏| 68/74 [2:37:24<13:32, 135.44s/it]评估进度:  93%|█████████▎| 69/74 [2:40:41<12:49, 153.88s/it]评估进度:  95%|█████████▍| 70/74 [2:42:51<09:46, 146.68s/it]评估进度:  96%|█████████▌| 71/74 [2:45:16<07:18, 146.15s/it]评估进度:  97%|█████████▋| 72/74 [2:48:05<05:06, 153.06s/it]评估进度:  99%|█████████▊| 73/74 [2:50:40<02:33, 153.66s/it]/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/software/anaconda3/envs/tjk_ee/lib/python3.10/site-packages/unsloth/kernels/utils.py:970: UserWarning: An output with one or more elements was resized since it had shape [1, 3, 2560], which does not match the required output shape [3, 1, 2560]. This behavior is deprecated, and in a future PyTorch release outputs will not be resized unless they have zero elements. You can explicitly reuse an out tensor t by resizing it, inplace, to zero elements with t.resize_(0). (Triggered internally at /pytorch/aten/src/ATen/native/Resize.cpp:30.)
+  out = torch_matmul(X, W, out = out)
+评估进度: 100%|██████████| 74/74 [2:51:33<00:00, 123.43s/it]评估进度: 100%|██████████| 74/74 [2:51:33<00:00, 139.10s/it]
+
+============================================================
+📊 OG-LANS 评估报告
+============================================================
+
+📈 样本统计
+   总样本数: 1171
+   解析失败: 8 (0.68%)
+
+📐 Strict 模式 (完全匹配)
+   Precision: 0.3985
+   Recall:    0.3368
+   F1 Score:  0.3651
+
+📏 Relaxed 模式 (部分匹配)
+   Precision: 0.6030
+   Recall:    0.4857
+   F1 Score:  0.5380
+
+🏷️ 事件类型识别
+   Type Precision: 0.8305
+   Type Recall:    0.8812
+   Type F1 Score:  0.8551
+
+❌ 主要错误类型 (Top 10)
+   FN_股份回购_回购股份数量: 220
+   FN_股份回购_每股交易价格: 185
+   FN_股份回购_回购完成时间: 181
+   FP_股份回购_回购股份数量: 179
+   FN_质押_质押股票/股份数量: 147
+   FN_质押_质押方: 122
+   FN_亏损_财报周期: 108
+   FN_解除质押_质押股票/股份数量: 107
+   FN_质押_质押物: 107
+   FN_质押_质押物占持股比: 107
+
+🔮 高级指标
+   幻觉样本率:      0.2323
+   幻觉实体率:      0.0631
+   CoT 忠实度:      1.0000
+   CoT 类型一致性:  1.0000
+   CoT 论元一致性:  1.0000
+   Schema 符合率(类型+角色): 0.6900
+
+============================================================
+
+💾 保存结果...
+   结果文件: logs/DuEE-Fin/eval_academic/20260215_001745_dev/eval_results_dev_seed3407.jsonl
+   指标文件: logs/DuEE-Fin/eval_academic/20260215_001745_dev/eval_results_dev_seed3407_metrics.json
+   摘要文件: logs/DuEE-Fin/eval_academic/20260215_001745_dev/eval_results_dev_seed3407_summary.json
+   运行清单: logs/DuEE-Fin/eval_academic/20260215_001745_dev/run_manifest.json
+
+✅ 评估完成!

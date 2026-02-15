@@ -1,0 +1,80 @@
+{
+  "n_runs": 3,
+  "seeds": [
+    3407,
+    3408,
+    3409
+  ],
+  "metrics_files": [
+    "eval_results_dev_seed3407_metrics.json",
+    "eval_results_dev_seed3408_metrics.json",
+    "eval_results_dev_seed3409_metrics.json"
+  ],
+  "aggregate": {
+    "strict_f1": {
+      "mean": 0.3651,
+      "std": 0.0,
+      "min": 0.3651,
+      "max": 0.3651
+    },
+    "relaxed_f1": {
+      "mean": 0.538,
+      "std": 0.0,
+      "min": 0.538,
+      "max": 0.538
+    },
+    "type_f1": {
+      "mean": 0.8551,
+      "std": 0.0,
+      "min": 0.8551,
+      "max": 0.8551
+    },
+    "parse_error_rate": {
+      "mean": 0.0068,
+      "std": 0.0,
+      "min": 0.0068,
+      "max": 0.0068
+    },
+    "hallucination_rate": {
+      "mean": 0.2323,
+      "std": 0.0,
+      "min": 0.2323,
+      "max": 0.2323
+    },
+    "schema_compliance_rate": {
+      "mean": 0.69,
+      "std": 0.0,
+      "min": 0.69,
+      "max": 0.69
+    }
+  },
+  "per_seed": [
+    {
+      "seed": 3407,
+      "strict_f1": 0.3651,
+      "relaxed_f1": 0.538,
+      "type_f1": 0.8551,
+      "parse_error_rate": 0.0068,
+      "hallucination_rate": 0.2323,
+      "schema_compliance_rate": 0.69
+    },
+    {
+      "seed": 3408,
+      "strict_f1": 0.3651,
+      "relaxed_f1": 0.538,
+      "type_f1": 0.8551,
+      "parse_error_rate": 0.0068,
+      "hallucination_rate": 0.2323,
+      "schema_compliance_rate": 0.69
+    },
+    {
+      "seed": 3409,
+      "strict_f1": 0.3651,
+      "relaxed_f1": 0.538,
+      "type_f1": 0.8551,
+      "parse_error_rate": 0.0068,
+      "hallucination_rate": 0.2323,
+      "schema_compliance_rate": 0.69
+    }
+  ]
+}

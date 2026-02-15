@@ -1,0 +1,365 @@
+{
+  "meta": {
+    "run_id": "20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334",
+    "run_dir": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334",
+    "timestamp": "20260214_225001",
+    "model": "deepseek-chat",
+    "api_response_models": [
+      "deepseek-chat"
+    ],
+    "dataset": "DuEE-Fin",
+    "num_samples": 1171,
+    "split": "dev",
+    "concurrency": 8,
+    "has_gold_labels": true,
+    "use_fewshot": true,
+    "fewshot_num_examples": 3,
+    "prompt_style": "qwen",
+    "json_mode": "auto",
+    "seed": 3409,
+    "config_hash_sha256": "73599bf8549d6ab473a8de0330b12b59d766aaf9c35c7d704e054777b15df79e",
+    "config_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/config.yaml",
+    "command": "evaluate_api.py --config configs/config.yaml --protocol configs/eval_protocol.yaml --split dev --model deepseek-chat --concurrency 8 --json_mode auto --role_alias_map configs/role_aliases_duee_fin.yaml --canonical_metric_mode analysis_only --seed 3409 --use_fewshot --output_file logs/DuEE-Fin/eval_api/sweep_20260214_202738/eval_results_deepseek_dev_fewshot_seed3409_20260214_224956.jsonl --summary_file logs/DuEE-Fin/eval_api/sweep_20260214_202738/eval_summary_dev_fewshot_seed3409_20260214_224956.json",
+    "bootstrap_samples": 1000,
+    "compute_ci": true,
+    "protocol_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/eval_protocol.yaml",
+    "protocol_hash_sha256": "2fa1f792eba34ab9423dbbfaa0a6b0260f9c24610650b570ccd174e5506626c7",
+    "protocol_version": "1.0",
+    "primary_metric": "strict_f1",
+    "canonical_metric_mode": "analysis_only",
+    "role_alias_map_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/role_aliases_duee_fin.yaml",
+    "role_alias_map_hash_sha256": "df531d0f51331187345167b08985b27520b19cdc5fcda274365cdadd29a7c79b",
+    "role_alias_map_loaded": true,
+    "metrics_report_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334/eval_report.txt",
+    "log_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334/run.log",
+    "generation": {
+      "temperature": 0.0,
+      "max_tokens": 2048,
+      "max_retries": 3,
+      "json_mode": "auto"
+    },
+    "prompt_hashes": {
+      "system_prompt_sha256": "34f442b9320ef8a17aa59041277ff9ac1756ee5d611ae1dce13b4ed6d94bfe41",
+      "schema_constraints_sha256": "9dc212764496c1d1a94b95cf81ca462d3e8fe580355d81359eebaca60470789b",
+      "fewshot_examples_sha256": [
+        {
+          "user": "0b7f22a04dea8afb09c121721df0306fff88d546b321e1aae29997939297c9b3",
+          "assistant": "e8c2f72cdd327b5d0db56a98476e1c0d52fde66ab3f008e25e2e21b69c58a567"
+        },
+        {
+          "user": "a417c27846b53a2356ba2bae53e3b5a283d139e9845ae9cd06b3f7ccff9cd31f",
+          "assistant": "265f67054079100e3522a0c3a3af3ebf196e2b92a30a802186d07a11e5f4861f"
+        },
+        {
+          "user": "59048e0bbe62ffbe5c8c8d1fabb4250cbd6927170a3d0fc2ead76a18c3e3a197",
+          "assistant": "79cbd5adbbd33e31b1b751fda70a6da5d14379d85a1c427e4db77fd2c3196f85"
+        }
+      ]
+    }
+  },
+  "metrics": {
+    "strict_precision": 0.48058398555087295,
+    "strict_recall": 0.45393801535399486,
+    "strict_f1": 0.4668811229711946,
+    "relaxed_precision": 0.6835512732278045,
+    "relaxed_recall": 0.6274162981680353,
+    "relaxed_f1": 0.6542819499341238,
+    "type_precision": 0.8300550747442959,
+    "type_recall": 0.9079173838209983,
+    "type_f1": 0.8672420879572544,
+    "total_samples": 1171,
+    "parse_errors": 0,
+    "parse_error_rate": 0.0,
+    "hallucination_rate": 0.14773697694278395,
+    "hallucination_entity_rate": 0.034686854783207155,
+    "cot_faithfulness": 1.0,
+    "cot_type_consistency": 1.0,
+    "cot_argument_consistency": 1.0,
+    "schema_compliance_rate": 0.8360375747224594,
+    "error_breakdown": {
+      "FN_股份回购_回购股份数量": 220,
+      "FN_股份回购_每股交易价格": 196,
+      "FN_股份回购_回购完成时间": 195,
+      "FP_股份回购_回购股份数量": 191,
+      "FN_质押_质押股票/股份数量": 147,
+      "FP_股份回购_事件时间": 124,
+      "FP_股份回购_披露时间": 117,
+      "FP_股份回购_每股交易价格": 110,
+      "FN_解除质押_质押股票/股份数量": 107,
+      "FN_质押_质押物": 106
+    },
+    "parse_success": 1171,
+    "parse_failure": 0,
+    "parse_success_rate": 1.0,
+    "primary_metric": "strict_f1",
+    "primary_metric_value": 0.4668811229711946,
+    "bootstrap_ci": {
+      "strict_precision": {
+        "mean": 0.4805434874406897,
+        "std": 0.00798245965089722,
+        "ci": [
+          0.4643116732083152,
+          0.4964407304240173
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "strict_recall": {
+        "mean": 0.4541791417905923,
+        "std": 0.007811440619258794,
+        "ci": [
+          0.43937660852158994,
+          0.46907442608568506
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "strict_f1": {
+        "mean": 0.46695757847387137,
+        "std": 0.006889848985307445,
+        "ci": [
+          0.4539038055737466,
+          0.480249164387724
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "relaxed_precision": {
+        "mean": 0.6835203838667887,
+        "std": 0.010135688800141374,
+        "ci": [
+          0.6618136439267887,
+          0.7018278219617692
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "relaxed_recall": {
+        "mean": 0.6277171947935323,
+        "std": 0.010178147324204308,
+        "ci": [
+          0.6071122011036174,
+          0.6475119979792877
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "relaxed_f1": {
+        "mean": 0.6543632548804471,
+        "std": 0.007692363863211015,
+        "ci": [
+          0.6386183612517855,
+          0.668372441337993
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "type_precision": {
+        "mean": 0.8299191830965027,
+        "std": 0.011109192158674789,
+        "ci": [
+          0.8085908063300679,
+          0.8518821603927987
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "type_recall": {
+        "mean": 0.9077464671176958,
+        "std": 0.008093353992773701,
+        "ci": [
+          0.8916876574307305,
+          0.9234782608695652
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "type_f1": {
+        "mean": 0.8670399223353867,
+        "std": 0.007456468858987971,
+        "ci": [
+          0.8523517382413088,
+          0.8813141683778233
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      }
+    },
+    "auxiliary_metrics": {
+      "canonicalized": {
+        "canonicalized_strict_precision": 0.5001505117399158,
+        "canonicalized_strict_recall": 0.472419675860108,
+        "canonicalized_strict_f1": 0.485889749963445,
+        "canonicalized_relaxed_precision": 0.7025464556090847,
+        "canonicalized_relaxed_recall": 0.6448515476942515,
+        "canonicalized_relaxed_f1": 0.6724637681159421,
+        "canonicalized_type_precision": 0.8300550747442959,
+        "canonicalized_type_recall": 0.9079173838209983,
+        "canonicalized_type_f1": 0.8672420879572544,
+        "canonicalized_schema_compliance_rate": 0.9718189581554227,
+        "canonical_role_rewrites_total": 169,
+        "canonical_role_rewrites_avg": 0.1443210930828352,
+        "bootstrap_ci": {
+          "strict_precision": {
+            "mean": 0.500279014319399,
+            "std": 0.008073351014948427,
+            "ci": [
+              0.48513471663053576,
+              0.5166865315852205
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "strict_recall": {
+            "mean": 0.4724993566686928,
+            "std": 0.0076447217247890085,
+            "ci": [
+              0.45695908033392635,
+              0.48668703622872106
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "strict_f1": {
+            "mean": 0.4859587928829376,
+            "std": 0.006726909336538238,
+            "ci": [
+              0.4736050426187236,
+              0.4984360224048883
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "relaxed_precision": {
+            "mean": 0.7023724305868306,
+            "std": 0.010674620102087255,
+            "ci": [
+              0.6808540525354685,
+              0.7222528989508559
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "relaxed_recall": {
+            "mean": 0.6446813723915789,
+            "std": 0.010597141936584203,
+            "ci": [
+              0.6235137102644989,
+              0.6652168182417293
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "relaxed_f1": {
+            "mean": 0.6722215537115324,
+            "std": 0.008157804903964033,
+            "ci": [
+              0.6563192904656319,
+              0.6875296992736406
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "type_precision": {
+            "mean": 0.8302066156688285,
+            "std": 0.011255639764410685,
+            "ci": [
+              0.8085271317829458,
+              0.8525236593059937
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "type_recall": {
+            "mean": 0.9080680603698139,
+            "std": 0.008353413515369156,
+            "ci": [
+              0.8911222780569514,
+              0.9242819843342036
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "type_f1": {
+            "mean": 0.8673414722121344,
+            "std": 0.007578923848647485,
+            "ci": [
+              0.8524046434494196,
+              0.8819672131147541
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          }
+        }
+      }
+    }
+  },
+  "token_usage": {
+    "prompt_tokens": 3296805,
+    "completion_tokens": 450939,
+    "total_tokens": 3747744,
+    "avg_tokens_per_sample": 3200.464560204953
+  },
+  "api_stats": {
+    "failed_calls": 0,
+    "failed_call_rate": 0.0
+  },
+  "runtime": {
+    "wall_clock_seconds": 1350.1099724769592
+  },
+  "runtime_manifest": {
+    "python": {
+      "version": "3.10.19",
+      "implementation": "CPython",
+      "executable": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/software/anaconda3/envs/tjk_ee/bin/python"
+    },
+    "system": {
+      "platform": "Linux-6.5.0-44-generic-x86_64-with-glibc2.35",
+      "machine": "x86_64",
+      "processor": "x86_64",
+      "hostname": "pc3048-Precision-7920-Tower"
+    },
+    "packages": {
+      "openai": "2.14.0",
+      "tqdm": "4.67.1",
+      "PyYAML": "6.0.3",
+      "dirtyjson": "1.0.8",
+      "transformers": "4.57.6",
+      "torch": "2.6.0+cu118",
+      "unsloth": "2026.1.4"
+    },
+    "git": {
+      "commit": null,
+      "dirty": true
+    }
+  },
+  "analysis": {
+    "primary_metric": "strict_f1",
+    "primary_metric_value": 0.4668811229711946,
+    "canonical_metric_mode": "analysis_only",
+    "canonical_metrics_available": true,
+    "protocol": {
+      "version": "1.0",
+      "primary_metric": "strict_f1",
+      "canonical_metric_mode": "analysis_only",
+      "evaluation": {
+        "split": "dev",
+        "seeds": [
+          3407,
+          3408,
+          3409
+        ],
+        "bootstrap_samples": 1000,
+        "concurrency": 8,
+        "significance": "paired_permutation",
+        "confidence": 0.95
+      },
+      "reporting": {
+        "include_auxiliary_canonical_metrics": true,
+        "enforce_protocol_match": true,
+        "include_schema_compliance": true,
+        "include_hallucination": true
+      }
+    }
+  }
+}

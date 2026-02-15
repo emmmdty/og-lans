@@ -1,0 +1,18 @@
+# models / checkpoints / logs
+models/
+logs/**/checkpoints/
+unsloth_compiled_cache/
+
+# data caches and large artifacts
+data/cache/
+data/processed/
+data/raw/
+
+# python
+__pycache__/
+.pytest_cache/
+
+# env / local
+.env
+.uv-cache/
+sqlite_mcp_server.db

@@ -1,0 +1,98 @@
+{
+  "task": "eval_api",
+  "status": "completed",
+  "meta": {
+    "run_id": "20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334",
+    "run_dir": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334",
+    "timestamp": "20260214_225001",
+    "model": "deepseek-chat",
+    "api_response_models": [
+      "deepseek-chat"
+    ],
+    "dataset": "DuEE-Fin",
+    "num_samples": 1171,
+    "split": "dev",
+    "concurrency": 8,
+    "has_gold_labels": true,
+    "use_fewshot": true,
+    "fewshot_num_examples": 3,
+    "prompt_style": "qwen",
+    "json_mode": "auto",
+    "seed": 3409,
+    "config_hash_sha256": "73599bf8549d6ab473a8de0330b12b59d766aaf9c35c7d704e054777b15df79e",
+    "config_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/config.yaml",
+    "command": "evaluate_api.py --config configs/config.yaml --protocol configs/eval_protocol.yaml --split dev --model deepseek-chat --concurrency 8 --json_mode auto --role_alias_map configs/role_aliases_duee_fin.yaml --canonical_metric_mode analysis_only --seed 3409 --use_fewshot --output_file logs/DuEE-Fin/eval_api/sweep_20260214_202738/eval_results_deepseek_dev_fewshot_seed3409_20260214_224956.jsonl --summary_file logs/DuEE-Fin/eval_api/sweep_20260214_202738/eval_summary_dev_fewshot_seed3409_20260214_224956.json",
+    "bootstrap_samples": 1000,
+    "compute_ci": true,
+    "protocol_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/eval_protocol.yaml",
+    "protocol_hash_sha256": "2fa1f792eba34ab9423dbbfaa0a6b0260f9c24610650b570ccd174e5506626c7",
+    "protocol_version": "1.0",
+    "primary_metric": "strict_f1",
+    "canonical_metric_mode": "analysis_only",
+    "role_alias_map_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/role_aliases_duee_fin.yaml",
+    "role_alias_map_hash_sha256": "df531d0f51331187345167b08985b27520b19cdc5fcda274365cdadd29a7c79b",
+    "role_alias_map_loaded": true,
+    "metrics_report_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334/eval_report.txt",
+    "log_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334/run.log",
+    "generation": {
+      "temperature": 0.0,
+      "max_tokens": 2048,
+      "max_retries": 3,
+      "json_mode": "auto"
+    },
+    "prompt_hashes": {
+      "system_prompt_sha256": "34f442b9320ef8a17aa59041277ff9ac1756ee5d611ae1dce13b4ed6d94bfe41",
+      "schema_constraints_sha256": "9dc212764496c1d1a94b95cf81ca462d3e8fe580355d81359eebaca60470789b",
+      "fewshot_examples_sha256": [
+        {
+          "user": "0b7f22a04dea8afb09c121721df0306fff88d546b321e1aae29997939297c9b3",
+          "assistant": "e8c2f72cdd327b5d0db56a98476e1c0d52fde66ab3f008e25e2e21b69c58a567"
+        },
+        {
+          "user": "a417c27846b53a2356ba2bae53e3b5a283d139e9845ae9cd06b3f7ccff9cd31f",
+          "assistant": "265f67054079100e3522a0c3a3af3ebf196e2b92a30a802186d07a11e5f4861f"
+        },
+        {
+          "user": "59048e0bbe62ffbe5c8c8d1fabb4250cbd6927170a3d0fc2ead76a18c3e3a197",
+          "assistant": "79cbd5adbbd33e31b1b751fda70a6da5d14379d85a1c427e4db77fd2c3196f85"
+        }
+      ]
+    }
+  },
+  "artifacts": {
+    "run_dir": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334",
+    "log_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334/run.log",
+    "result_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/sweep_20260214_202738/eval_results_deepseek_dev_fewshot_seed3409_20260214_224956.jsonl",
+    "summary_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/sweep_20260214_202738/eval_summary_dev_fewshot_seed3409_20260214_224956.json",
+    "metrics_report_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_225001_dev_seed3409_fewshot_deepseek-chat_p1343334/eval_report.txt"
+  },
+  "runtime": {
+    "wall_clock_seconds": 1350.1099724769592
+  },
+  "runtime_manifest": {
+    "python": {
+      "version": "3.10.19",
+      "implementation": "CPython",
+      "executable": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/software/anaconda3/envs/tjk_ee/bin/python"
+    },
+    "system": {
+      "platform": "Linux-6.5.0-44-generic-x86_64-with-glibc2.35",
+      "machine": "x86_64",
+      "processor": "x86_64",
+      "hostname": "pc3048-Precision-7920-Tower"
+    },
+    "packages": {
+      "openai": "2.14.0",
+      "tqdm": "4.67.1",
+      "PyYAML": "6.0.3",
+      "dirtyjson": "1.0.8",
+      "transformers": "4.57.6",
+      "torch": "2.6.0+cu118",
+      "unsloth": "2026.1.4"
+    },
+    "git": {
+      "commit": null,
+      "dirty": true
+    }
+  }
+}

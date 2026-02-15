@@ -1,0 +1,21 @@
+version: "1.0"
+
+# 论文主指标口径（保持与现有文献可比）
+primary_metric: "strict_f1"
+
+# 仅用于辅助分析，不改变主指标
+canonical_metric_mode: "analysis_only"
+
+evaluation:
+  split: "dev"
+  seeds: [3407, 3408, 3409]
+  bootstrap_samples: 1000
+  concurrency: 8
+  significance: "paired_permutation"
+  confidence: 0.95
+
+reporting:
+  include_auxiliary_canonical_metrics: true
+  enforce_protocol_match: true
+  include_schema_compliance: true
+  include_hallucination: true

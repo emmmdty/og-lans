@@ -1,0 +1,352 @@
+{
+  "meta": {
+    "run_id": "20260214_213244_dev_seed3409_zeroshot_deepseek-chat_p1324477",
+    "run_dir": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_213244_dev_seed3409_zeroshot_deepseek-chat_p1324477",
+    "timestamp": "20260214_213244",
+    "model": "deepseek-chat",
+    "api_response_models": [
+      "deepseek-chat"
+    ],
+    "dataset": "DuEE-Fin",
+    "num_samples": 1171,
+    "split": "dev",
+    "concurrency": 8,
+    "has_gold_labels": true,
+    "use_fewshot": false,
+    "fewshot_num_examples": 0,
+    "prompt_style": "qwen",
+    "json_mode": "auto",
+    "seed": 3409,
+    "config_hash_sha256": "73599bf8549d6ab473a8de0330b12b59d766aaf9c35c7d704e054777b15df79e",
+    "config_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/config.yaml",
+    "command": "evaluate_api.py --config configs/config.yaml --protocol configs/eval_protocol.yaml --split dev --model deepseek-chat --concurrency 8 --json_mode auto --role_alias_map configs/role_aliases_duee_fin.yaml --canonical_metric_mode analysis_only --seed 3409 --output_file logs/DuEE-Fin/eval_api/sweep_20260214_202738/eval_results_deepseek_dev_zeroshot_seed3409_20260214_213240.jsonl --summary_file logs/DuEE-Fin/eval_api/sweep_20260214_202738/eval_summary_dev_zeroshot_seed3409_20260214_213240.json",
+    "bootstrap_samples": 1000,
+    "compute_ci": true,
+    "protocol_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/eval_protocol.yaml",
+    "protocol_hash_sha256": "2fa1f792eba34ab9423dbbfaa0a6b0260f9c24610650b570ccd174e5506626c7",
+    "protocol_version": "1.0",
+    "primary_metric": "strict_f1",
+    "canonical_metric_mode": "analysis_only",
+    "role_alias_map_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/role_aliases_duee_fin.yaml",
+    "role_alias_map_hash_sha256": "df531d0f51331187345167b08985b27520b19cdc5fcda274365cdadd29a7c79b",
+    "role_alias_map_loaded": true,
+    "metrics_report_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_213244_dev_seed3409_zeroshot_deepseek-chat_p1324477/eval_report.txt",
+    "log_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_api/20260214_213244_dev_seed3409_zeroshot_deepseek-chat_p1324477/run.log",
+    "generation": {
+      "temperature": 0.0,
+      "max_tokens": 2048,
+      "max_retries": 3,
+      "json_mode": "auto"
+    },
+    "prompt_hashes": {
+      "system_prompt_sha256": "34f442b9320ef8a17aa59041277ff9ac1756ee5d611ae1dce13b4ed6d94bfe41",
+      "schema_constraints_sha256": "9dc212764496c1d1a94b95cf81ca462d3e8fe580355d81359eebaca60470789b",
+      "fewshot_examples_sha256": []
+    }
+  },
+  "metrics": {
+    "strict_precision": 0.49654940245749873,
+    "strict_recall": 0.41939152686949105,
+    "strict_f1": 0.45472061657032753,
+    "relaxed_precision": 0.7279546846295162,
+    "relaxed_recall": 0.6007580543272267,
+    "relaxed_f1": 0.6582681525576244,
+    "type_precision": 0.859983429991715,
+    "type_recall": 0.8932874354561101,
+    "type_f1": 0.8763191219924018,
+    "total_samples": 1171,
+    "parse_errors": 0,
+    "parse_error_rate": 0.0,
+    "hallucination_rate": 0.11699402220324509,
+    "hallucination_entity_rate": 0.03016845329249617,
+    "cot_faithfulness": 1.0,
+    "cot_type_consistency": 1.0,
+    "cot_argument_consistency": 1.0,
+    "schema_compliance_rate": 0.9410760034158838,
+    "error_breakdown": {
+      "FN_股份回购_回购股份数量": 220,
+      "FN_股份回购_每股交易价格": 198,
+      "FP_股份回购_回购股份数量": 186,
+      "FN_质押_质押股票/股份数量": 147,
+      "FN_股份回购_回购完成时间": 137,
+      "FN_亏损_净亏损": 114,
+      "FN_质押_质押方": 113,
+      "FN_解除质押_质押股票/股份数量": 107,
+      "FN_质押_质押物": 104,
+      "FN_亏损_财报周期": 100
+    },
+    "parse_success": 1171,
+    "parse_failure": 0,
+    "parse_success_rate": 1.0,
+    "primary_metric": "strict_f1",
+    "primary_metric_value": 0.45472061657032753,
+    "bootstrap_ci": {
+      "strict_precision": {
+        "mean": 0.4963857747654073,
+        "std": 0.007948555473712983,
+        "ci": [
+          0.4802167131833853,
+          0.5116238723108952
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "strict_recall": {
+        "mean": 0.41963122644124423,
+        "std": 0.008015263738051776,
+        "ci": [
+          0.4042679312388856,
+          0.43577448416158093
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "strict_f1": {
+        "mean": 0.45476023897716894,
+        "std": 0.0070918234645738695,
+        "ci": [
+          0.44079302630563916,
+          0.46920331130857446
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "relaxed_precision": {
+        "mean": 0.7278470276704687,
+        "std": 0.01109095669945834,
+        "ci": [
+          0.7059726700445264,
+          0.7484604452865941
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "relaxed_recall": {
+        "mean": 0.6012580019173646,
+        "std": 0.011087714867866196,
+        "ci": [
+          0.5787878787878787,
+          0.6232187214014904
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "relaxed_f1": {
+        "mean": 0.6584465014739582,
+        "std": 0.008669426678490086,
+        "ci": [
+          0.6405857740585775,
+          0.6747921657038185
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "type_precision": {
+        "mean": 0.8598514087743893,
+        "std": 0.009911859115182728,
+        "ci": [
+          0.8412955465587044,
+          0.8805841924398625
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "type_recall": {
+        "mean": 0.8931305945281851,
+        "std": 0.008526171358923397,
+        "ci": [
+          0.8762975778546713,
+          0.9093264248704663
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      },
+      "type_f1": {
+        "mean": 0.8761319902170638,
+        "std": 0.0069605636623988705,
+        "ci": [
+          0.8627284317892052,
+          0.8893617021276596
+        ],
+        "confidence": 0.95,
+        "n_bootstrap": 1000
+      }
+    },
+    "auxiliary_metrics": {
+      "canonicalized": {
+        "canonicalized_strict_precision": 0.5046304091597912,
+        "canonicalized_strict_recall": 0.42607335797554735,
+        "canonicalized_strict_f1": 0.4620365374238804,
+        "canonicalized_relaxed_precision": 0.7371402327005512,
+        "canonicalized_relaxed_recall": 0.6083385975994946,
+        "canonicalized_relaxed_f1": 0.666574375302831,
+        "canonicalized_type_precision": 0.859983429991715,
+        "canonicalized_type_recall": 0.8932874354561101,
+        "canonicalized_type_f1": 0.8763191219924018,
+        "canonicalized_schema_compliance_rate": 0.9931682322801024,
+        "canonical_role_rewrites_total": 68,
+        "canonical_role_rewrites_avg": 0.05807002561912895,
+        "bootstrap_ci": {
+          "strict_precision": {
+            "mean": 0.5041510087094719,
+            "std": 0.0082695427473974,
+            "ci": [
+              0.4869831546707504,
+              0.5192081865458815
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "strict_recall": {
+            "mean": 0.42570552833524905,
+            "std": 0.008205943196467171,
+            "ci": [
+              0.40898716119828815,
+              0.44141729938960844
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "strict_f1": {
+            "mean": 0.46158734555078956,
+            "std": 0.0073776097719897215,
+            "ci": [
+              0.44596359167370764,
+              0.47522063815342835
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "relaxed_precision": {
+            "mean": 0.7372582387212521,
+            "std": 0.011731076648142814,
+            "ci": [
+              0.7142427884615384,
+              0.7601464268661468
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "relaxed_recall": {
+            "mean": 0.6082590464799684,
+            "std": 0.011205908021424656,
+            "ci": [
+              0.5856811806317843,
+              0.6302575385013589
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "relaxed_f1": {
+            "mean": 0.6664991473749842,
+            "std": 0.009112474523481053,
+            "ci": [
+              0.6485795072034469,
+              0.6838128249566724
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "type_precision": {
+            "mean": 0.8596171484785109,
+            "std": 0.010689442295480578,
+            "ci": [
+              0.8380398671096345,
+              0.8811965811965812
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "type_recall": {
+            "mean": 0.8929885456139756,
+            "std": 0.008778072808283776,
+            "ci": [
+              0.8746781115879828,
+              0.9090909090909091
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          },
+          "type_f1": {
+            "mean": 0.8759384612028517,
+            "std": 0.0074823625492521275,
+            "ci": [
+              0.8615771812080537,
+              0.8891698272229246
+            ],
+            "confidence": 0.95,
+            "n_bootstrap": 1000
+          }
+        }
+      }
+    }
+  },
+  "token_usage": {
+    "prompt_tokens": 1747572,
+    "completion_tokens": 759271,
+    "total_tokens": 2506843,
+    "avg_tokens_per_sample": 2140.7711357813832
+  },
+  "api_stats": {
+    "failed_calls": 0,
+    "failed_call_rate": 0.0
+  },
+  "runtime": {
+    "wall_clock_seconds": 2022.297604084015
+  },
+  "runtime_manifest": {
+    "python": {
+      "version": "3.10.19",
+      "implementation": "CPython",
+      "executable": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/software/anaconda3/envs/tjk_ee/bin/python"
+    },
+    "system": {
+      "platform": "Linux-6.5.0-44-generic-x86_64-with-glibc2.35",
+      "machine": "x86_64",
+      "processor": "x86_64",
+      "hostname": "pc3048-Precision-7920-Tower"
+    },
+    "packages": {
+      "openai": "2.14.0",
+      "tqdm": "4.67.1",
+      "PyYAML": "6.0.3",
+      "dirtyjson": "1.0.8",
+      "transformers": "4.57.6",
+      "torch": "2.6.0+cu118",
+      "unsloth": "2026.1.4"
+    },
+    "git": {
+      "commit": null,
+      "dirty": true
+    }
+  },
+  "analysis": {
+    "primary_metric": "strict_f1",
+    "primary_metric_value": 0.45472061657032753,
+    "canonical_metric_mode": "analysis_only",
+    "canonical_metrics_available": true,
+    "protocol": {
+      "version": "1.0",
+      "primary_metric": "strict_f1",
+      "canonical_metric_mode": "analysis_only",
+      "evaluation": {
+        "split": "dev",
+        "seeds": [
+          3407,
+          3408,
+          3409
+        ],
+        "bootstrap_samples": 1000,
+        "concurrency": 8,
+        "significance": "paired_permutation",
+        "confidence": 0.95
+      },
+      "reporting": {
+        "include_auxiliary_canonical_metrics": true,
+        "enforce_protocol_match": true,
+        "include_schema_compliance": true,
+        "include_hallucination": true
+      }
+    }
+  }
+}

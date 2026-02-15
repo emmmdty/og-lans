@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oglans"
+version = "0.1.0"
+description = "Ontology-Graph Loss-Aware Adaptive Negative Sampling for Direct Preference Optimization"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Zimmmtly", email = "zimmmtly@example.com"}
+]
+dependencies = [
+    "unsloth",
+    "transformers",
+    "trl",
+    "networkx",
+    "torch",
+    "PyYAML",
+    "openai",
+    "dirtyjson",
+    "addict",
+    "scikit-learn",
+    "tqdm"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "flake8"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,287 @@
+2026-02-12 12:39:06 - OGLANS - INFO - Logger initialized. Log file: experiment_20260212_123906.log
+2026-02-12 12:39:06 - OGLANS - INFO - Loaded config from /media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/config.yaml
+2026-02-12 12:39:06 - OGLANS - INFO - Run ID: 20260212_123906_train_seed3407_p1157768
+2026-02-12 12:39:06 - OGLANS - INFO - >>> Stage 1: Data Loading
+2026-02-12 12:39:06 - OGLANS - INFO - 加载 Schema 成功，包含 13 种事件类型
+2026-02-12 12:39:07 - OGLANS - INFO - 从 train 集加载 7015 条样本
+2026-02-12 12:39:07 - OGLANS - INFO - >>> Stage 2: Unsloth DPO Training
+2026-02-12 12:39:07 - OGLANS - INFO - 图谱构建完成: 106 节点, 105 边
+2026-02-12 12:39:07 - OGLANS - INFO - OG-CNS 初始化完成: 13 种事件类型, 图谱直径=4, c0=0.1
+2026-02-12 12:39:07 - OGLANS - INFO - Loading SCV model: Fengshenbang/Erlangshen-MegatronBert-1.3B-NLI...
+2026-02-12 12:39:07 - OGLANS - INFO - Attempting to download from ModelScope...
+2026-02-12 12:39:07 - OGLANS - INFO - NLI Model saved to: ./models/Fengshenbang/Erlangshen-MegatronBert-1___3B-NLI
+2026-02-12 12:39:12 - OGLANS - INFO - 📋 NLI 模型标签配置:
+2026-02-12 12:39:12 - OGLANS - INFO -    label2id: None
+2026-02-12 12:39:12 - OGLANS - INFO -    id2label: {0: 'CONTRADICTION', 1: 'NEUTRAL', 2: 'ENTAILMENT'}
+2026-02-12 12:39:12 - OGLANS - INFO - ✅ 从 id2label 推断 entailment 标签: 'ENTAILMENT' -> index=2
+2026-02-12 12:39:12 - OGLANS - INFO - 🧪 SCV 断言测试:
+2026-02-12 12:39:12 - OGLANS - INFO -    蕴含样本的 entailment 分数: 1.000
+2026-02-12 12:39:12 - OGLANS - INFO -    矛盾样本的 entailment 分数: 0.000
+2026-02-12 12:39:12 - OGLANS - INFO - ✅ SCV 断言测试通过，entailment_idx=2 验证正确
+2026-02-12 12:39:39 - OGLANS - INFO - EOS Token: <|im_end|> | EOS Token ID: 151645
+2026-02-12 12:39:39 - OGLANS - INFO - 🚀 启用 LANS (在线模式)
+2026-02-12 12:39:39 - OGLANS - INFO - OG-LANS 调度器初始化: D_max=4.00, D_min=1.00, EMA_decay=0.95, Loss_baseline=0.5, Warmup=100, CGA_beta=0.1, Granularity_weights={'EVENT_LEVEL': 0.3, 'ARGUMENT_LEVEL': 0.5, 'VALUE_LEVEL': 0.2}
+2026-02-12 12:39:39 - OGLANS - INFO - ✅ OG-LANS 自适应调度器已启用
+2026-02-12 12:39:39 - OGLANS - INFO - 🔄 启用 LANS 自适应采样模式 (Epoch 级别动态刷新)
+2026-02-12 12:39:39 - OGLANS - INFO - 📦 生成初始负样本 (Epoch 0)...
+2026-02-12 12:40:01 - OGLANS - INFO -    ⏳ 初始负样本进度: 200/7015 (2.9%), 9.20 samples/s, ETA 740.4s
+2026-02-12 12:40:01 - OGLANS - INFO - 🔎 SCV 心跳: calls=200, avg_windows=2.55, avg_time=108.5ms, throughput=9.22 checks/s
+2026-02-12 12:40:21 - OGLANS - INFO -    ⏳ 初始负样本进度: 400/7015 (5.7%), 9.62 samples/s, ETA 687.5s
+2026-02-12 12:40:21 - OGLANS - INFO - 🔎 SCV 心跳: calls=400, avg_windows=2.52, avg_time=103.8ms, throughput=9.64 checks/s
+2026-02-12 12:40:41 - OGLANS - INFO -    ⏳ 初始负样本进度: 600/7015 (8.6%), 9.77 samples/s, ETA 656.8s
+2026-02-12 12:40:41 - OGLANS - INFO - 🔎 SCV 心跳: calls=600, avg_windows=2.40, avg_time=102.2ms, throughput=9.79 checks/s
+2026-02-12 12:41:06 - OGLANS - INFO -    ⏳ 初始负样本进度: 800/7015 (11.4%), 9.21 samples/s, ETA 675.2s
+2026-02-12 12:41:06 - OGLANS - INFO - 🔎 SCV 心跳: calls=800, avg_windows=2.41, avg_time=108.4ms, throughput=9.23 checks/s
+2026-02-12 12:41:30 - OGLANS - INFO -    ⏳ 初始负样本进度: 1000/7015 (14.3%), 9.02 samples/s, ETA 666.8s
+2026-02-12 12:41:30 - OGLANS - INFO - 🔎 SCV 心跳: calls=1000, avg_windows=2.40, avg_time=110.6ms, throughput=9.05 checks/s
+2026-02-12 12:41:49 - OGLANS - INFO -    ⏳ 初始负样本进度: 1200/7015 (17.1%), 9.27 samples/s, ETA 627.3s
+2026-02-12 12:41:49 - OGLANS - INFO - 🔎 SCV 心跳: calls=1200, avg_windows=2.36, avg_time=107.7ms, throughput=9.29 checks/s
+2026-02-12 12:42:08 - OGLANS - INFO -    ⏳ 初始负样本进度: 1400/7015 (20.0%), 9.42 samples/s, ETA 596.0s
+2026-02-12 12:42:08 - OGLANS - INFO - 🔎 SCV 心跳: calls=1400, avg_windows=2.35, avg_time=105.9ms, throughput=9.44 checks/s
+2026-02-12 12:42:32 - OGLANS - INFO -    ⏳ 初始负样本进度: 1600/7015 (22.8%), 9.28 samples/s, ETA 583.4s
+2026-02-12 12:42:32 - OGLANS - INFO - 🔎 SCV 心跳: calls=1600, avg_windows=2.38, avg_time=107.4ms, throughput=9.31 checks/s
+2026-02-12 12:42:55 - OGLANS - INFO -    ⏳ 初始负样本进度: 1800/7015 (25.7%), 9.17 samples/s, ETA 568.6s
+2026-02-12 12:42:56 - OGLANS - INFO - 🔎 SCV 心跳: calls=1800, avg_windows=2.40, avg_time=108.8ms, throughput=9.20 checks/s
+2026-02-12 12:43:19 - OGLANS - INFO -    ⏳ 初始负样本进度: 2000/7015 (28.5%), 9.10 samples/s, ETA 551.0s
+2026-02-12 12:43:19 - OGLANS - INFO - 🔎 SCV 心跳: calls=2000, avg_windows=2.39, avg_time=109.5ms, throughput=9.13 checks/s
+2026-02-12 12:43:40 - OGLANS - INFO -    ⏳ 初始负样本进度: 2200/7015 (31.4%), 9.13 samples/s, ETA 527.3s
+2026-02-12 12:43:40 - OGLANS - INFO - 🔎 SCV 心跳: calls=2200, avg_windows=2.37, avg_time=109.2ms, throughput=9.16 checks/s
+2026-02-12 12:44:01 - OGLANS - INFO -    ⏳ 初始负样本进度: 2400/7015 (34.2%), 9.16 samples/s, ETA 503.6s
+2026-02-12 12:44:01 - OGLANS - INFO - 🔎 SCV 心跳: calls=2400, avg_windows=2.38, avg_time=108.8ms, throughput=9.19 checks/s
+2026-02-12 12:44:23 - OGLANS - INFO -    ⏳ 初始负样本进度: 2600/7015 (37.1%), 9.16 samples/s, ETA 482.1s
+2026-02-12 12:44:23 - OGLANS - INFO - 🔎 SCV 心跳: calls=2600, avg_windows=2.37, avg_time=108.8ms, throughput=9.19 checks/s
+2026-02-12 12:44:42 - OGLANS - INFO -    ⏳ 初始负样本进度: 2800/7015 (39.9%), 9.24 samples/s, ETA 455.9s
+2026-02-12 12:44:42 - OGLANS - INFO - 🔎 SCV 心跳: calls=2800, avg_windows=2.38, avg_time=107.8ms, throughput=9.28 checks/s
+2026-02-12 12:45:06 - OGLANS - INFO -    ⏳ 初始负样本进度: 3000/7015 (42.8%), 9.17 samples/s, ETA 437.7s
+2026-02-12 12:45:06 - OGLANS - INFO - 🔎 SCV 心跳: calls=3000, avg_windows=2.39, avg_time=108.7ms, throughput=9.20 checks/s
+2026-02-12 12:45:30 - OGLANS - INFO -    ⏳ 初始负样本进度: 3200/7015 (45.6%), 9.12 samples/s, ETA 418.4s
+2026-02-12 12:45:30 - OGLANS - INFO - 🔎 SCV 心跳: calls=3200, avg_windows=2.40, avg_time=109.3ms, throughput=9.15 checks/s
+2026-02-12 12:45:52 - OGLANS - INFO -    ⏳ 初始负样本进度: 3400/7015 (48.5%), 9.12 samples/s, ETA 396.3s
+2026-02-12 12:45:52 - OGLANS - INFO - 🔎 SCV 心跳: calls=3400, avg_windows=2.42, avg_time=109.3ms, throughput=9.15 checks/s
+2026-02-12 12:46:17 - OGLANS - INFO -    ⏳ 初始负样本进度: 3600/7015 (51.3%), 9.05 samples/s, ETA 377.4s
+2026-02-12 12:46:17 - OGLANS - INFO - 🔎 SCV 心跳: calls=3600, avg_windows=2.45, avg_time=110.1ms, throughput=9.08 checks/s
+2026-02-12 12:46:37 - OGLANS - INFO -    ⏳ 初始负样本进度: 3800/7015 (54.2%), 9.10 samples/s, ETA 353.4s
+2026-02-12 12:46:37 - OGLANS - INFO - 🔎 SCV 心跳: calls=3800, avg_windows=2.43, avg_time=109.5ms, throughput=9.13 checks/s
+2026-02-12 12:46:59 - OGLANS - INFO -    ⏳ 初始负样本进度: 4000/7015 (57.0%), 9.10 samples/s, ETA 331.4s
+2026-02-12 12:46:59 - OGLANS - INFO - 🔎 SCV 心跳: calls=4000, avg_windows=2.45, avg_time=109.5ms, throughput=9.13 checks/s
+2026-02-12 12:47:21 - OGLANS - INFO -    ⏳ 初始负样本进度: 4200/7015 (59.9%), 9.09 samples/s, ETA 309.8s
+2026-02-12 12:47:21 - OGLANS - INFO - 🔎 SCV 心跳: calls=4200, avg_windows=2.44, avg_time=109.7ms, throughput=9.12 checks/s
+2026-02-12 12:47:48 - OGLANS - INFO -    ⏳ 初始负样本进度: 4400/7015 (62.7%), 8.99 samples/s, ETA 290.8s
+2026-02-12 12:47:49 - OGLANS - INFO - 🔎 SCV 心跳: calls=4400, avg_windows=2.45, avg_time=110.8ms, throughput=9.02 checks/s
+2026-02-12 12:48:08 - OGLANS - INFO -    ⏳ 初始负样本进度: 4600/7015 (65.6%), 9.04 samples/s, ETA 267.3s
+2026-02-12 12:48:08 - OGLANS - INFO - 🔎 SCV 心跳: calls=4600, avg_windows=2.44, avg_time=110.3ms, throughput=9.07 checks/s
+2026-02-12 12:48:31 - OGLANS - INFO -    ⏳ 初始负样本进度: 4800/7015 (68.4%), 9.03 samples/s, ETA 245.3s
+2026-02-12 12:48:31 - OGLANS - INFO - 🔎 SCV 心跳: calls=4800, avg_windows=2.44, avg_time=110.4ms, throughput=9.06 checks/s
+2026-02-12 12:48:55 - OGLANS - INFO -    ⏳ 初始负样本进度: 5000/7015 (71.3%), 9.00 samples/s, ETA 223.9s
+2026-02-12 12:48:55 - OGLANS - INFO - 🔎 SCV 心跳: calls=5000, avg_windows=2.45, avg_time=110.8ms, throughput=9.03 checks/s
+2026-02-12 12:49:16 - OGLANS - INFO -    ⏳ 初始负样本进度: 5200/7015 (74.1%), 9.01 samples/s, ETA 201.4s
+2026-02-12 12:49:17 - OGLANS - INFO - 🔎 SCV 心跳: calls=5200, avg_windows=2.45, avg_time=110.7ms, throughput=9.04 checks/s
+2026-02-12 12:49:38 - OGLANS - INFO -    ⏳ 初始负样本进度: 5400/7015 (77.0%), 9.01 samples/s, ETA 179.2s
+2026-02-12 12:49:38 - OGLANS - INFO - 🔎 SCV 心跳: calls=5400, avg_windows=2.47, avg_time=110.6ms, throughput=9.04 checks/s
+2026-02-12 12:50:04 - OGLANS - INFO -    ⏳ 初始负样本进度: 5600/7015 (79.8%), 8.96 samples/s, ETA 157.9s
+2026-02-12 12:50:04 - OGLANS - INFO - 🔎 SCV 心跳: calls=5600, avg_windows=2.47, avg_time=111.2ms, throughput=8.99 checks/s
+2026-02-12 12:50:25 - OGLANS - INFO -    ⏳ 初始负样本进度: 5800/7015 (82.7%), 8.98 samples/s, ETA 135.4s
+2026-02-12 12:50:26 - OGLANS - INFO - 🔎 SCV 心跳: calls=5800, avg_windows=2.48, avg_time=111.1ms, throughput=9.00 checks/s
+2026-02-12 12:50:43 - OGLANS - INFO -    ⏳ 初始负样本进度: 6000/7015 (85.5%), 9.03 samples/s, ETA 112.4s
+2026-02-12 12:50:43 - OGLANS - INFO - 🔎 SCV 心跳: calls=6000, avg_windows=2.47, avg_time=110.3ms, throughput=9.06 checks/s
+2026-02-12 12:51:06 - OGLANS - INFO -    ⏳ 初始负样本进度: 6200/7015 (88.4%), 9.02 samples/s, ETA 90.3s
+2026-02-12 12:51:06 - OGLANS - INFO - 🔎 SCV 心跳: calls=6200, avg_windows=2.47, avg_time=110.4ms, throughput=9.06 checks/s
+2026-02-12 12:51:27 - OGLANS - INFO -    ⏳ 初始负样本进度: 6400/7015 (91.2%), 9.04 samples/s, ETA 68.0s
+2026-02-12 12:51:27 - OGLANS - INFO - 🔎 SCV 心跳: calls=6400, avg_windows=2.47, avg_time=110.2ms, throughput=9.07 checks/s
+2026-02-12 12:51:47 - OGLANS - INFO -    ⏳ 初始负样本进度: 6600/7015 (94.1%), 9.07 samples/s, ETA 45.8s
+2026-02-12 12:51:47 - OGLANS - INFO - 🔎 SCV 心跳: calls=6600, avg_windows=2.47, avg_time=109.9ms, throughput=9.10 checks/s
+2026-02-12 12:52:07 - OGLANS - INFO -    ⏳ 初始负样本进度: 6800/7015 (96.9%), 9.09 samples/s, ETA 23.7s
+2026-02-12 12:52:08 - OGLANS - INFO - 🔎 SCV 心跳: calls=6800, avg_windows=2.47, avg_time=109.7ms, throughput=9.12 checks/s
+2026-02-12 12:52:27 - OGLANS - INFO -    ⏳ 初始负样本进度: 7000/7015 (99.8%), 9.12 samples/s, ETA 1.6s
+2026-02-12 12:52:27 - OGLANS - INFO - 🔎 SCV 心跳: calls=7000, avg_windows=2.47, avg_time=109.3ms, throughput=9.15 checks/s
+2026-02-12 12:52:28 - OGLANS - INFO -    ⏳ 初始负样本进度: 7015/7015 (100.0%), 9.12 samples/s, ETA 0.0s
+2026-02-12 12:52:29 - OGLANS - INFO - ✅ 生成 7015 条初始负样本
+2026-02-12 12:52:29 - OGLANS - INFO - 📦 导出 LANS 负样本: 7015 条 -> ./logs/DuEE-Fin/samples/main_s3407/lans_generated_samples.jsonl
+2026-02-12 12:52:29 - OGLANS - INFO - 🔍 导出 SCV 过滤样本: 6142 条 -> ./logs/DuEE-Fin/samples/main_s3407/scv_filtered_samples.jsonl
+2026-02-12 12:53:39 - OGLANS - INFO - 🚀 CGADPOTrainer 初始化: CGA_enabled=True, CGA_beta=0.1
+2026-02-12 12:53:39 - OGLANS - INFO - Starting Training...
+2026-02-12 12:53:40 - OGLANS - INFO - 📅 Epoch 0 开始: 能力值=0.0500, 阈值=3.85
+2026-02-12 12:53:40 - OGLANS - INFO - ⏭️ Epoch 0: 跳过负样本刷新 (refresh_start_epoch=1)，沿用初始负样本
+2026-02-12 15:08:16 - OGLANS - INFO - OG-LANS 更新 [Step 150]: Loss=0.3067, Competence=0.5077, Threshold=2.48, CGA_w=1.049
+2026-02-12 15:50:15 - OGLANS - INFO - OG-LANS 更新 [Step 200]: Loss=0.0788, Competence=0.5892, Threshold=2.23, CGA_w=1.041
+2026-02-12 15:57:59 - OGLANS - INFO - 📅 Epoch 1 开始: 能力值=0.5955, 阈值=2.21
+2026-02-12 15:57:59 - OGLANS - INFO - 🔄 Epoch 1: 基于当前能力值重新生成负样本...
+2026-02-12 15:58:19 - OGLANS - INFO - 🔎 SCV 心跳: calls=7200, avg_windows=2.47, avg_time=109.3ms, throughput=9.15 checks/s
+2026-02-12 15:58:21 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 200/7015 (2.9%), 9.15 samples/s, ETA 744.4s
+2026-02-12 15:58:39 - OGLANS - INFO - 🔎 SCV 心跳: calls=7400, avg_windows=2.47, avg_time=108.9ms, throughput=9.18 checks/s
+2026-02-12 15:58:40 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 400/7015 (5.7%), 9.66 samples/s, ETA 684.9s
+2026-02-12 15:58:58 - OGLANS - INFO - 🔎 SCV 心跳: calls=7600, avg_windows=2.46, avg_time=108.6ms, throughput=9.21 checks/s
+2026-02-12 15:58:59 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 600/7015 (8.6%), 9.92 samples/s, ETA 646.4s
+2026-02-12 15:59:21 - OGLANS - INFO - 🔎 SCV 心跳: calls=7800, avg_windows=2.46, avg_time=108.7ms, throughput=9.20 checks/s
+2026-02-12 15:59:24 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 800/7015 (11.4%), 9.45 samples/s, ETA 657.6s
+2026-02-12 15:59:45 - OGLANS - INFO - 🔎 SCV 心跳: calls=8000, avg_windows=2.46, avg_time=109.0ms, throughput=9.17 checks/s
+2026-02-12 15:59:47 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 1000/7015 (14.3%), 9.24 samples/s, ETA 650.7s
+2026-02-12 16:00:04 - OGLANS - INFO - 🔎 SCV 心跳: calls=8200, avg_windows=2.45, avg_time=108.7ms, throughput=9.20 checks/s
+2026-02-12 16:00:06 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 1200/7015 (17.1%), 9.48 samples/s, ETA 613.6s
+2026-02-12 16:00:23 - OGLANS - INFO - 🔎 SCV 心跳: calls=8400, avg_windows=2.45, avg_time=108.3ms, throughput=9.23 checks/s
+2026-02-12 16:00:24 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 1400/7015 (20.0%), 9.64 samples/s, ETA 582.6s
+2026-02-12 16:00:46 - OGLANS - INFO - 🔎 SCV 心跳: calls=8600, avg_windows=2.45, avg_time=108.5ms, throughput=9.22 checks/s
+2026-02-12 16:00:48 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 1600/7015 (22.8%), 9.48 samples/s, ETA 570.9s
+2026-02-12 16:01:08 - OGLANS - INFO - 🔎 SCV 心跳: calls=8800, avg_windows=2.45, avg_time=108.6ms, throughput=9.21 checks/s
+2026-02-12 16:01:10 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 1800/7015 (25.7%), 9.44 samples/s, ETA 552.7s
+2026-02-12 16:01:31 - OGLANS - INFO - 🔎 SCV 心跳: calls=9000, avg_windows=2.45, avg_time=108.7ms, throughput=9.20 checks/s
+2026-02-12 16:01:33 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 2000/7015 (28.5%), 9.36 samples/s, ETA 536.0s
+2026-02-12 16:01:52 - OGLANS - INFO - 🔎 SCV 心跳: calls=9200, avg_windows=2.44, avg_time=108.5ms, throughput=9.22 checks/s
+2026-02-12 16:01:53 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 2200/7015 (31.4%), 9.38 samples/s, ETA 513.1s
+2026-02-12 16:02:13 - OGLANS - INFO - 🔎 SCV 心跳: calls=9400, avg_windows=2.44, avg_time=108.4ms, throughput=9.22 checks/s
+2026-02-12 16:02:14 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 2400/7015 (34.2%), 9.41 samples/s, ETA 490.6s
+2026-02-12 16:02:33 - OGLANS - INFO - 🔎 SCV 心跳: calls=9600, avg_windows=2.44, avg_time=108.3ms, throughput=9.24 checks/s
+2026-02-12 16:02:34 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 2600/7015 (37.1%), 9.45 samples/s, ETA 467.3s
+2026-02-12 16:02:51 - OGLANS - INFO - 🔎 SCV 心跳: calls=9800, avg_windows=2.44, avg_time=107.9ms, throughput=9.27 checks/s
+2026-02-12 16:02:52 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 2800/7015 (39.9%), 9.55 samples/s, ETA 441.3s
+2026-02-12 16:03:12 - OGLANS - INFO - 🔎 SCV 心跳: calls=10000, avg_windows=2.44, avg_time=107.9ms, throughput=9.27 checks/s
+2026-02-12 16:03:15 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 3000/7015 (42.8%), 9.50 samples/s, ETA 422.8s
+2026-02-12 16:03:35 - OGLANS - INFO - 🔎 SCV 心跳: calls=10200, avg_windows=2.45, avg_time=108.0ms, throughput=9.26 checks/s
+2026-02-12 16:03:37 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 3200/7015 (45.6%), 9.46 samples/s, ETA 403.2s
+2026-02-12 16:03:57 - OGLANS - INFO - 🔎 SCV 心跳: calls=10400, avg_windows=2.45, avg_time=108.0ms, throughput=9.26 checks/s
+2026-02-12 16:03:58 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 3400/7015 (48.5%), 9.46 samples/s, ETA 382.1s
+2026-02-12 16:04:22 - OGLANS - INFO - 🔎 SCV 心跳: calls=10600, avg_windows=2.46, avg_time=108.3ms, throughput=9.23 checks/s
+2026-02-12 16:04:24 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 3600/7015 (51.3%), 9.34 samples/s, ETA 365.5s
+2026-02-12 16:04:44 - OGLANS - INFO - 🔎 SCV 心跳: calls=10800, avg_windows=2.45, avg_time=108.3ms, throughput=9.23 checks/s
+2026-02-12 16:04:45 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 3800/7015 (54.2%), 9.36 samples/s, ETA 343.4s
+2026-02-12 16:05:04 - OGLANS - INFO - 🔎 SCV 心跳: calls=11000, avg_windows=2.46, avg_time=108.2ms, throughput=9.25 checks/s
+2026-02-12 16:05:07 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 4000/7015 (57.0%), 9.35 samples/s, ETA 322.3s
+2026-02-12 16:05:28 - OGLANS - INFO - 🔎 SCV 心跳: calls=11200, avg_windows=2.46, avg_time=108.4ms, throughput=9.23 checks/s
+2026-02-12 16:05:30 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 4200/7015 (59.9%), 9.31 samples/s, ETA 302.3s
+2026-02-12 16:05:51 - OGLANS - INFO - 🔎 SCV 心跳: calls=11400, avg_windows=2.46, avg_time=108.5ms, throughput=9.22 checks/s
+2026-02-12 16:05:52 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 4400/7015 (62.7%), 9.29 samples/s, ETA 281.3s
+2026-02-12 16:06:11 - OGLANS - INFO - 🔎 SCV 心跳: calls=11600, avg_windows=2.46, avg_time=108.3ms, throughput=9.23 checks/s
+2026-02-12 16:06:12 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 4600/7015 (65.6%), 9.32 samples/s, ETA 259.0s
+2026-02-12 16:06:32 - OGLANS - INFO - 🔎 SCV 心跳: calls=11800, avg_windows=2.45, avg_time=108.3ms, throughput=9.23 checks/s
+2026-02-12 16:06:34 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 4800/7015 (68.4%), 9.32 samples/s, ETA 237.7s
+2026-02-12 16:06:55 - OGLANS - INFO - 🔎 SCV 心跳: calls=12000, avg_windows=2.46, avg_time=108.4ms, throughput=9.23 checks/s
+2026-02-12 16:06:57 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 5000/7015 (71.3%), 9.30 samples/s, ETA 216.6s
+2026-02-12 16:07:17 - OGLANS - INFO - 🔎 SCV 心跳: calls=12200, avg_windows=2.46, avg_time=108.4ms, throughput=9.22 checks/s
+2026-02-12 16:07:19 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 5200/7015 (74.1%), 9.29 samples/s, ETA 195.4s
+2026-02-12 16:07:40 - OGLANS - INFO - 🔎 SCV 心跳: calls=12400, avg_windows=2.46, avg_time=108.5ms, throughput=9.22 checks/s
+2026-02-12 16:07:42 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 5400/7015 (77.0%), 9.26 samples/s, ETA 174.4s
+2026-02-12 16:08:03 - OGLANS - INFO - 🔎 SCV 心跳: calls=12600, avg_windows=2.47, avg_time=108.6ms, throughput=9.21 checks/s
+2026-02-12 16:08:04 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 5600/7015 (79.8%), 9.25 samples/s, ETA 153.0s
+2026-02-12 16:08:24 - OGLANS - INFO - 🔎 SCV 心跳: calls=12800, avg_windows=2.47, avg_time=108.5ms, throughput=9.22 checks/s
+2026-02-12 16:08:26 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 5800/7015 (82.7%), 9.25 samples/s, ETA 131.3s
+2026-02-12 16:08:43 - OGLANS - INFO - 🔎 SCV 心跳: calls=13000, avg_windows=2.47, avg_time=108.3ms, throughput=9.23 checks/s
+2026-02-12 16:08:45 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 6000/7015 (85.5%), 9.29 samples/s, ETA 109.2s
+2026-02-12 16:09:04 - OGLANS - INFO - 🔎 SCV 心跳: calls=13200, avg_windows=2.47, avg_time=108.3ms, throughput=9.23 checks/s
+2026-02-12 16:09:06 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 6200/7015 (88.4%), 9.30 samples/s, ETA 87.6s
+2026-02-12 16:09:25 - OGLANS - INFO - 🔎 SCV 心跳: calls=13400, avg_windows=2.47, avg_time=108.2ms, throughput=9.24 checks/s
+2026-02-12 16:09:26 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 6400/7015 (91.2%), 9.31 samples/s, ETA 66.0s
+2026-02-12 16:09:46 - OGLANS - INFO - 🔎 SCV 心跳: calls=13600, avg_windows=2.47, avg_time=108.1ms, throughput=9.25 checks/s
+2026-02-12 16:09:47 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 6600/7015 (94.1%), 9.32 samples/s, ETA 44.5s
+2026-02-12 16:10:07 - OGLANS - INFO - 🔎 SCV 心跳: calls=13800, avg_windows=2.47, avg_time=108.1ms, throughput=9.25 checks/s
+2026-02-12 16:10:08 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 6800/7015 (96.9%), 9.33 samples/s, ETA 23.0s
+2026-02-12 16:10:26 - OGLANS - INFO - 🔎 SCV 心跳: calls=14000, avg_windows=2.47, avg_time=107.9ms, throughput=9.27 checks/s
+2026-02-12 16:10:27 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 7000/7015 (99.8%), 9.36 samples/s, ETA 1.6s
+2026-02-12 16:10:28 - OGLANS - INFO -    ⏳ Epoch 1 负样本刷新进度: 7015/7015 (100.0%), 9.36 samples/s, ETA 0.0s
+2026-02-12 16:10:29 - OGLANS - WARNING - ⚠️ 动态刷新依赖 trainer.train_dataset/_train_dataloader 的内部行为；升级 transformers/trl 后请做回归验证。
+2026-02-12 16:10:29 - OGLANS - INFO - ✅ Epoch 1: 已重新生成 7015 条负样本 (耗时 749.9s, 本轮策略分布: {'EASY': 0.25, 'MEDIUM': 0.57, 'HARD': 0.18})
+2026-02-12 16:44:23 - OGLANS - INFO - OG-LANS 更新 [Step 250]: Loss=0.0544, Competence=0.6067, Threshold=2.18, CGA_w=1.039
+2026-02-12 17:26:27 - OGLANS - INFO - OG-LANS 更新 [Step 300]: Loss=0.0431, Competence=0.6112, Threshold=2.17, CGA_w=1.039
+2026-02-12 18:08:19 - OGLANS - INFO - OG-LANS 更新 [Step 350]: Loss=0.0388, Competence=0.6135, Threshold=2.16, CGA_w=1.039
+2026-02-12 18:50:24 - OGLANS - INFO - OG-LANS 更新 [Step 400]: Loss=0.0280, Competence=0.6156, Threshold=2.15, CGA_w=1.038
+2026-02-12 19:14:53 - OGLANS - INFO - 📅 Epoch 2 开始: 能力值=0.6158, 阈值=2.15
+2026-02-12 19:14:53 - OGLANS - INFO - 🔄 Epoch 2: 基于当前能力值重新生成负样本...
+2026-02-12 19:15:12 - OGLANS - INFO - 🔎 SCV 心跳: calls=14200, avg_windows=2.47, avg_time=107.9ms, throughput=9.27 checks/s
+2026-02-12 19:15:15 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 200/7015 (2.9%), 9.06 samples/s, ETA 752.3s
+2026-02-12 19:15:31 - OGLANS - INFO - 🔎 SCV 心跳: calls=14400, avg_windows=2.47, avg_time=107.7ms, throughput=9.28 checks/s
+2026-02-12 19:15:35 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 400/7015 (5.7%), 9.59 samples/s, ETA 689.5s
+2026-02-12 19:15:52 - OGLANS - INFO - 🔎 SCV 心跳: calls=14600, avg_windows=2.46, avg_time=107.7ms, throughput=9.29 checks/s
+2026-02-12 19:15:55 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 600/7015 (8.6%), 9.71 samples/s, ETA 660.6s
+2026-02-12 19:16:14 - OGLANS - INFO - 🔎 SCV 心跳: calls=14800, avg_windows=2.46, avg_time=107.7ms, throughput=9.29 checks/s
+2026-02-12 19:16:17 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 800/7015 (11.4%), 9.57 samples/s, ETA 649.3s
+2026-02-12 19:16:35 - OGLANS - INFO - 🔎 SCV 心跳: calls=15000, avg_windows=2.46, avg_time=107.7ms, throughput=9.29 checks/s
+2026-02-12 19:16:39 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 1000/7015 (14.3%), 9.47 samples/s, ETA 634.9s
+2026-02-12 19:16:55 - OGLANS - INFO - 🔎 SCV 心跳: calls=15200, avg_windows=2.46, avg_time=107.5ms, throughput=9.30 checks/s
+2026-02-12 19:16:57 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 1200/7015 (17.1%), 9.69 samples/s, ETA 600.1s
+2026-02-12 19:17:13 - OGLANS - INFO - 🔎 SCV 心跳: calls=15400, avg_windows=2.45, avg_time=107.3ms, throughput=9.32 checks/s
+2026-02-12 19:17:17 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 1400/7015 (20.0%), 9.75 samples/s, ETA 575.9s
+2026-02-12 19:17:38 - OGLANS - INFO - 🔎 SCV 心跳: calls=15600, avg_windows=2.46, avg_time=107.5ms, throughput=9.30 checks/s
+2026-02-12 19:17:41 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 1600/7015 (22.8%), 9.52 samples/s, ETA 568.8s
+2026-02-12 19:18:03 - OGLANS - INFO - 🔎 SCV 心跳: calls=15800, avg_windows=2.46, avg_time=107.8ms, throughput=9.28 checks/s
+2026-02-12 19:18:06 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 1800/7015 (25.7%), 9.32 samples/s, ETA 559.7s
+2026-02-12 19:18:26 - OGLANS - INFO - 🔎 SCV 心跳: calls=16000, avg_windows=2.46, avg_time=107.8ms, throughput=9.28 checks/s
+2026-02-12 19:18:30 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 2000/7015 (28.5%), 9.21 samples/s, ETA 544.7s
+2026-02-12 19:18:48 - OGLANS - INFO - 🔎 SCV 心跳: calls=16200, avg_windows=2.45, avg_time=107.9ms, throughput=9.27 checks/s
+2026-02-12 19:18:51 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 2200/7015 (31.4%), 9.24 samples/s, ETA 521.2s
+2026-02-12 19:19:09 - OGLANS - INFO - 🔎 SCV 心跳: calls=16400, avg_windows=2.45, avg_time=107.8ms, throughput=9.28 checks/s
+2026-02-12 19:19:13 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 2400/7015 (34.2%), 9.22 samples/s, ETA 500.3s
+2026-02-12 19:19:32 - OGLANS - INFO - 🔎 SCV 心跳: calls=16600, avg_windows=2.45, avg_time=107.9ms, throughput=9.27 checks/s
+2026-02-12 19:19:35 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 2600/7015 (37.1%), 9.23 samples/s, ETA 478.4s
+2026-02-12 19:19:51 - OGLANS - INFO - 🔎 SCV 心跳: calls=16800, avg_windows=2.45, avg_time=107.7ms, throughput=9.28 checks/s
+2026-02-12 19:19:54 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 2800/7015 (39.9%), 9.32 samples/s, ETA 452.2s
+2026-02-12 19:20:11 - OGLANS - INFO - 🔎 SCV 心跳: calls=17000, avg_windows=2.45, avg_time=107.7ms, throughput=9.29 checks/s
+2026-02-12 19:20:16 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 3000/7015 (42.8%), 9.30 samples/s, ETA 431.9s
+2026-02-12 19:20:36 - OGLANS - INFO - 🔎 SCV 心跳: calls=17200, avg_windows=2.45, avg_time=107.8ms, throughput=9.27 checks/s
+2026-02-12 19:20:39 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 3200/7015 (45.6%), 9.25 samples/s, ETA 412.5s
+2026-02-12 19:20:58 - OGLANS - INFO - 🔎 SCV 心跳: calls=17400, avg_windows=2.46, avg_time=107.9ms, throughput=9.27 checks/s
+2026-02-12 19:21:02 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 3400/7015 (48.5%), 9.21 samples/s, ETA 392.4s
+2026-02-12 19:21:24 - OGLANS - INFO - 🔎 SCV 心跳: calls=17600, avg_windows=2.46, avg_time=108.1ms, throughput=9.25 checks/s
+2026-02-12 19:21:30 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 3600/7015 (51.3%), 9.08 samples/s, ETA 376.2s
+2026-02-12 19:21:48 - OGLANS - INFO - 🔎 SCV 心跳: calls=17800, avg_windows=2.46, avg_time=108.2ms, throughput=9.24 checks/s
+2026-02-12 19:21:51 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 3800/7015 (54.2%), 9.10 samples/s, ETA 353.2s
+2026-02-12 19:22:09 - OGLANS - INFO - 🔎 SCV 心跳: calls=18000, avg_windows=2.46, avg_time=108.2ms, throughput=9.24 checks/s
+2026-02-12 19:22:13 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 4000/7015 (57.0%), 9.09 samples/s, ETA 331.8s
+2026-02-12 19:22:33 - OGLANS - INFO - 🔎 SCV 心跳: calls=18200, avg_windows=2.46, avg_time=108.3ms, throughput=9.23 checks/s
+2026-02-12 19:22:37 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 4200/7015 (59.9%), 9.06 samples/s, ETA 310.8s
+2026-02-12 19:22:59 - OGLANS - INFO - 🔎 SCV 心跳: calls=18400, avg_windows=2.46, avg_time=108.5ms, throughput=9.21 checks/s
+2026-02-12 19:23:01 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 4400/7015 (62.7%), 9.01 samples/s, ETA 290.1s
+2026-02-12 19:23:19 - OGLANS - INFO - 🔎 SCV 心跳: calls=18600, avg_windows=2.46, avg_time=108.5ms, throughput=9.22 checks/s
+2026-02-12 19:23:22 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 4600/7015 (65.6%), 9.04 samples/s, ETA 267.0s
+2026-02-12 19:23:40 - OGLANS - INFO - 🔎 SCV 心跳: calls=18800, avg_windows=2.46, avg_time=108.4ms, throughput=9.22 checks/s
+2026-02-12 19:23:43 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 4800/7015 (68.4%), 9.06 samples/s, ETA 244.6s
+2026-02-12 19:24:05 - OGLANS - INFO - 🔎 SCV 心跳: calls=19000, avg_windows=2.46, avg_time=108.6ms, throughput=9.21 checks/s
+2026-02-12 19:24:09 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 5000/7015 (71.3%), 8.99 samples/s, ETA 224.2s
+2026-02-12 19:24:28 - OGLANS - INFO - 🔎 SCV 心跳: calls=19200, avg_windows=2.46, avg_time=108.6ms, throughput=9.21 checks/s
+2026-02-12 19:24:31 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 5200/7015 (74.1%), 8.99 samples/s, ETA 201.8s
+2026-02-12 19:24:51 - OGLANS - INFO - 🔎 SCV 心跳: calls=19400, avg_windows=2.46, avg_time=108.7ms, throughput=9.20 checks/s
+2026-02-12 19:24:55 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 5400/7015 (77.0%), 8.98 samples/s, ETA 179.9s
+2026-02-12 19:25:16 - OGLANS - INFO - 🔎 SCV 心跳: calls=19600, avg_windows=2.47, avg_time=108.9ms, throughput=9.18 checks/s
+2026-02-12 19:25:19 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 5600/7015 (79.8%), 8.95 samples/s, ETA 158.1s
+2026-02-12 19:25:38 - OGLANS - INFO - 🔎 SCV 心跳: calls=19800, avg_windows=2.47, avg_time=108.9ms, throughput=9.19 checks/s
+2026-02-12 19:25:41 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 5800/7015 (82.7%), 8.95 samples/s, ETA 135.8s
+2026-02-12 19:25:58 - OGLANS - INFO - 🔎 SCV 心跳: calls=20000, avg_windows=2.47, avg_time=108.8ms, throughput=9.19 checks/s
+2026-02-12 19:26:01 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 6000/7015 (85.5%), 8.99 samples/s, ETA 112.9s
+2026-02-12 19:26:21 - OGLANS - INFO - 🔎 SCV 心跳: calls=20200, avg_windows=2.47, avg_time=108.8ms, throughput=9.19 checks/s
+2026-02-12 19:26:25 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 6200/7015 (88.4%), 8.96 samples/s, ETA 91.0s
+2026-02-12 19:26:43 - OGLANS - INFO - 🔎 SCV 心跳: calls=20400, avg_windows=2.47, avg_time=108.8ms, throughput=9.19 checks/s
+2026-02-12 19:26:46 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 6400/7015 (91.2%), 8.97 samples/s, ETA 68.5s
+2026-02-12 19:27:05 - OGLANS - INFO - 🔎 SCV 心跳: calls=20600, avg_windows=2.47, avg_time=108.9ms, throughput=9.19 checks/s
+2026-02-12 19:27:08 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 6600/7015 (94.1%), 8.98 samples/s, ETA 46.2s
+2026-02-12 19:27:26 - OGLANS - INFO - 🔎 SCV 心跳: calls=20800, avg_windows=2.47, avg_time=108.8ms, throughput=9.19 checks/s
+2026-02-12 19:27:29 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 6800/7015 (96.9%), 8.99 samples/s, ETA 23.9s
+2026-02-12 19:27:47 - OGLANS - INFO - 🔎 SCV 心跳: calls=21000, avg_windows=2.47, avg_time=108.8ms, throughput=9.19 checks/s
+2026-02-12 19:27:50 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 7000/7015 (99.8%), 9.01 samples/s, ETA 1.7s
+2026-02-12 19:27:51 - OGLANS - INFO -    ⏳ Epoch 2 负样本刷新进度: 7015/7015 (100.0%), 9.01 samples/s, ETA 0.0s
+2026-02-12 19:27:52 - OGLANS - INFO - ✅ Epoch 2: 已重新生成 7015 条负样本 (耗时 778.6s, 本轮策略分布: {'EASY': 0.09, 'MEDIUM': 0.41, 'HARD': 0.5})
+2026-02-12 19:44:43 - OGLANS - INFO - OG-LANS 更新 [Step 450]: Loss=0.0275, Competence=0.6160, Threshold=2.15, CGA_w=1.038
+2026-02-12 20:26:58 - OGLANS - INFO - OG-LANS 更新 [Step 500]: Loss=0.0254, Competence=0.6161, Threshold=2.15, CGA_w=1.038
+2026-02-12 21:08:36 - OGLANS - INFO - OG-LANS 更新 [Step 550]: Loss=0.0260, Competence=0.6168, Threshold=2.15, CGA_w=1.038
+2026-02-12 21:50:35 - OGLANS - INFO - OG-LANS 更新 [Step 600]: Loss=0.0238, Competence=0.6170, Threshold=2.15, CGA_w=1.038
+2026-02-12 22:32:14 - OGLANS - INFO - OG-LANS 更新 [Step 650]: Loss=0.0231, Competence=0.6169, Threshold=2.15, CGA_w=1.038
+2026-02-12 22:32:15 - OGLANS - INFO - 🔄 on_train_end 回调开始...
+2026-02-12 22:32:15 - OGLANS - INFO -   📊 正在关闭 TensorBoard writer...
+2026-02-12 22:32:15 - OGLANS - INFO -   ✅ TensorBoard writer 已关闭
+2026-02-12 22:32:15 - OGLANS - INFO -   📝 正在导出 LANS 历史...
+2026-02-12 22:32:15 - OGLANS - INFO -   ✅ LANS 训练历史已保存: ./logs/DuEE-Fin/checkpoints/main_s3407/lans_history.json
+2026-02-12 22:32:15 - OGLANS - INFO -   📦 正在导出 LANS 负样本...
+2026-02-12 22:32:16 - OGLANS - INFO - 📦 导出 LANS 负样本: 21045 条 -> ./logs/DuEE-Fin/samples/main_s3407/lans_generated_samples.jsonl
+2026-02-12 22:32:16 - OGLANS - INFO - 🔍 导出 SCV 过滤样本: 18406 条 -> ./logs/DuEE-Fin/samples/main_s3407/scv_filtered_samples.jsonl
+2026-02-12 22:32:16 - OGLANS - INFO -      ✅ generated_samples: ./logs/DuEE-Fin/samples/main_s3407/lans_generated_samples.jsonl
+2026-02-12 22:32:16 - OGLANS - INFO -      ✅ scv_filtered: ./logs/DuEE-Fin/samples/main_s3407/scv_filtered_samples.jsonl
+2026-02-12 22:32:16 - OGLANS - INFO -      ✅ summary: ./logs/DuEE-Fin/samples/main_s3407/lans_sampling_summary.json
+2026-02-12 22:32:16 - OGLANS - INFO -   📊 LANS 采样统计:
+2026-02-12 22:32:16 - OGLANS - INFO -      生成总数: 21045
+2026-02-12 22:32:16 - OGLANS - INFO -      SCV 过滤: 18406 (87.46%)
+2026-02-12 22:32:16 - OGLANS - INFO - 🔄 on_train_end 回调完成
+2026-02-12 22:32:17 - OGLANS - INFO - ✅ trainer.train() 完成
+2026-02-12 22:32:17 - OGLANS - INFO - 🧹 Training finished. Cleaning up memory before saving...
+2026-02-12 22:32:17 - OGLANS - INFO -   ✅ 内存清理完成
+2026-02-12 22:32:17 - OGLANS - INFO - 💾 Saving model to ./logs/DuEE-Fin/checkpoints/main_s3407...
+2026-02-12 22:32:18 - OGLANS - INFO -   ✅ 模型权重已保存
+2026-02-12 22:32:18 - OGLANS - INFO -   ✅ Tokenizer 已保存
+2026-02-12 22:32:18 - OGLANS - INFO - ✅ Model saved successfully.
+2026-02-12 22:32:18 - OGLANS - INFO - 🧾 Run manifest saved: ./logs/DuEE-Fin/checkpoints/main_s3407/run_manifest.json

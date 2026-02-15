@@ -1,0 +1,10 @@
+{
+  "total_generated": 21045,
+  "scv_filtered_count": 18406,
+  "scv_filter_rate": 0.8746020432406747,
+  "strategy_distribution": {
+    "MEDIUM": 5921,
+    "EASY": 14291,
+    "HARD": 833
+  }
+}

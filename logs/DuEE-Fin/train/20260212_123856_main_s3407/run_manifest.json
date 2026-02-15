@@ -1,0 +1,37 @@
+{
+  "task": "train",
+  "status": "completed",
+  "run_id": "20260212_123856_main_s3407",
+  "timestamp": "20260212_123856",
+  "command": "bash scripts/run_train.sh --data_dir ./data/raw/DuEE-Fin --exp_name main_s3407",
+  "config_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/config.yaml",
+  "config_hash_sha256": "6b8be62b1f0d904c5bb24fb7cfe42c16f3c2db915da14a1cb885752e89b3e1a6",
+  "data_dir": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/data/raw/DuEE-Fin",
+  "experiment": "main_s3407",
+  "seed": 3407,
+  "artifacts": {
+    "run_dir": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/train/20260212_123856_main_s3407",
+    "log_file": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/train/20260212_123856_main_s3407/run.log",
+    "checkpoint_dir": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/checkpoints/main_s3407"
+  },
+  "runtime_manifest": {
+    "python": {
+      "version": "3.10.19",
+      "executable": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/software/anaconda3/envs/tjk_ee/bin/python"
+    },
+    "system": {
+      "platform": "Linux-6.5.0-44-generic-x86_64-with-glibc2.35",
+      "hostname": "pc3048-Precision-7920-Tower"
+    },
+    "git": {
+      "commit": null,
+      "dirty": true
+    }
+  },
+  "runtime": {
+    "start_epoch": 1770871136,
+    "end_epoch": 1770906741,
+    "wall_clock_seconds": 35605,
+    "exit_code": 0
+  }
+}

@@ -1,0 +1,234 @@
+# ==============================================================================
+# RA-DPO Config v4.0 (2026 Publication Ready - OG-LANS)
+# 
+# 审查修订记录:
+# - v2.1: 删除僵尸参数，统一预热机制，校准超参数
+# - v3.0: 适配 RTX 4090 (BS=4, Acc=8)，优化保存策略
+# - v3.1: 最终版 - 添加 experiment 控制，完善注释
+# - v4.0: 【2026 论文版】重构为 OG-LANS (Ontology-Graph LANS)
+#         与 DA-DPO (TMLR 2026) 差异化定位
+# ==============================================================================
+
+project:
+  name: "OG-LANS-DPO"                   # 【更名】突出 Ontology-Graph 创新
+  version: "4.0.0"
+  description: "OG-LANS: Ontology-Graph Loss-Aware Adaptive Negative Sampling for LLM-based Event Extraction"
+  seed: 3407
+  output_dir: "./logs/DuEE-Fin/checkpoints"
+  logging_dir: "./logs/DuEE-Fin/tensorboard"
+  dataset_cache_dir: "./data/processed/DuEE-Fin"  # 【已实现】静态模式数据集缓存
+  debug_data_dir: "./logs/DuEE-Fin/samples"       # 【已实现】LANS 负样本/SCV 过滤样本导出
+
+# ==============================================================================
+# 模型配置 - 针对 RTX 4090 (24GB) 优化
+# ==============================================================================
+model:
+  base_model: "Qwen/Qwen3-4B-Instruct-2507"
+  source: "modelscope"  # 国内环境使用 modelscope，海外改为 huggingface
+  
+  # 4-bit 量化配置 (QLoRA)
+  # 理论显存占用: ~6GB base + ~2GB LoRA adapters + ~8GB activations ≈ 16GB
+  load_in_4bit: true
+  bnb_4bit_quant_type: "nf4"           # NF4 比 FP4 精度更高
+  bnb_4bit_use_double_quant: true      # 二次量化，额外节省 ~0.4GB
+  bnb_4bit_compute_dtype: "bfloat16"   # 计算精度，RTX 4090 完美支持
+  
+  max_seq_length: 3072                  # 金融长文档适配
+  attn_implementation: "flash_attention_2"  # Flash Attention 2
+
+# ==============================================================================
+# LoRA 配置 - 符合 2026 年 DPO 最佳实践
+# ==============================================================================
+lora:
+  r: 64                                 # Rank，4B 模型建议 32-64
+  lora_alpha: 128                       # Alpha = 2 * r 是常见配置
+  lora_dropout: 0.05                    # 轻微 Dropout 防止过拟合
+  bias: "none"
+  # 全模块微调 (Qwen 架构)
+  target_modules: 
+    - "q_proj"
+    - "k_proj" 
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+# ==============================================================================
+# 训练配置 - DPO/IPO 优化
+# ==============================================================================
+training:
+  framework: "unsloth"
+  
+  # Batch 配置 (等效 batch_size = 4 * 8 = 32)
+  # RTX 4090 24GB: 4B QLoRA (~6GB) + LoRA (~2GB) + Activations (~10GB) ≈ 18GB
+  per_device_train_batch_size: 1        # 4090 强力推荐 (已降级以修复 OOM)
+  gradient_accumulation_steps: 32        # 1 * 32 = 32 (保持总 Batch 不变)
+  
+  # 学习率 - DPO 需要极低学习率避免灾难性遗忘
+  # 2026 最佳实践: SFT 用 2e-5, DPO 用 5e-7 到 2e-6
+  learning_rate: 5.0e-7
+  lr_scheduler_type: "cosine"           # Cosine 退火
+  
+  # DPO/IPO 损失配置
+  # 【关键修复】beta 值解释：
+  # - IPO loss = (log_ratio_diff - 1/(2*beta))^2
+  # - 当 beta=0.1 时，1/(2*beta)=5，初始 loss = 25（过高）
+  # - 当 beta=0.5 时，1/(2*beta)=1，初始 loss ≈ 1（合理）
+  # - 建议 beta 范围：0.3-0.5 用于 IPO
+  beta: 0.5                             # 从 0.1 调整到 0.5
+  loss_type: "ipo"                      # IPO 比原版 DPO 更稳定
+  label_smoothing: 0.0                  # 不使用标签平滑
+  
+  # 训练周期
+  num_train_epochs: 3
+  # 注意: warmup 由 LANS 模块统一管理，不在此处设置 warmup_ratio
+  
+  # 日志与保存
+  logging_steps: 10                     # 每 10 步记录 (减少 I/O)
+  save_strategy: "steps"                # 按步数保存
+  save_steps: 200                       # 每 200 步保存 (减少 I/O 卡顿风险)
+  save_total_limit: 2                   # 只保留最近 2 个，节省磁盘空间
+  
+  # 精度与优化器
+  bf16: true
+  fp16: false                           # bf16 和 fp16 互斥
+  optim: "adamw_8bit"                   # 8-bit Adam 节省显存
+  
+  # 梯度控制
+  max_grad_norm: 1.0                    # 梯度裁剪
+  gradient_checkpointing: true          # 梯度检查点 (由 Unsloth 自动管理)
+  fast_io: false                        # 保守默认：论文主实验优先稳定与复现
+  dataloader_num_workers: 0             # LANS 动态采样模式建议保持 0
+  dataloader_pin_memory: false          # 可在 fast_io=true 时自动提升为 true
+
+# ==============================================================================
+# 算法模块配置 (OG-LANS 2026 版)
+# ==============================================================================
+algorithms:
+  # DS-CNS: Domain-Specific Consistency-aware Negative Sampling (OG-CNS)
+  # 本体图驱动的负采样模块
+  ds_cns:
+    enabled: true
+    taxonomy_path: "./data/raw/DuEE-Fin/duee_fin_event_schema.json"
+    graph_cache_path: "./data/schemas/duee_fin_graph.gml"
+    # 注意: 以下参数仅在 LANS disabled 时生效 (静态课程模式)
+    # 当 LANS enabled 时，能力值由损失动态驱动
+    static_mode_c0: 0.1                 # 静态模式初始能力值 (仅静态模式)
+    
+    # 本体图分析配置
+    use_ontology_distance: true         # 启用本体图语义距离
+  
+  # OG-LANS: Ontology-Graph Loss-Aware Adaptive Negative Sampling (核心创新)
+  # 【2026 论文定位】与 DA-DPO (TMLR 2026) 的关键差异:
+  # 1. 本体图驱动 vs 黑盒难度估计 (可解释性)
+  # 2. 多粒度扰动 vs 单一扰动 (事件/论元/值级别)
+  # 3. 零额外推理成本 vs 需要 verifier (效率)
+  lans:
+    enabled: true                       # 强烈建议开启
+    
+    # EMA 能力评估
+    ema_decay: 0.95                     # 能力值平滑系数 (0.9-0.99)
+    use_ema: true                       # 【消融实验开关 A4】是否使用 EMA 平滑
+    loss_baseline: 0.5                  # DPO/IPO 损失基准线 α
+                                        # IPO loss (beta=0.5) 通常在 0.3-0.6 收敛
+
+    # 策略阈值 (Magic Numbers 消除)
+    strategies:
+      easy_ratio: 0.7                   # > 70% 距离范围 -> EASY
+      hard_ratio: 0.4                   # < 40% 距离范围 -> HARD
+    
+    # 预热配置
+    warmup_steps: 100                   # 预热步数 (约 3% 的训练)
+    warmup_target: 0.25                 # 预热结束时目标能力值
+    
+    # 能力边界
+    competence_floor: 0.05              # 能力下限 (保证 EASY 样本存在)
+    competence_ceiling: 0.95            # 能力上限 (保留探索空间)
+
+    # 负样本刷新策略
+    refresh_start_epoch: 1              # 从第几个 epoch 开始刷新（1=保留一次初始负样本）
+    refresh_log_interval: 200           # 初始/动态刷新时每 N 条输出一次进度心跳
+    refresh_log_seconds: 30             # 至少每 30 秒输出一次心跳，减少“假卡住”体感
+    
+    # CGA (Contrastive Gradient Amplification)
+    # 与 Hard Negative Sample-Augmented DPO (Dec 2025) 差异化
+    use_cga: true                       # 【消融实验开关 A5】启用对比梯度放大
+    cga_beta: 0.1                       # CGA 强度参数 (0.05-0.2)
+    
+    # 多粒度扰动控制
+    granularity_weights:                # 各粒度的采样权重
+      event_level: 0.3                  # 事件类型替换
+      argument_level: 0.5               # 论元角色替换
+      value_level: 0.2                  # 论元值扰动
+    
+  # SCV: Semantic Consistency Verification
+  scv:
+    enabled: true
+    nli_model: "Fengshenbang/Erlangshen-MegatronBert-1.3B-NLI"
+    nli_threshold: 0.85                 # Entailment 阈值
+    progress_log_interval: 200          # 每 N 次 SCV 检查输出一次心跳
+    progress_log_seconds: 30            # 至少每 30 秒输出一次 SCV 心跳
+    
+    # 滑窗配置 (长文档处理) - 当前为硬编码实现，以下配置为预留扩展
+    # max_premise_length: 400           # [预留] 单窗口最大长度
+    # window_overlap: 0.5               # [预留] 窗口重叠比例
+    # 注: CoT 忠实度检测在 evaluate.py 中自动执行，无需配置
+
+# ==============================================================================
+# API 评估配置 (DeepSeek/OpenAI 兼容接口)
+# ==============================================================================
+api_evaluation:
+  base_url: "https://api.deepseek.com"     # DeepSeek 官方 API
+  api_key: null                            # [安全] 请通过环境变量 DEEPSEEK_API_KEY 设置
+  model: "deepseek-chat"                   # deepseek-chat (V3) 或 deepseek-reasoner (R1)
+  timeout: 60
+  max_retries: 3
+  concurrency: 50                         # API 评估默认并发数
+  fewshot_num_examples: 3                  # Few-shot 示例数量（1-3，默认 3）
+  system_prompt_style: "qwen"              # qwen (适配 prompt_builder) 或 simple
+
+# ==============================================================================
+# 推理配置 (评估时使用)
+# ==============================================================================
+inference:
+  # Qwen3 官方推荐参数
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+  max_new_tokens: 2048
+  do_sample: true                       # 推理时开启采样
+  
+  # 推理时思考控制
+  enable_thinking: true                 # 是否生成 CoT
+  thinking_budget: null                 # null = 不限制思考长度
+
+# ==============================================================================
+# 学术实验控制 (2026 论文消融实验)
+# ==============================================================================
+experiment:
+  # 消融实验标签 (对应论文 Table 3)
+  # full: 完整模型 OG-LANS + SCV + CGA
+  # A1_no_lans: 移除 LANS (静态课程)
+  # A2_no_scv: 移除 SCV 过滤
+  # A3_random_neg: 随机负样本
+  # A4_no_ema: 移除 EMA 平滑
+  # A5_no_cga: 移除 CGA 梯度放大
+  # A6_no_ontology: 移除本体图距离
+  # A7_single_granularity: 仅使用单粒度扰动
+  ablation_tag: "full"
+  
+  # 可复现性 - 由 main.py 读取使用
+  deterministic: true                   # 确定性训练 (cudnn.deterministic)
+  
+  # [预留扩展] 以下配置当前未被代码使用，但可用于后续功能开发
+  # log_strategy_distribution: true     # 记录 EASY/MEDIUM/HARD 分布 (已通过 TensorBoard 实现)
+  # log_competence_curve: true          # 记录能力曲线 (已通过 TensorBoard 实现)
+  # log_cga_weights: true               # 记录 CGA 权重变化
+  # log_granularity_distribution: true  # 记录多粒度分布
+  # export_predictions: true            # 导出预测结果用于错误分析
+
+  # 论文输出格式 - 由 ablation_study.py 使用
+  export_latex_tables: true             # 导出 LaTeX 格式表格
+  compute_bootstrap_ci: true            # 计算 Bootstrap 置信区间
+  bootstrap_n_samples: 1000             # Bootstrap 采样次数

@@ -1,0 +1,197 @@
+# ==============================================================================
+# RA-DPO Config v3.1 (2026 Final - RTX 4090 Optimized)
+# 
+# 审查修订记录:
+# - v2.1: 删除僵尸参数，统一预热机制，校准超参数
+# - v3.0: 适配 RTX 4090 (BS=4, Acc=8)，优化保存策略
+# - v3.1: 最终版 - 添加 experiment 控制，完善注释
+# ==============================================================================
+
+project:
+  name: "RA-DPO-Structured"              # 回归结构化抽取定位
+  version: "3.1.0"
+  description: "LANS-DPO: Loss-Aware Adaptive Negative Sampling for Document-level Event Extraction"
+  seed: 3407
+  # === Debug 模式独立输出目录 ===
+  output_dir: "./logs/debug/checkpoints"           # Debug checkpoints
+  logging_dir: "./logs/debug/tensorboard"          # Debug TensorBoard
+  dataset_cache_dir: "./data/processed/DuEE-Fin"   # 【已实现】静态模式数据集缓存
+  debug_data_dir: "./logs/debug/samples"           # 【已实现】LANS 负样本/SCV 过滤样本导出
+  max_samples: 50                                    # [Debug] 仅使用前 50 条数据快速调试
+
+# ==============================================================================
+# 模型配置 - 针对 RTX 4090 (24GB) 优化
+# ==============================================================================
+model:
+  base_model: "Qwen/Qwen3-4B-Instruct-2507"
+  source: "modelscope"  # 国内环境使用 modelscope，海外改为 huggingface
+  
+  # 4-bit 量化配置 (QLoRA)
+  # 理论显存占用: ~6GB base + ~2GB LoRA adapters + ~8GB activations ≈ 16GB
+  load_in_4bit: true
+  bnb_4bit_quant_type: "nf4"           # NF4 比 FP4 精度更高
+  bnb_4bit_use_double_quant: true      # 二次量化，额外节省 ~0.4GB
+  bnb_4bit_compute_dtype: "bfloat16"   # 计算精度，RTX 4090 完美支持
+  
+  max_seq_length: 4096                  # 金融长文档适配
+  attn_implementation: "flash_attention_2"  # Flash Attention 2
+
+# ==============================================================================
+# LoRA 配置 - 符合 2026 年 DPO 最佳实践
+# ==============================================================================
+lora:
+  r: 64                                 # Rank，4B 模型建议 32-64
+  lora_alpha: 128                       # Alpha = 2 * r 是常见配置
+  lora_dropout: 0.05                    # 轻微 Dropout 防止过拟合
+  bias: "none"
+  # 全模块微调 (Qwen 架构)
+  target_modules: 
+    - "q_proj"
+    - "k_proj" 
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+# ==============================================================================
+# 训练配置 - DPO/IPO 优化
+# ==============================================================================
+training:
+  framework: "unsloth"
+  
+  # Batch 配置 (Debug 模式 - 最小配置)
+  # 等效 batch_size = 1 * 4 = 4 (快速迭代)
+  per_device_train_batch_size: 1        # Debug 模式使用最小 batch
+  gradient_accumulation_steps: 4        # 减少累积步数加快迭代
+  
+  # 学习率 - DPO 需要极低学习率避免灾难性遗忘
+  # 2026 最佳实践: SFT 用 2e-5, DPO 用 5e-7 到 2e-6
+  learning_rate: 5.0e-7
+  lr_scheduler_type: "cosine"           # Cosine 退火
+  
+  # DPO/IPO 损失配置
+  # 【关键修复】beta 值解释：
+  # - IPO loss = (log_ratio_diff - 1/(2*beta))^2
+  # - 当 beta=0.1 时，1/(2*beta)=5，初始 loss = 25（过高）
+  # - 当 beta=0.5 时，1/(2*beta)=1，初始 loss ≈ 1（合理）
+  # - 建议 beta 范围：0.3-0.5 用于 IPO
+  beta: 0.5                             # 【修改】从 0.1 调整到 0.5
+  loss_type: "ipo"                      # IPO 比原版 DPO 更稳定
+  label_smoothing: 0.0                  # 不使用标签平滑
+  
+  # 训练周期
+  num_train_epochs: 1
+  # 注意: warmup 由 LANS 模块统一管理，不在此处设置 warmup_ratio
+  
+  # 日志与保存
+  # 【Debug 优化】禁用训练中自动保存，避免卡住，只在最后手动保存
+  save_strategy: "no"                   # 不自动保存，手动保存
+  max_steps: 20                         # 强制只训练 20 步
+  logging_steps: 1                      # 每步都打印日志，观察 Loss 变化
+  # save_steps: 10                      # 已禁用
+  # save_total_limit: 1                 # 已禁用
+  
+  # 精度与优化器
+  bf16: true
+  fp16: false                           # bf16 和 fp16 互斥
+  optim: "adamw_8bit"                   # 8-bit Adam 节省显存
+  
+  # 梯度控制
+  max_grad_norm: 1.0                    # 梯度裁剪
+  gradient_checkpointing: true          # 梯度检查点 (由 Unsloth 自动管理)
+  fast_io: false                        # Debug 维持稳定设置，避免引入额外随机性
+  dataloader_num_workers: 0
+  dataloader_pin_memory: false
+
+# ==============================================================================
+# 算法模块配置
+# ==============================================================================
+algorithms:
+  # DS-CNS: Dynamic Semantic Consistency-aware Negative Sampling
+  ds_cns:
+    enabled: true
+    taxonomy_path: "./data/raw/DuEE-Fin/duee_fin_event_schema.json"
+    graph_cache_path: "./data/schemas/duee_fin_graph.gml"
+    # 注意: 以下参数仅在 LANS disabled 时生效 (静态课程模式)
+    # 当 LANS enabled 时，能力值由损失动态驱动
+    static_mode_c0: 0.1                 # 静态模式初始能力值 (仅静态模式)
+  
+  # LANS: Loss-Aware Adaptive Negative Sampling (核心创新)
+  lans:
+    enabled: true                       # 强烈建议开启
+    
+    # EMA 能力评估
+    ema_decay: 0.95                     # 能力值平滑系数 (0.9-0.99)
+    loss_baseline: 0.5                  # DPO/IPO 损失基准线 α
+                                        # IPO loss 通常在 0.3-0.6 收敛
+                                        # 建议: 先跑 100 步观察实际损失后调整
+    
+    # 预热配置
+    # 【澄清】LANS warmup vs Trainer warmup 的区别：
+    # - LANS warmup_steps: 控制"负样本难度"的预热，在预热期内能力从 floor 线性增长到 warmup_target
+    # - Trainer lr_warmup: 控制"学习率"的预热（本配置未使用，因为 DPO 使用极低固定 LR）
+    # 两者是正交的，不会冲突
+    warmup_steps: 5                  # 预热步数 (约 3% 的训练)
+    warmup_target: 0.25                 # 预热结束时目标能力值
+    
+    # 能力边界
+    competence_floor: 0.05              # 能力下限 (保证 EASY 样本存在)
+    competence_ceiling: 0.95            # 能力上限 (保留探索空间)
+
+    # 负样本刷新策略
+    refresh_start_epoch: 1              # 从第几个 epoch 开始刷新（1=保留一次初始负样本）
+    refresh_log_interval: 10            # Debug 模式更频繁输出进度心跳
+    refresh_log_seconds: 10             # Debug 模式至少每 10 秒输出一次进度心跳
+    
+    # 【2026 新增】CGA (Contrastive Gradient Amplification)
+    use_cga: true                       # 【消融实验开关 A5】启用对比梯度放大
+    cga_beta: 0.1                       # CGA 强度参数 (0.05-0.2)
+    
+    # 【2026 新增】多粒度扰动控制
+    granularity_weights:                # 各粒度的采样权重
+      event_level: 0.3                  # 事件类型替换
+      argument_level: 0.5               # 论元角色替换
+      value_level: 0.2                  # 论元值扰动
+    
+  # SCV: Semantic Consistency Verification
+  scv:
+    enabled: true
+    nli_model: "Fengshenbang/Erlangshen-MegatronBert-1.3B-NLI"
+    nli_threshold: 0.85                 # Entailment 阈值
+    progress_log_interval: 20           # Debug 模式更频繁输出 SCV 心跳
+    progress_log_seconds: 10            # Debug 模式至少每 10 秒输出一次 SCV 心跳
+    
+    # 【新增】滑窗配置 (长文档处理)
+    max_premise_length: 400             # 单窗口最大长度
+    window_overlap: 0.5                 # 窗口重叠比例
+
+# ==============================================================================
+# 推理配置 (评估时使用)
+# ==============================================================================
+inference:
+  # Qwen3 官方推荐参数
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+  max_new_tokens: 2048
+  do_sample: true                       # 推理时开启采样
+  
+  # 【新增】推理时思考控制
+  enable_thinking: true                 # 是否生成 CoT
+  thinking_budget: null                 # null = 不限制思考长度
+
+# ==============================================================================
+# 学术实验控制 (消融实验用)
+# ==============================================================================
+experiment:
+  # 消融实验标签
+  ablation_tag: "full"                  # full | no_lans | no_scv | no_cot | random_neg
+  
+  # 结果记录
+  log_strategy_distribution: true       # 记录 EASY/MEDIUM/HARD 分布
+  log_competence_curve: true            # 记录能力曲线
+  export_predictions: true              # 导出预测结果用于错误分析
+  
+  # 可复现性
+  deterministic: true                   # 确定性训练

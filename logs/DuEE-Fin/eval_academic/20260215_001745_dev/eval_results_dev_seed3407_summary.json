@@ -1,0 +1,164 @@
+{
+  "meta": {
+    "run_id": "20260215_001756_dev_seed3407_p1353069",
+    "run_dir": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/eval_academic/20260215_001745_dev",
+    "timestamp": "20260215_001756",
+    "model": "Qwen/Qwen3-4B-Instruct-2507",
+    "api_response_models": [],
+    "dataset": "DuEE-Fin",
+    "num_samples": 1171,
+    "split": "dev",
+    "concurrency": null,
+    "has_gold_labels": true,
+    "use_fewshot": false,
+    "fewshot_num_examples": 0,
+    "prompt_style": "qwen",
+    "json_mode": "off",
+    "seed": 3407,
+    "config_hash_sha256": "b0c7a6504fb9766bc41a482e67afcd619d0f75e9b5e17271257ffed86a26b074",
+    "config_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/config.yaml",
+    "command": "evaluate.py --config configs/config.yaml --protocol configs/eval_protocol.yaml --checkpoint logs/DuEE-Fin/checkpoints/main_s3407 --seed 3407 --split dev --batch_size 16 --eval_mode both --role_alias_map configs/role_aliases_duee_fin.yaml --canonical_metric_mode analysis_only --output_file logs/DuEE-Fin/eval_academic/20260215_001745_dev/eval_results_dev_seed3407.jsonl",
+    "bootstrap_samples": null,
+    "compute_ci": false,
+    "protocol_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/eval_protocol.yaml",
+    "protocol_hash_sha256": "2fa1f792eba34ab9423dbbfaa0a6b0260f9c24610650b570ccd174e5506626c7",
+    "protocol_version": "1.0",
+    "primary_metric": "strict_f1",
+    "canonical_metric_mode": "analysis_only",
+    "role_alias_map_path": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/configs/role_aliases_duee_fin.yaml",
+    "role_alias_map_hash_sha256": "df531d0f51331187345167b08985b27520b19cdc5fcda274365cdadd29a7c79b",
+    "role_alias_map_loaded": true,
+    "metrics_report_file": null,
+    "log_file": null,
+    "generation": {
+      "temperature": 0.0,
+      "max_tokens": 2048,
+      "max_retries": null,
+      "json_mode": "off",
+      "do_sample": false,
+      "batch_size": 16
+    },
+    "model_quantized": true,
+    "model_device_strategy": "auto_from_pretrained",
+    "model_target_device": "cuda",
+    "prompt_hashes": {},
+    "checkpoint": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/aidata/tjk/05-mySync/og-lans/logs/DuEE-Fin/checkpoints/main_s3407"
+  },
+  "metrics": {
+    "strict_precision": 0.3985,
+    "strict_recall": 0.3368,
+    "strict_f1": 0.3651,
+    "relaxed_precision": 0.603,
+    "relaxed_recall": 0.4857,
+    "relaxed_f1": 0.538,
+    "type_precision": 0.8305,
+    "type_recall": 0.8812,
+    "type_f1": 0.8551,
+    "parse_success": 1163,
+    "parse_failure": 8,
+    "parse_success_rate": 0.9932,
+    "hallucination_rate": 0.2323,
+    "hallucination_entity_rate": 0.0631,
+    "cot_faithfulness": 1.0,
+    "cot_type_consistency": 1.0,
+    "cot_argument_consistency": 1.0,
+    "schema_compliance_rate": 0.69,
+    "error_breakdown": {
+      "FN_股份回购_回购股份数量": 220,
+      "FN_股份回购_每股交易价格": 185,
+      "FN_股份回购_回购完成时间": 181,
+      "FP_股份回购_回购股份数量": 179,
+      "FN_质押_质押股票/股份数量": 147,
+      "FN_质押_质押方": 122,
+      "FN_亏损_财报周期": 108,
+      "FN_解除质押_质押股票/股份数量": 107,
+      "FN_质押_质押物": 107,
+      "FN_质押_质押物占持股比": 107
+    },
+    "bootstrap_ci": null,
+    "primary_metric": "strict_f1",
+    "primary_metric_value": 0.3651,
+    "auxiliary_metrics": {
+      "canonicalized": {
+        "strict_precision": 0.4167,
+        "strict_recall": 0.3521,
+        "strict_f1": 0.3817,
+        "relaxed_precision": 0.6264,
+        "relaxed_recall": 0.5045,
+        "relaxed_f1": 0.5589,
+        "type_precision": 0.8305,
+        "type_recall": 0.8812,
+        "type_f1": 0.8551,
+        "schema_compliance_rate": 0.778,
+        "canonical_role_rewrites_total": 210,
+        "canonical_role_rewrites_avg": 0.1793
+      }
+    }
+  },
+  "token_usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "avg_tokens_per_sample": 0.0
+  },
+  "api_stats": {
+    "failed_calls": 0,
+    "failed_call_rate": 0.0
+  },
+  "runtime": {
+    "wall_clock_seconds": 10316.1104
+  },
+  "runtime_manifest": {
+    "python": {
+      "version": "3.10.19",
+      "implementation": "CPython",
+      "executable": "/media/pc3048/8e92fcae-9dcb-48b7-818b-82c5f8ed050e/software/anaconda3/envs/tjk_ee/bin/python"
+    },
+    "system": {
+      "platform": "Linux-6.5.0-44-generic-x86_64-with-glibc2.35",
+      "machine": "x86_64",
+      "processor": "x86_64",
+      "hostname": "pc3048-Precision-7920-Tower"
+    },
+    "git": {
+      "commit": null,
+      "dirty": true
+    },
+    "packages": {
+      "torch": "2.6.0+cu118",
+      "transformers": "4.57.6",
+      "trl": "0.24.0",
+      "unsloth": "2026.1.4",
+      "dirtyjson": "1.0.8",
+      "PyYAML": "6.0.3"
+    }
+  },
+  "analysis": {
+    "primary_metric": "strict_f1",
+    "canonical_metric_mode": "analysis_only",
+    "canonical_metrics_available": true,
+    "protocol": {
+      "version": "1.0",
+      "primary_metric": "strict_f1",
+      "canonical_metric_mode": "analysis_only",
+      "evaluation": {
+        "split": "dev",
+        "seeds": [
+          3407,
+          3408,
+          3409
+        ],
+        "bootstrap_samples": 1000,
+        "concurrency": 8,
+        "significance": "paired_permutation",
+        "confidence": 0.95
+      },
+      "reporting": {
+        "include_auxiliary_canonical_metrics": true,
+        "enforce_protocol_match": true,
+        "include_schema_compliance": true,
+        "include_hallucination": true
+      }
+    }
+  }
+}
