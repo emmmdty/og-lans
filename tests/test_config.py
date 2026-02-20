@@ -57,3 +57,21 @@ class TestConfig:
         config = manager.load_config("configs/config_debug.yaml")
         lans_cfg = config["algorithms"]["lans"]
         assert "loss_baseline" in lans_cfg
+
+    def test_rpo_config_exists(self):
+        """主配置需要声明 RPO 混合损失参数。"""
+        manager = ConfigManager()
+        config = manager.load_config("configs/config.yaml")
+        rpo_cfg = config["training"]["rpo"]
+        assert "alpha" in rpo_cfg
+        assert "warmup_steps" in rpo_cfg
+        assert isinstance(rpo_cfg["alpha"], (int, float))
+
+    def test_lans_strategy_floor_config_exists(self):
+        """主配置需声明策略概率下限，保证课程学习不塌缩。"""
+        manager = ConfigManager()
+        config = manager.load_config("configs/config.yaml")
+        st = config["algorithms"]["lans"]["strategies"]
+        assert "hard_floor_prob" in st
+        assert "hard_floor_after_warmup" in st
+        assert "medium_floor_prob" in st

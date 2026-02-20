@@ -67,8 +67,10 @@ training:
   
   # 学习率 - DPO 需要极低学习率避免灾难性遗忘
   # 2026 最佳实践: SFT 用 2e-5, DPO 用 5e-7 到 2e-6
-  learning_rate: 5.0e-7
+  learning_rate: 1.0e-6
   lr_scheduler_type: "cosine"           # Cosine 退火
+  warmup_steps: 5
+  weight_decay: 0.01
   
   # DPO/IPO 损失配置
   # 【关键修复】beta 值解释：
@@ -103,6 +105,11 @@ training:
   fast_io: false                        # Debug 维持稳定设置，避免引入额外随机性
   dataloader_num_workers: 0
   dataloader_pin_memory: false
+  aux_log_interval: 5
+  rpo:
+    alpha: 0.08
+    warmup_steps: 10
+    log_interval: 5
 
 # ==============================================================================
 # 算法模块配置
@@ -143,6 +150,12 @@ algorithms:
     refresh_start_epoch: 1              # 从第几个 epoch 开始刷新（1=保留一次初始负样本）
     refresh_log_interval: 10            # Debug 模式更频繁输出进度心跳
     refresh_log_seconds: 10             # Debug 模式至少每 10 秒输出一次进度心跳
+    strategies:
+      easy_ratio: 0.7
+      hard_ratio: 0.4
+      hard_floor_prob: 0.10
+      hard_floor_after_warmup: 0.20
+      medium_floor_prob: 0.20
     
     # 【2026 新增】CGA (Contrastive Gradient Amplification)
     use_cga: true                       # 【消融实验开关 A5】启用对比梯度放大
@@ -161,6 +174,9 @@ algorithms:
     nli_threshold: 0.85                 # Entailment 阈值
     progress_log_interval: 20           # Debug 模式更频繁输出 SCV 心跳
     progress_log_seconds: 10            # Debug 模式至少每 10 秒输出一次 SCV 心跳
+    cache_enabled: true
+    cache_max_entries: 10000
+    max_retries: 1
     
     # 【新增】滑窗配置 (长文档处理)
     max_premise_length: 400             # 单窗口最大长度

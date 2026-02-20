@@ -17,6 +17,7 @@
 #   ./scripts/run_debug.sh --quick
 #   ./scripts/run_debug.sh --skip-tests
 #   ./scripts/run_debug.sh --skip-eval
+#   ./scripts/run_debug.sh --allow-test-fail
 #
 # ==============================================================================
 
@@ -36,6 +37,7 @@ SKIP_EVAL=false
 MAX_STEPS=20
 EVAL_SAMPLES=10
 QUICK_MODE=false
+ALLOW_TEST_FAIL=false
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -66,6 +68,10 @@ while [[ $# -gt 0 ]]; do
             EVAL_SAMPLES=5
             shift
             ;;
+        --allow-test-fail)
+            ALLOW_TEST_FAIL=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -74,6 +80,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-training   跳过训练"
             echo "  --skip-eval       跳过评估"
             echo "  --quick           快速冒烟模式 (= --max-steps 5 --eval-samples 5)"
+            echo "  --allow-test-fail 单测失败后继续执行（默认失败即退出）"
             echo "  --max-steps N     最大训练步数 (默认: 20)"
             echo "  --eval-samples N  评估样本数 (默认: 10)"
             echo "  -h, --help        显示帮助"
@@ -108,14 +115,26 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"
+resolve_python_bin() {
+    if command -v python &> /dev/null; then
+        echo "python"
+        return
+    fi
+    if command -v python3 &> /dev/null; then
+        echo "python3"
+        return
+    fi
+    echo ""
+}
+PYTHON_BIN="$(resolve_python_bin)"
 
 # 检查 Python 环境
 echo -e "${YELLOW}Checking Python environment...${NC}"
-if command -v python &> /dev/null; then
-    PYTHON_VERSION=$(python --version 2>&1)
+if [[ -n "$PYTHON_BIN" ]]; then
+    PYTHON_VERSION=$("$PYTHON_BIN" --version 2>&1)
     echo -e "  Python: ${GREEN}$PYTHON_VERSION${NC}"
 else
-    echo -e "${RED}ERROR: Python not found!${NC}"
+    echo -e "${RED}ERROR: Neither python nor python3 found!${NC}"
     exit 1
 fi
 
@@ -133,10 +152,16 @@ if [ "$SKIP_TESTS" = false ]; then
     echo -e "${YELLOW}[Step 1/4] Running Unit Tests...${NC}"
     echo "-----------------------------------"
     
-    if python -m pytest tests/test_lans.py tests/test_scv.py -v --tb=short -q; then
+    if "$PYTHON_BIN" -m pytest tests/test_lans.py tests/test_scv.py -v --tb=short -q; then
         echo -e "${GREEN}SUCCESS: All tests passed${NC}"
     else
-        echo -e "${YELLOW}WARNING: Some tests failed, continuing anyway...${NC}"
+        if [ "$ALLOW_TEST_FAIL" = true ]; then
+            echo -e "${YELLOW}WARNING: Some tests failed, but --allow-test-fail is set. Continuing...${NC}"
+        else
+            echo -e "${RED}ERROR: Unit tests failed. Stop here to avoid invalid debug conclusions.${NC}"
+            echo "Hint: use --allow-test-fail if you intentionally want to continue."
+            exit 2
+        fi
     fi
 else
     echo -e "[Step 1/4] Unit Tests ${YELLOW}SKIPPED${NC}"
@@ -155,7 +180,7 @@ if [ "$SKIP_TRAINING" = false ]; then
     
     TRAIN_START=$(date +%s)
 
-    if python main.py --config configs/config_debug.yaml --training.max_steps "$MAX_STEPS"; then
+    if "$PYTHON_BIN" main.py --config configs/config_debug.yaml --training.max_steps "$MAX_STEPS"; then
         TRAIN_END=$(date +%s)
         TRAIN_DURATION=$((TRAIN_END - TRAIN_START))
         echo -e "${GREEN}SUCCESS: Training completed in $((TRAIN_DURATION / 60)) min $((TRAIN_DURATION % 60)) sec${NC}"
@@ -213,7 +238,7 @@ if [ "$SKIP_EVAL" = false ] && [ -n "$LATEST_CKPT" ]; then
     
     EVAL_START=$(date +%s)
     
-    if python evaluate.py --config configs/config_debug.yaml --checkpoint "$LATEST_CKPT" --num_samples "$EVAL_SAMPLES"; then
+    if "$PYTHON_BIN" evaluate.py --config configs/config_debug.yaml --checkpoint "$LATEST_CKPT" --num_samples "$EVAL_SAMPLES"; then
         EVAL_END=$(date +%s)
         EVAL_DURATION=$((EVAL_END - EVAL_START))
         echo -e "${GREEN}SUCCESS: Evaluation completed in $((EVAL_DURATION / 60)) min $((EVAL_DURATION % 60)) sec${NC}"

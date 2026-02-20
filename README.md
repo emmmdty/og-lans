@@ -43,6 +43,7 @@ python scripts/run_api_repro_suite.py --config configs/config.yaml --split dev -
   - token usage and API failure stats
   - bootstrap confidence intervals (when gold labels exist)
 - `scripts/run_api_repro_suite.py` writes:
+  - default output dir: `logs/<dataset>/eval_api/repro_suite_<timestamp>/`
   - `suite_summary.json` (aggregated mean/std/CI)
   - `suite_summary.md` (publication-ready tables)
 
@@ -54,5 +55,5 @@ For full protocol and checklist:
 Validate whether a generated summary contains required reporting fields:
 
 ```bash
-python scripts/validate_academic_artifacts.py --summary logs/DuEE-Fin/eval/eval_summary_<timestamp>.json
+python scripts/validate_academic_artifacts.py --summary logs/DuEE-Fin/eval_api/<run_id>/eval_summary.json
 ```

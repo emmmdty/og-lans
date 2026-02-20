@@ -67,8 +67,10 @@ training:
   
   # 学习率 - DPO 需要极低学习率避免灾难性遗忘
   # 2026 最佳实践: SFT 用 2e-5, DPO 用 5e-7 到 2e-6
-  learning_rate: 5.0e-7
+  learning_rate: 1.0e-6
   lr_scheduler_type: "cosine"           # Cosine 退火
+  warmup_steps: 30                      # 训练前期学习率预热，稳定 LoRA-DPO
+  weight_decay: 0.01
   
   # DPO/IPO 损失配置
   # 【关键修复】beta 值解释：
@@ -85,10 +87,10 @@ training:
   # 注意: warmup 由 LANS 模块统一管理，不在此处设置 warmup_ratio
   
   # 日志与保存
-  logging_steps: 10                     # 每 10 步记录 (减少 I/O)
+  logging_steps: 20                     # 每 20 步记录 (减少 I/O)
   save_strategy: "steps"                # 按步数保存
-  save_steps: 200                       # 每 200 步保存 (减少 I/O 卡顿风险)
-  save_total_limit: 2                   # 只保留最近 2 个，节省磁盘空间
+  save_steps: 300                       # 每 300 步保存 (减少 I/O 卡顿风险)
+  save_total_limit: 3                   # 只保留最近 3 个，节省磁盘空间
   
   # 精度与优化器
   bf16: true
@@ -101,6 +103,11 @@ training:
   fast_io: false                        # 保守默认：论文主实验优先稳定与复现
   dataloader_num_workers: 0             # LANS 动态采样模式建议保持 0
   dataloader_pin_memory: false          # 可在 fast_io=true 时自动提升为 true
+  aux_log_interval: 20                  # 训练附加指标（RPO/CGA）记录频率
+  rpo:
+    alpha: 0.12                         # RPO: DPO/IPO + alpha*SFT(chosen)
+    warmup_steps: 200                   # 逐步引入 SFT anchor，避免早期干扰偏好学习
+    log_interval: 20
 
 # ==============================================================================
 # 算法模块配置 (OG-LANS 2026 版)
@@ -137,6 +144,9 @@ algorithms:
     strategies:
       easy_ratio: 0.7                   # > 70% 距离范围 -> EASY
       hard_ratio: 0.4                   # < 40% 距离范围 -> HARD
+      hard_floor_prob: 0.10             # HARD 最低采样概率（预热期）
+      hard_floor_after_warmup: 0.25     # 预热后 HARD 最低采样概率
+      medium_floor_prob: 0.20           # MEDIUM 最低采样概率，防止分布塌缩
     
     # 预热配置
     warmup_steps: 100                   # 预热步数 (约 3% 的训练)
@@ -169,6 +179,9 @@ algorithms:
     nli_threshold: 0.85                 # Entailment 阈值
     progress_log_interval: 200          # 每 N 次 SCV 检查输出一次心跳
     progress_log_seconds: 30            # 至少每 30 秒输出一次 SCV 心跳
+    cache_enabled: true                 # 缓存重复 SCV 检查，降低“假卡住”体感
+    cache_max_entries: 50000
+    max_retries: 1                      # SCV 命中后重采样重试次数（每条）
     
     # 滑窗配置 (长文档处理) - 当前为硬编码实现，以下配置为预留扩展
     # max_premise_length: 400           # [预留] 单窗口最大长度

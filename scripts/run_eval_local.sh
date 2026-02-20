@@ -10,6 +10,22 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"
+resolve_python_bin() {
+  if command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return
+  fi
+  echo ""
+}
+PYTHON_BIN="$(resolve_python_bin)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "ERROR: neither python nor python3 found in PATH."
+  exit 1
+fi
 
 CONFIG="configs/config.yaml"
 PROTOCOL="configs/eval_protocol.yaml"
@@ -97,7 +113,7 @@ if [[ -z "$DATASET_NAME" ]]; then
 fi
 if [[ -z "$DATASET_NAME" ]]; then
   DATASET_NAME="$(
-    python - "$CONFIG" <<'PY'
+    "$PYTHON_BIN" - "$CONFIG" <<'PY'
 import os
 import sys
 import yaml
@@ -147,7 +163,7 @@ echo "run_dir:    $RUN_DIR"
 echo "=========================================================="
 
 cmd=(
-  python evaluate.py
+  "$PYTHON_BIN" evaluate.py
   --config "$CONFIG"
   --protocol "$PROTOCOL"
   --checkpoint "$CHECKPOINT"

@@ -17,6 +17,23 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"  # Ensure realtime logging without Python stdout buffering
 
+resolve_python_bin() {
+  if command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return
+  fi
+  echo ""
+}
+PYTHON_BIN="$(resolve_python_bin)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "ERROR: neither python nor python3 found in PATH."
+  exit 1
+fi
+
 CONFIG="configs/config.yaml"
 PROTOCOL="configs/eval_protocol.yaml"
 ROLE_ALIAS_MAP="configs/role_aliases_duee_fin.yaml"
@@ -34,6 +51,8 @@ DO_SAMPLE=0                     # keep 0 for academic deterministic eval
 OUT_DIR=""
 TAG=""
 CONTINUE_ON_ERROR=0
+SEED_POLICY="train_seed"        # train_seed | eval_seed
+ALLOW_WEAK_SEED_SWEEP=0
 TAIL_ON_FAIL=120
 ORIGINAL_CMD="bash $0 $*"
 
@@ -57,22 +76,30 @@ Options:
   --eval-mode <strict|relaxed|both>
                                Metric mode (default: both)
   --seeds <csv>                Seeds, e.g. 3407,3408,3409
+  --seed-policy <mode>         train_seed|eval_seed (default: train_seed)
   --num-samples <int>          Evaluate first N samples
   --use-oneshot                Enable one-shot prompt
   --do-sample                  Enable sampling decode (not recommended for papers)
+  --allow-weak-seed-sweep      Allow eval_seed with deterministic decode on single checkpoint
   --out-dir <path>             Output directory (default auto-generated)
   --tag <str>                  Optional run tag appended to output directory
   --continue-on-error          Continue remaining seeds when one seed fails
   -h, --help                   Show help
 
 Examples:
+  # 推荐论文口径：每个训练种子对应一个checkpoint
   bash scripts/run_eval_academic.sh \
-    --checkpoint logs/DuEE-Fin/checkpoints/exp1 \
+    --seed-policy train_seed \
+    --seeds 3407,3408,3409 \
+    --checkpoint logs/DuEE-Fin/checkpoints/exp_seed3407,logs/DuEE-Fin/checkpoints/exp_seed3408,logs/DuEE-Fin/checkpoints/exp_seed3409 \
     --split dev --eval-mode both
 
+  # 探索口径：单checkpoint做eval-seed sweep（需显式允许）
   bash scripts/run_eval_academic.sh \
+    --seed-policy eval_seed \
     --checkpoint logs/DuEE-Fin/checkpoints/exp1 \
-    --num-samples 200 --seeds 3407,3408,3409
+    --num-samples 200 --seeds 3407,3408,3409 \
+    --allow-weak-seed-sweep
 EOF
 }
 
@@ -89,9 +116,11 @@ while [[ $# -gt 0 ]]; do
     --batch-size) BATCH_SIZE="${2:-}"; shift 2 ;;
     --eval-mode) EVAL_MODE="${2:-}"; shift 2 ;;
     --seeds) SEEDS="${2:-}"; shift 2 ;;
+    --seed-policy) SEED_POLICY="${2:-}"; shift 2 ;;
     --num-samples) NUM_SAMPLES="${2:-}"; shift 2 ;;
     --use-oneshot) USE_ONESHOT=1; shift ;;
     --do-sample) DO_SAMPLE=1; shift ;;
+    --allow-weak-seed-sweep) ALLOW_WEAK_SEED_SWEEP=1; shift ;;
     --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
     --tag) TAG="${2:-}"; shift 2 ;;
     --continue-on-error) CONTINUE_ON_ERROR=1; shift ;;
@@ -105,6 +134,23 @@ if [[ -z "$CHECKPOINT" ]]; then
   usage
   exit 1
 fi
+if [[ "$SEED_POLICY" != "train_seed" && "$SEED_POLICY" != "eval_seed" ]]; then
+  echo "ERROR: --seed-policy must be one of: train_seed, eval_seed."
+  exit 1
+fi
+
+IFS=',' read -r -a CHECKPOINT_ARR_RAW <<< "$CHECKPOINT"
+declare -a CHECKPOINT_ARR
+for ckpt_raw in "${CHECKPOINT_ARR_RAW[@]}"; do
+  ckpt="$(echo "$ckpt_raw" | xargs)"
+  [[ -z "$ckpt" ]] && continue
+  CHECKPOINT_ARR+=("$ckpt")
+done
+if [[ ${#CHECKPOINT_ARR[@]} -eq 0 ]]; then
+  echo "ERROR: no valid checkpoint parsed from --checkpoint."
+  exit 1
+fi
+PRIMARY_CHECKPOINT="${CHECKPOINT_ARR[0]}"
 
 if [[ ! -f "$CONFIG" ]]; then
   echo "ERROR: config not found: $CONFIG"
@@ -115,11 +161,13 @@ if [[ ! -f "$PROTOCOL" ]]; then
   exit 1
 fi
 
-if [[ ! -e "$CHECKPOINT" ]]; then
-  echo "ERROR: checkpoint path does not exist: $CHECKPOINT"
-  exit 1
-fi
-if ! python - <<'PY' >/dev/null 2>&1
+for ckpt in "${CHECKPOINT_ARR[@]}"; do
+  if [[ ! -e "$ckpt" ]]; then
+    echo "ERROR: checkpoint path does not exist: $ckpt"
+    exit 1
+  fi
+done
+if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
 import yaml  # noqa: F401
 PY
 then
@@ -127,14 +175,53 @@ then
   exit 1
 fi
 
+IFS=',' read -r -a SEED_ARR <<< "$SEEDS"
+declare -a CLEAN_SEEDS
+for seed_raw in "${SEED_ARR[@]}"; do
+  seed="$(echo "$seed_raw" | xargs)"
+  [[ -z "$seed" ]] && continue
+  CLEAN_SEEDS+=("$seed")
+done
+if [[ ${#CLEAN_SEEDS[@]} -eq 0 ]]; then
+  echo "ERROR: no valid seeds parsed from --seeds."
+  exit 1
+fi
+SEEDS="$(IFS=,; echo "${CLEAN_SEEDS[*]}")"
+SEED_ARR=("${CLEAN_SEEDS[@]}")
+
+if [[ "$SEED_POLICY" == "train_seed" ]]; then
+  if [[ ${#SEED_ARR[@]} -gt 1 && ${#CHECKPOINT_ARR[@]} -eq 1 ]]; then
+    echo "ERROR: seed_policy=train_seed requires one checkpoint per seed."
+    echo "  seeds: ${SEED_ARR[*]}"
+    echo "  checkpoints parsed: ${#CHECKPOINT_ARR[@]}"
+    echo "Hint: pass comma-separated checkpoints matching seeds, or use --seed-policy eval_seed."
+    exit 1
+  fi
+  if [[ ${#CHECKPOINT_ARR[@]} -ne ${#SEED_ARR[@]} ]]; then
+    echo "ERROR: seed_policy=train_seed requires len(checkpoints) == len(seeds)."
+    echo "  seeds: ${#SEED_ARR[@]}, checkpoints: ${#CHECKPOINT_ARR[@]}"
+    exit 1
+  fi
+else
+  if [[ ${#CHECKPOINT_ARR[@]} -ne 1 ]]; then
+    echo "ERROR: seed_policy=eval_seed supports exactly one checkpoint."
+    exit 1
+  fi
+  if [[ "$DO_SAMPLE" -eq 0 && ${#SEED_ARR[@]} -gt 1 && "$ALLOW_WEAK_SEED_SWEEP" -eq 0 ]]; then
+    echo "ERROR: eval_seed + deterministic decode on one checkpoint has weak statistical meaning."
+    echo "Use --allow-weak-seed-sweep to bypass, or switch to --seed-policy train_seed."
+    exit 1
+  fi
+fi
+
 RUN_TS="$(date +%Y%m%d_%H%M%S)"
 DATASET="$DATASET_NAME"
-if [[ -z "$DATASET" && "$CHECKPOINT" == *"/checkpoints/"* ]]; then
-  DATASET="$(echo "$CHECKPOINT" | awk -F'/checkpoints/' '{print $1}' | awk -F'/' '{print $NF}')"
+if [[ -z "$DATASET" && "$PRIMARY_CHECKPOINT" == *"/checkpoints/"* ]]; then
+  DATASET="$(echo "$PRIMARY_CHECKPOINT" | awk -F'/checkpoints/' '{print $1}' | awk -F'/' '{print $NF}')"
 fi
 if [[ -z "$DATASET" ]]; then
   DATASET="$(
-    python - "$CONFIG" <<'PY'
+    "$PYTHON_BIN" - "$CONFIG" <<'PY'
 import os
 import sys
 import yaml
@@ -154,7 +241,7 @@ fi
 [[ -z "$DATASET" ]] && DATASET="DuEE-Fin"
 
 mapfile -t _dataset_ctx < <(
-  python - "$CONFIG" "$DATASET" "$SPLIT" <<'PY'
+  "$PYTHON_BIN" - "$CONFIG" "$DATASET" "$SPLIT" <<'PY'
 import os
 import sys
 import yaml
@@ -205,11 +292,7 @@ if [[ ! -f "$SCHEMA_FILE" ]]; then
   echo "ERROR: schema file missing: $SCHEMA_FILE"
   exit 1
 fi
-if ! command -v python >/dev/null 2>&1; then
-  echo "ERROR: python not found in PATH."
-  exit 1
-fi
-if ! python - <<'PY' >/dev/null 2>&1
+if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
 import importlib
 for m in ("torch", "yaml", "tqdm"):
     importlib.import_module(m)
@@ -232,6 +315,8 @@ echo "split:      $SPLIT"
 echo "eval_mode:  $EVAL_MODE"
 echo "batch_size: $BATCH_SIZE"
 echo "seeds:      $SEEDS"
+echo "seed_policy:$SEED_POLICY"
+echo "checkpoints:${CHECKPOINT_ARR[*]}"
 echo "num_samples:${NUM_SAMPLES:-ALL}"
 echo "oneshot:    $USE_ONESHOT"
 echo "do_sample:  $DO_SAMPLE"
@@ -240,7 +325,7 @@ echo "tail_on_fail: $TAIL_ON_FAIL lines"
 echo "============================================================"
 
 MANIFEST_JSON="${OUT_DIR}/run_manifest.json"
-python - "$MANIFEST_JSON" "$RUN_TS" "$CHECKPOINT" "$DATASET" "$DATASET_DIR" "$SCHEMA_FILE" "$SPLIT_FILE" "$CONFIG" "$PROTOCOL" "$ROLE_ALIAS_MAP" "$CANONICAL_MODE" "$PRIMARY_METRIC" "$SPLIT" "$EVAL_MODE" "$BATCH_SIZE" "$SEEDS" "${NUM_SAMPLES:-ALL}" "$USE_ONESHOT" "$DO_SAMPLE" "$CONTINUE_ON_ERROR" "$OUT_DIR" "$ORIGINAL_CMD" <<'PY'
+"$PYTHON_BIN" - "$MANIFEST_JSON" "$RUN_TS" "$CHECKPOINT" "$SEED_POLICY" "$DATASET" "$DATASET_DIR" "$SCHEMA_FILE" "$SPLIT_FILE" "$CONFIG" "$PROTOCOL" "$ROLE_ALIAS_MAP" "$CANONICAL_MODE" "$PRIMARY_METRIC" "$SPLIT" "$EVAL_MODE" "$BATCH_SIZE" "$SEEDS" "${NUM_SAMPLES:-ALL}" "$USE_ONESHOT" "$DO_SAMPLE" "$CONTINUE_ON_ERROR" "$OUT_DIR" "$ORIGINAL_CMD" <<'PY'
 import hashlib
 import json
 import os
@@ -252,7 +337,8 @@ import sys
 (
     manifest_path,
     run_ts,
-    checkpoint,
+    checkpoint_csv,
+    seed_policy,
     dataset_name,
     dataset_dir,
     schema_file,
@@ -274,6 +360,9 @@ import sys
     command,
 ) = sys.argv[1:]
 
+checkpoints = [x.strip() for x in checkpoint_csv.split(",") if x.strip()]
+abs_checkpoints = [os.path.abspath(x) for x in checkpoints]
+
 def safe_git(cmd):
     try:
         return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
@@ -292,7 +381,9 @@ manifest = {
     "status": "running",
     "run_ts": run_ts,
     "command": command,
-    "checkpoint": os.path.abspath(checkpoint),
+    "checkpoint": abs_checkpoints[0] if abs_checkpoints else None,
+    "checkpoints": abs_checkpoints,
+    "seed_policy": seed_policy,
     "dataset": dataset_name,
     "dataset_dir": os.path.abspath(dataset_dir),
     "schema_file": os.path.abspath(schema_file),
@@ -334,24 +425,27 @@ with open(manifest_path, "w", encoding="utf-8") as f:
     json.dump(manifest, f, ensure_ascii=False, indent=2)
 PY
 
-IFS=',' read -r -a SEED_ARR <<< "$SEEDS"
-
 declare -a SUCCESS_SEEDS
 declare -a FAILED_SEEDS
 
-for seed_raw in "${SEED_ARR[@]}"; do
+for idx in "${!SEED_ARR[@]}"; do
+  seed_raw="${SEED_ARR[$idx]}"
   seed="$(echo "$seed_raw" | xargs)"
   [[ -z "$seed" ]] && continue
+  checkpoint_for_seed="$PRIMARY_CHECKPOINT"
+  if [[ "$SEED_POLICY" == "train_seed" ]]; then
+    checkpoint_for_seed="${CHECKPOINT_ARR[$idx]}"
+  fi
 
   result_file="${OUT_DIR}/eval_results_${SPLIT}_seed${seed}.jsonl"
   metrics_file="${OUT_DIR}/eval_results_${SPLIT}_seed${seed}_metrics.json"
   log_file="${OUT_DIR}/run_seed${seed}.log"
 
   cmd=(
-    python evaluate.py
+    "$PYTHON_BIN" evaluate.py
     --config "$CONFIG"
     --protocol "$PROTOCOL"
-    --checkpoint "$CHECKPOINT"
+    --checkpoint "$checkpoint_for_seed"
     --seed "$seed"
     --split "$SPLIT"
     --batch_size "$BATCH_SIZE"
@@ -375,6 +469,7 @@ for seed_raw in "${SEED_ARR[@]}"; do
 
   echo
   echo ">>> Seed ${seed}"
+  echo "Checkpoint: ${checkpoint_for_seed}"
   echo "CMD: ${cmd[*]}"
   echo "LOG: ${log_file}"
 
@@ -417,15 +512,16 @@ echo "Successful seeds: ${SUCCESS_SEEDS[*]:-none}"
 echo "Failed seeds:     ${FAILED_SEEDS[*]:-none}"
 
 if [[ ${#SUCCESS_SEEDS[@]} -eq 0 ]]; then
-  python - "$MANIFEST_JSON" "${FAILED_SEEDS[*]:-}" <<'PY'
+  "$PYTHON_BIN" - "$MANIFEST_JSON" "${FAILED_SEEDS[*]:-}" "$SEED_POLICY" <<'PY'
 import json
 import sys
 
-manifest_path, failed_raw = sys.argv[1:]
+manifest_path, failed_raw, seed_policy = sys.argv[1:]
 failed_seeds = [x for x in failed_raw.split() if x]
 with open(manifest_path, "r", encoding="utf-8") as f:
     manifest = json.load(f)
 manifest["status"] = "failed"
+manifest["seed_policy"] = seed_policy
 manifest["results"] = {"successful_seeds": [], "failed_seeds": [int(x) for x in failed_seeds]}
 with open(manifest_path, "w", encoding="utf-8") as f:
     json.dump(manifest, f, ensure_ascii=False, indent=2)
@@ -434,7 +530,7 @@ PY
   exit 3
 fi
 
-python - "$OUT_DIR" "${SUCCESS_SEEDS[@]}" <<'PY'
+"$PYTHON_BIN" - "$OUT_DIR" "$SEED_POLICY" "${SUCCESS_SEEDS[@]}" <<'PY'
 import json
 import math
 import statistics
@@ -442,7 +538,8 @@ import sys
 from pathlib import Path
 
 out_dir = Path(sys.argv[1])
-seeds = sys.argv[2:]
+seed_policy = sys.argv[2]
+seeds = sys.argv[3:]
 
 def read_metrics(seed: str):
     p = out_dir / f"eval_results_dev_seed{seed}_metrics.json"
@@ -489,6 +586,7 @@ for k in keys:
 
 summary = {
     "n_runs": len(rows),
+    "seed_policy": seed_policy,
     "seeds": [r["seed"] for r in rows],
     "metrics_files": files,
     "aggregate": agg,
@@ -505,6 +603,7 @@ lines = []
 lines.append("# OG-LANS 评估汇总")
 lines.append("")
 lines.append(f"- Runs: {summary['n_runs']}")
+lines.append(f"- Seed policy: {summary['seed_policy']}")
 lines.append(f"- Seeds: {summary['seeds']}")
 lines.append("")
 lines.append("| Metric | Mean | Std | Min | Max |")
@@ -530,12 +629,12 @@ print(f"Saved: {out_json}")
 print(f"Saved: {out_md}")
 PY
 
-python - "$MANIFEST_JSON" "$OUT_DIR" "${SUCCESS_SEEDS[*]:-}" "${FAILED_SEEDS[*]:-}" <<'PY'
+"$PYTHON_BIN" - "$MANIFEST_JSON" "$OUT_DIR" "${SUCCESS_SEEDS[*]:-}" "${FAILED_SEEDS[*]:-}" "$SEED_POLICY" <<'PY'
 import json
 import os
 import sys
 
-manifest_path, out_dir, success_raw, failed_raw = sys.argv[1:]
+manifest_path, out_dir, success_raw, failed_raw, seed_policy = sys.argv[1:]
 success_seeds = [x for x in success_raw.split() if x]
 failed_seeds = [x for x in failed_raw.split() if x]
 
@@ -543,6 +642,7 @@ with open(manifest_path, "r", encoding="utf-8") as f:
     manifest = json.load(f)
 
 manifest["status"] = "completed"
+manifest["seed_policy"] = seed_policy
 manifest["results"] = {
     "successful_seeds": [int(x) for x in success_seeds],
     "failed_seeds": [int(x) for x in failed_seeds],

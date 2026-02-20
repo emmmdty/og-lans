@@ -35,11 +35,11 @@ python evaluate_api.py \
   --use_fewshot
 ```
 
-Expected outputs under `logs/DuEE-Fin/eval/`:
+Expected outputs under `logs/DuEE-Fin/eval_api/<run_id>/`:
 
-- `eval_results_deepseek_<split>_<shot>.jsonl`
-- `eval_summary_<timestamp>.json`
-- `eval_api_<timestamp>.log`
+- `eval_results.jsonl`
+- `eval_summary.json`
+- `run_manifest.json`
 
 The summary includes:
 
@@ -64,8 +64,8 @@ python scripts/run_api_repro_suite.py \
 
 Expected outputs:
 
-- `logs/DuEE-Fin/eval/repro_suite_<timestamp>/suite_summary.json`
-- `logs/DuEE-Fin/eval/repro_suite_<timestamp>/suite_summary.md`
+- `logs/DuEE-Fin/eval_api/repro_suite_<timestamp>/suite_summary.json`
+- `logs/DuEE-Fin/eval_api/repro_suite_<timestamp>/suite_summary.md`
 
 `suite_summary.json` includes:
 

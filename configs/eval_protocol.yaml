@@ -19,3 +19,19 @@ reporting:
   enforce_protocol_match: true
   include_schema_compliance: true
   include_hallucination: true
+
+metrics:
+  version: "2.0"
+  report_level: "core_plus_diagnostics"   # core_only | core_plus_diagnostics
+  cot:
+    enabled: true
+    mode: "strict_span"                   # strict_span | weak_mention
+    require_thought_block: true
+  relaxed:
+    match_mode: "include_or_char_overlap" # include_or_char_overlap | span_iou
+    char_overlap_threshold: 0.5
+    span_iou_threshold: 0.5
+  hallucination:
+    match_mode: "normalized_substring"    # normalized_substring | exact_span
+  schema:
+    mode: "schema_strict"                 # syntax_only | schema_strict

@@ -81,6 +81,12 @@ class MetricsReport:
     total_samples: int = 0
     parse_errors: int = 0
     parse_error_rate: float = 0.0
+    parse_raw_success: int = 0
+    parse_repair_success: int = 0
+    parse_extraction_failures: int = 0
+    parse_raw_success_rate: float = 0.0
+    parse_repair_success_rate: float = 0.0
+    parse_extraction_failure_rate: float = 0.0
     
     # 幻觉检测指标
     hallucination_rate: float = 0.0  # 包含幻觉的样本比例
@@ -90,12 +96,18 @@ class MetricsReport:
     cot_faithfulness: float = 0.0  # CoT 推理与 JSON 输出的一致性
     cot_type_consistency: float = 0.0  # 事件类型一致性
     cot_argument_consistency: float = 0.0  # 论元一致性
+    cot_checked: int = 0
+    cot_skipped: int = 0
+    cot_parse_fail: int = 0
+    cot_coverage_rate: float = 0.0
     
     # Schema 符合度
     schema_compliance_rate: float = 0.0  # 输出符合 schema 的比例
     
     # 详细错误分析
     error_breakdown: Dict = field(default_factory=dict)
+    hallucination_breakdown: Dict = field(default_factory=dict)
+    schema_violation_breakdown: Dict = field(default_factory=dict)
 
 
 # ===========================
@@ -110,7 +122,32 @@ class AcademicEventEvaluator:
     - Relaxed: argument 部分匹配（包含关系）
     """
     
-    def __init__(self, relaxed_match_threshold: float = 0.5):
+    DEFAULT_METRIC_SETTINGS: Dict[str, Any] = {
+        "version": "2.0",
+        "report_level": "core_plus_diagnostics",  # core_only | core_plus_diagnostics
+        "cot": {
+            "enabled": True,
+            "mode": "strict_span",  # strict_span | weak_mention
+            "require_thought_block": True,
+        },
+        "relaxed": {
+            "match_mode": "include_or_char_overlap",  # include_or_char_overlap | span_iou
+            "char_overlap_threshold": 0.5,
+            "span_iou_threshold": 0.5,
+        },
+        "hallucination": {
+            "match_mode": "normalized_substring",  # normalized_substring | exact_span
+        },
+        "schema": {
+            "mode": "schema_strict",  # syntax_only | schema_strict
+        },
+    }
+
+    def __init__(
+        self,
+        relaxed_match_threshold: float = 0.5,
+        metric_settings: Optional[Dict[str, Any]] = None,
+    ):
         """
         初始化评估器
         
@@ -118,10 +155,25 @@ class AcademicEventEvaluator:
             relaxed_match_threshold: Relaxed 模式的最小重叠比例
         """
         self.relaxed_threshold = relaxed_match_threshold
+        self.metric_settings = self._merge_metric_settings(metric_settings or {})
         self.json_parser = RobustJSONParser()
         
         # 统计数据
         self.reset()
+
+    @classmethod
+    def _deep_merge_dict(cls, base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        merged = copy.deepcopy(base)
+        for key, value in (override or {}).items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = cls._deep_merge_dict(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
+    @classmethod
+    def _merge_metric_settings(cls, override: Dict[str, Any]) -> Dict[str, Any]:
+        return cls._deep_merge_dict(cls.DEFAULT_METRIC_SETTINGS, override or {})
     
     def reset(self):
         """重置所有统计数据"""
@@ -144,6 +196,9 @@ class AcademicEventEvaluator:
             # 解析统计
             "total_samples": 0,
             "parse_errors": 0,
+            "parse_raw_success": 0,
+            "parse_repair_success": 0,
+            "parse_extraction_failures": 0,
             
             # 错误类型分布
             "error_types": defaultdict(int),
@@ -152,15 +207,19 @@ class AcademicEventEvaluator:
             "hallucination_samples": 0,
             "total_entities": 0,
             "hallucinated_entities": 0,
+            "hallucination_types": defaultdict(int),
             
             # CoT 忠实度
             "cot_checked": 0,
+            "cot_skipped": 0,
+            "cot_parse_fail": 0,
             "cot_type_consistent": 0,
             "cot_argument_consistent": 0,
             "cot_fully_consistent": 0,
             
             # Schema 符合度
-            "schema_compliant": 0
+            "schema_compliant": 0,
+            "schema_violations": defaultdict(int),
         }
     
     @staticmethod
@@ -195,6 +254,73 @@ class AcademicEventEvaluator:
         text = text.lower()
         
         return text
+
+    @staticmethod
+    def _extract_thought_text(full_response: str, require_block: bool) -> Tuple[Optional[str], str]:
+        """
+        提取 thought 文本。
+
+        Returns:
+            (thought_text, reason)
+            reason: ok | missing_thought | missing_json_boundary
+        """
+        if not full_response:
+            return None, "missing_thought"
+
+        thought_match = re.search(r"<thought>(.*?)</thought>", full_response, re.DOTALL | re.IGNORECASE)
+        if thought_match:
+            return thought_match.group(1), "ok"
+
+        if require_block:
+            return None, "missing_thought"
+
+        json_start = full_response.find("```json")
+        if json_start > 0:
+            return full_response[:json_start], "ok"
+        return None, "missing_json_boundary"
+
+    @staticmethod
+    def _longest_common_substring_ratio(a: str, b: str) -> float:
+        """基于最长公共子串的近似 Span-IoU。"""
+        if not a or not b:
+            return 0.0
+        la, lb = len(a), len(b)
+        dp = [0] * (lb + 1)
+        best = 0
+        for i in range(1, la + 1):
+            prev = 0
+            for j in range(1, lb + 1):
+                tmp = dp[j]
+                if a[i - 1] == b[j - 1]:
+                    dp[j] = prev + 1
+                    if dp[j] > best:
+                        best = dp[j]
+                else:
+                    dp[j] = 0
+                prev = tmp
+        den = la + lb - best
+        return (best / den) if den > 0 else 0.0
+
+    def _extract_thought_roles(self, thought_text: str) -> Set[Tuple[str, str]]:
+        """
+        从 thought 文本中抽取 (role, argument) 近似对。
+        支持格式: 角色 = "值" / 角色: 值
+        """
+        if not thought_text:
+            return set()
+        pairs: Set[Tuple[str, str]] = set()
+        for line in thought_text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            match = re.search(r"([^\s:：=]+)\s*[:：=]\s*[\"“]?([^\"”\n]+)[\"”]?", line)
+            if not match:
+                continue
+            role = self.normalize_text(match.group(1))
+            arg = self.normalize_text(match.group(2))
+            if role and arg:
+                pairs.add((role, arg))
+        return pairs
     
     def extract_triplets_strict(self, events: List[Dict]) -> Set[Tuple[str, str, str]]:
         """
@@ -322,26 +448,29 @@ class AcademicEventEvaluator:
         if not pred_norm or not gold_norm:
             return False
         
+        mode = str(self.metric_settings.get("relaxed", {}).get("match_mode", "include_or_char_overlap"))
+        char_thr = float(self.metric_settings.get("relaxed", {}).get("char_overlap_threshold", self.relaxed_threshold))
+        span_thr = float(self.metric_settings.get("relaxed", {}).get("span_iou_threshold", self.relaxed_threshold))
+
         # 完全匹配
         if pred_norm == gold_norm:
             return True
-        
-        # 包含关系
+
+        if mode == "span_iou":
+            return self._longest_common_substring_ratio(pred_norm, gold_norm) >= span_thr
+
+        # include_or_char_overlap: 默认兼容旧逻辑
         if pred_norm in gold_norm or gold_norm in pred_norm:
             return True
-        
-        # 字符级重叠（Jaccard-like）
+
         pred_chars = set(pred_norm)
         gold_chars = set(gold_norm)
-        
         if not pred_chars or not gold_chars:
             return False
-        
         intersection = len(pred_chars & gold_chars)
         union = len(pred_chars | gold_chars)
-        
         overlap = intersection / union if union > 0 else 0
-        return overlap >= self.relaxed_threshold
+        return overlap >= char_thr
     
     def compute_relaxed_matches(
         self, 
@@ -378,7 +507,13 @@ class AcademicEventEvaluator:
         
         return tp
     
-    def update(self, pred_events: List[Dict], gold_events: List[Dict], parse_success: bool = True):
+    def update(
+        self,
+        pred_events: List[Dict],
+        gold_events: List[Dict],
+        parse_success: bool = True,
+        parse_diagnostics: Optional[Dict[str, Any]] = None,
+    ):
         """
         更新评估统计
         
@@ -386,11 +521,22 @@ class AcademicEventEvaluator:
             pred_events: 预测的事件列表
             gold_events: 标准事件列表
             parse_success: 解析是否成功
+            parse_diagnostics: 解析诊断信息（提取方式、修复步骤等）
         """
         self.stats["total_samples"] += 1
-        
+
+        parse_diagnostics = parse_diagnostics or {}
+        repair_steps = parse_diagnostics.get("repair_steps", []) or []
+        extraction_method = str(parse_diagnostics.get("extraction_method", ""))
         if not parse_success:
             self.stats["parse_errors"] += 1
+            if extraction_method == "no_json_found":
+                self.stats["parse_extraction_failures"] += 1
+        else:
+            if repair_steps:
+                self.stats["parse_repair_success"] += 1
+            else:
+                self.stats["parse_raw_success"] += 1
         
         # === Strict 模式 ===
         pred_strict = self.extract_triplets_strict(pred_events)
@@ -441,10 +587,16 @@ class AcademicEventEvaluator:
         report = MetricsReport()
         report.total_samples = self.stats["total_samples"]
         report.parse_errors = self.stats["parse_errors"]
+        report.parse_raw_success = self.stats["parse_raw_success"]
+        report.parse_repair_success = self.stats["parse_repair_success"]
+        report.parse_extraction_failures = self.stats["parse_extraction_failures"]
         
         # 解析错误率
         if report.total_samples > 0:
             report.parse_error_rate = report.parse_errors / report.total_samples
+            report.parse_raw_success_rate = report.parse_raw_success / report.total_samples
+            report.parse_repair_success_rate = report.parse_repair_success / report.total_samples
+            report.parse_extraction_failure_rate = report.parse_extraction_failures / report.total_samples
         
         # === Strict F1 ===
         s_tp = self.stats["strict_tp"]
@@ -484,10 +636,16 @@ class AcademicEventEvaluator:
         
         # === CoT 忠实度指标 ===
         cot_checked = self.stats["cot_checked"]
+        report.cot_checked = cot_checked
+        report.cot_skipped = self.stats["cot_skipped"]
+        report.cot_parse_fail = self.stats["cot_parse_fail"]
         if cot_checked > 0:
             report.cot_faithfulness = self.stats["cot_fully_consistent"] / cot_checked
             report.cot_type_consistency = self.stats["cot_type_consistent"] / cot_checked
             report.cot_argument_consistency = self.stats["cot_argument_consistent"] / cot_checked
+        cot_den = cot_checked + report.cot_skipped + report.cot_parse_fail
+        if cot_den > 0:
+            report.cot_coverage_rate = cot_checked / cot_den
         
         # === Schema 符合度 ===
         if report.total_samples > 0:
@@ -500,10 +658,20 @@ class AcademicEventEvaluator:
             reverse=True
         )[:10]
         report.error_breakdown = dict(sorted_errors)
+        report.hallucination_breakdown = dict(
+            sorted(self.stats["hallucination_types"].items(), key=lambda x: x[1], reverse=True)[:10]
+        )
+        report.schema_violation_breakdown = dict(
+            sorted(self.stats["schema_violations"].items(), key=lambda x: x[1], reverse=True)[:10]
+        )
         
         return report
     
-    def check_hallucination(self, source_text: str, pred_events: List[Dict]) -> Tuple[bool, int, int]:
+    def check_hallucination(
+        self,
+        source_text: str,
+        pred_events: List[Dict],
+    ) -> Tuple[bool, int, int, Dict[str, int]]:
         """
         检测幻觉
         
@@ -512,13 +680,14 @@ class AcademicEventEvaluator:
             pred_events: 预测事件列表
         
         Returns:
-            (是否有幻觉, 幻觉实体数, 总实体数)
+            (是否有幻觉, 幻觉实体数, 总实体数, 分类型统计)
         """
         has_hallucination = False
         hallucinated_count = 0
         total_count = 0
-        
-        # 清理原文
+        breakdown: Dict[str, int] = defaultdict(int)
+
+        match_mode = str(self.metric_settings.get("hallucination", {}).get("match_mode", "normalized_substring"))
         clean_source = re.sub(r'\s+', '', source_text)
         
         if not isinstance(pred_events, list):
@@ -528,6 +697,7 @@ class AcademicEventEvaluator:
             if not isinstance(event, dict):
                 continue
             
+            event_type = str(event.get("event_type", "UNKNOWN"))
             for arg in event.get("arguments", []):
                 if not isinstance(arg, dict):
                     continue
@@ -538,20 +708,26 @@ class AcademicEventEvaluator:
                 
                 total_count += 1
                 clean_arg = re.sub(r'\s+', '', argument)
-                
-                # 检查是否在原文中
-                if clean_arg not in clean_source:
+                role = str(arg.get("role", "UNKNOWN"))
+                arg_in_text = False
+                if match_mode == "exact_span":
+                    arg_in_text = argument in source_text
+                else:
+                    arg_in_text = clean_arg in clean_source
+
+                if not arg_in_text:
                     has_hallucination = True
                     hallucinated_count += 1
-        
-        return has_hallucination, hallucinated_count, total_count
+                    breakdown[f"{event_type}|{role}"] += 1
+
+        return has_hallucination, hallucinated_count, total_count, dict(breakdown)
     
     def check_schema_compliance(
         self,
         pred_events: List[Dict],
         valid_event_types: Set[str] = None,
         valid_roles_by_event: Optional[Dict[str, Set[str]]] = None
-    ) -> bool:
+    ) -> Tuple[bool, Dict[str, int]]:
         """
         检测 Schema 符合度
         
@@ -563,45 +739,60 @@ class AcademicEventEvaluator:
                 若提供，则每个 argument.role 必须属于对应 event_type 的合法角色集合。
         
         Returns:
-            是否符合 Schema
+            (是否符合 Schema, 违规分布)
         """
+        violations: Dict[str, int] = defaultdict(int)
+        schema_mode = str(self.metric_settings.get("schema", {}).get("mode", "schema_strict"))
         if not isinstance(pred_events, list):
-            return False
+            violations["not_list"] += 1
+            return False, dict(violations)
         
         for event in pred_events:
             if not isinstance(event, dict):
-                return False
+                violations["event_not_dict"] += 1
+                return False, dict(violations)
             
             # 必须有 event_type
             if "event_type" not in event:
-                return False
+                violations["missing_event_type"] += 1
+                return False, dict(violations)
 
             event_type = event["event_type"]
             # 如果提供了有效事件类型，检查是否匹配
-            if valid_event_types and event_type not in valid_event_types:
-                return False
+            if (
+                schema_mode == "schema_strict"
+                and valid_event_types
+                and event_type not in valid_event_types
+            ):
+                violations[f"invalid_event_type:{event_type}"] += 1
+                return False, dict(violations)
 
             # 必须有 arguments 且为列表
             if "arguments" not in event or not isinstance(event.get("arguments"), list):
-                return False
+                violations["missing_or_invalid_arguments"] += 1
+                return False, dict(violations)
 
             allowed_roles = None
-            if valid_roles_by_event is not None:
+            if schema_mode == "schema_strict" and valid_roles_by_event is not None:
                 allowed_roles = valid_roles_by_event.get(event_type)
                 # 提供了 role schema 时，未知事件类型也视为不合规
                 if allowed_roles is None:
-                    return False
+                    violations[f"unknown_event_roles:{event_type}"] += 1
+                    return False, dict(violations)
 
             # 每个 argument 必须有 role 和 argument 字段
             for arg in event["arguments"]:
                 if not isinstance(arg, dict):
-                    return False
+                    violations["argument_not_dict"] += 1
+                    return False, dict(violations)
                 if "role" not in arg or "argument" not in arg:
-                    return False
+                    violations["missing_role_or_argument"] += 1
+                    return False, dict(violations)
                 if allowed_roles is not None and arg.get("role") not in allowed_roles:
-                    return False
-        
-        return True
+                    violations[f"invalid_role:{event_type}|{arg.get('role')}"] += 1
+                    return False, dict(violations)
+
+        return True, {}
     
     def update_with_extended_metrics(
         self, 
@@ -610,6 +801,7 @@ class AcademicEventEvaluator:
         source_text: str = "",
         full_response: str = "",
         parse_success: bool = True,
+        parse_diagnostics: Optional[Dict[str, Any]] = None,
         valid_event_types: Set[str] = None,
         valid_roles_by_event: Optional[Dict[str, Set[str]]] = None
     ):
@@ -619,73 +811,131 @@ class AcademicEventEvaluator:
         这是 update() 方法的扩展版本，支持幻觉检测和 CoT 忠实度检测
         """
         # 调用原有的 update
-        self.update(pred_events, gold_events, parse_success)
+        self.update(
+            pred_events,
+            gold_events,
+            parse_success=parse_success,
+            parse_diagnostics=parse_diagnostics,
+        )
         
         # === 幻觉检测 ===
         if source_text:
-            has_halluc, halluc_count, total_entities = self.check_hallucination(source_text, pred_events)
+            has_halluc, halluc_count, total_entities, halluc_breakdown = self.check_hallucination(
+                source_text,
+                pred_events,
+            )
             if has_halluc:
                 self.stats["hallucination_samples"] += 1
             self.stats["hallucinated_entities"] += halluc_count
             self.stats["total_entities"] += total_entities
+            for key, value in halluc_breakdown.items():
+                self.stats["hallucination_types"][key] += int(value)
         
         # === Schema 符合度 ===
-        if self.check_schema_compliance(
+        schema_ok, violations = self.check_schema_compliance(
             pred_events,
             valid_event_types=valid_event_types,
             valid_roles_by_event=valid_roles_by_event,
-        ):
+        )
+        if schema_ok:
             self.stats["schema_compliant"] += 1
+        else:
+            for key, value in (violations or {}).items():
+                self.stats["schema_violations"][key] += int(value)
         
         # === CoT 忠实度检测 ===
-        if full_response and ("<thought>" in full_response or "```json" in full_response):
-            self.stats["cot_checked"] += 1
-            
-            # 简化的 CoT 一致性检测
-            cot_result = self._check_cot_consistency(full_response, pred_events)
-            if cot_result["type_consistent"]:
-                self.stats["cot_type_consistent"] += 1
-            if cot_result["argument_consistent"]:
-                self.stats["cot_argument_consistent"] += 1
-            if cot_result["fully_consistent"]:
-                self.stats["cot_fully_consistent"] += 1
+        cot_cfg = self.metric_settings.get("cot", {})
+        if not cot_cfg.get("enabled", True):
+            return
+        if not full_response:
+            self.stats["cot_skipped"] += 1
+            return
+
+        cot_result = self._check_cot_consistency(full_response, pred_events)
+        if not cot_result.get("checked", False):
+            reason = str(cot_result.get("reason", "skipped"))
+            if reason in {"missing_thought", "missing_json_boundary"}:
+                self.stats["cot_skipped"] += 1
+            else:
+                self.stats["cot_parse_fail"] += 1
+            return
+
+        self.stats["cot_checked"] += 1
+        if cot_result["type_consistent"]:
+            self.stats["cot_type_consistent"] += 1
+        if cot_result["argument_consistent"]:
+            self.stats["cot_argument_consistent"] += 1
+        if cot_result["fully_consistent"]:
+            self.stats["cot_fully_consistent"] += 1
     
     def _check_cot_consistency(self, full_response: str, pred_events: List[Dict]) -> Dict:
         """
         内部方法：检测 CoT 与 JSON 输出的一致性
         """
         result = {
-            "type_consistent": True,
-            "argument_consistent": True,
-            "fully_consistent": True
+            "checked": False,
+            "reason": "uninitialized",
+            "type_consistent": False,
+            "argument_consistent": False,
+            "fully_consistent": False,
         }
-        
-        # 提取 thought 部分
-        thought_match = re.search(r'<thought>(.*?)</thought>', full_response, re.DOTALL)
-        if not thought_match:
-            # 没有 thought 标签，取 json 之前的内容
-            json_start = full_response.find("```json")
-            if json_start > 0:
-                thought_text = full_response[:json_start]
-            else:
-                return result  # 无法检测
-        else:
-            thought_text = thought_match.group(1)
-        
-        # 提取 JSON 中的事件类型
-        json_event_types = set()
-        if isinstance(pred_events, list):
-            for event in pred_events:
-                if isinstance(event, dict) and event.get("event_type"):
-                    json_event_types.add(event["event_type"])
-        
-        # 检测事件类型是否在 thought 中被提及
+
+        cot_cfg = self.metric_settings.get("cot", {})
+        cot_mode = str(cot_cfg.get("mode", "strict_span"))
+        require_block = bool(cot_cfg.get("require_thought_block", True))
+
+        thought_text, reason = self._extract_thought_text(full_response, require_block=require_block)
+        if thought_text is None:
+            result["reason"] = reason
+            return result
+
+        # 解析 thought 成功
+        result["checked"] = True
+        result["reason"] = "ok"
+
+        json_event_types = self.extract_event_types(pred_events)
+        no_event_clues = ["无事件", "未检测到", "没有检测到", "输出[]", "空数组"]
+        no_event_claimed = any(clue in thought_text for clue in no_event_clues)
+
+        thought_event_types = set()
         for etype in json_event_types:
-            if etype not in thought_text:
-                result["type_consistent"] = False
-                result["fully_consistent"] = False
-                break
-        
+            if etype and etype in thought_text:
+                thought_event_types.add(etype)
+
+        if not json_event_types:
+            result["type_consistent"] = bool(no_event_claimed or not thought_event_types)
+        elif cot_mode == "weak_mention":
+            # 弱一致：JSON 中每个类型在 thought 至少出现一次
+            result["type_consistent"] = all(etype in thought_text for etype in json_event_types)
+        else:
+            # 严格一致：事件类型集合必须一致
+            result["type_consistent"] = thought_event_types == json_event_types
+
+        pred_pairs = set()
+        for event in pred_events or []:
+            if not isinstance(event, dict):
+                continue
+            for arg in event.get("arguments", []):
+                if not isinstance(arg, dict):
+                    continue
+                role = self.normalize_text(arg.get("role", ""))
+                value = self.normalize_text(arg.get("argument", ""))
+                if role and value:
+                    pred_pairs.add((role, value))
+
+        thought_pairs = self._extract_thought_roles(thought_text)
+        if not pred_pairs:
+            result["argument_consistent"] = (not thought_pairs) or no_event_claimed
+        elif cot_mode == "weak_mention":
+            # 弱一致：role 级覆盖
+            pred_roles = {r for r, _ in pred_pairs}
+            thought_roles = {r for r, _ in thought_pairs}
+            result["argument_consistent"] = pred_roles.issubset(thought_roles) if pred_roles else True
+        else:
+            # 严格一致：必须包含全部 pred 对
+            result["argument_consistent"] = pred_pairs.issubset(thought_pairs)
+
+        result["fully_consistent"] = bool(result["type_consistent"] and result["argument_consistent"])
         return result
 
 
@@ -705,6 +955,7 @@ DEFAULT_EVAL_PROTOCOL: Dict[str, Any] = {
         "significance": "paired_permutation",
         "confidence": 0.95,
     },
+    "metrics": copy.deepcopy(AcademicEventEvaluator.DEFAULT_METRIC_SETTINGS),
 }
 
 
@@ -866,6 +1117,9 @@ def print_metrics_report(report: MetricsReport, eval_mode: str = "both"):
     print(f"\n📈 样本统计")
     print(f"   总样本数: {report.total_samples}")
     print(f"   解析失败: {report.parse_errors} ({report.parse_error_rate:.2%})")
+    print(f"   原生解析成功: {report.parse_raw_success} ({report.parse_raw_success_rate:.2%})")
+    print(f"   修复后解析成功: {report.parse_repair_success} ({report.parse_repair_success_rate:.2%})")
+    print(f"   JSON提取失败: {report.parse_extraction_failures} ({report.parse_extraction_failure_rate:.2%})")
     
     if eval_mode in ["strict", "both"]:
         print(f"\n📐 Strict 模式 (完全匹配)")
@@ -896,6 +1150,7 @@ def print_metrics_report(report: MetricsReport, eval_mode: str = "both"):
     print(f"   CoT 忠实度:      {report.cot_faithfulness:.4f}")
     print(f"   CoT 类型一致性:  {report.cot_type_consistency:.4f}")
     print(f"   CoT 论元一致性:  {report.cot_argument_consistency:.4f}")
+    print(f"   CoT 覆盖率:      {report.cot_coverage_rate:.4f} (checked={report.cot_checked}, skipped={report.cot_skipped}, parse_fail={report.cot_parse_fail})")
     print(f"   Schema 符合率(类型+角色): {report.schema_compliance_rate:.4f}")
     
     print("\n" + "=" * 60)
@@ -951,6 +1206,7 @@ def main():
         args.canonical_metric_mode = str(protocol.get("canonical_metric_mode", "analysis_only"))
     if args.canonical_metric_mode not in {"off", "analysis_only", "apply_for_aux_metric"}:
         raise ValueError(f"Unsupported canonical metric mode: {args.canonical_metric_mode}")
+    metric_settings = protocol.get("metrics", {})
 
     # 2. 路径解析
     checkpoint_path = os.path.normpath(args.checkpoint)
@@ -999,6 +1255,7 @@ def main():
     print(f"📜 Protocol: {args.protocol}")
     print(f"🎯 Primary Metric: {args.report_primary_metric}")
     print(f"🧭 Canonical Metric Mode: {args.canonical_metric_mode}")
+    print(f"🧪 Metric Spec Version: {metric_settings.get('version', '2.0')}")
 
     # 3. 加载模型
     print("\n🔄 加载模型...")
@@ -1056,10 +1313,10 @@ def main():
     print(f"   加载 {len(all_samples)} 条样本")
 
     # 5. 初始化评估器和解析器
-    evaluator = AcademicEventEvaluator()
+    evaluator = AcademicEventEvaluator(metric_settings=metric_settings)
     role_alias_map = load_role_alias_map(args.role_alias_map)
     canonical_enabled = bool(args.canonical_metric_mode != "off" and role_alias_map)
-    canonical_evaluator = AcademicEventEvaluator() if canonical_enabled else None
+    canonical_evaluator = AcademicEventEvaluator(metric_settings=metric_settings) if canonical_enabled else None
     canonical_rewrites_total = 0
     json_parser = RobustJSONParser()
 
@@ -1165,6 +1422,7 @@ def main():
                 source_text=sample.text,
                 full_response=response,
                 parse_success=parse_success,
+                parse_diagnostics=parse_diagnostics,
                 valid_event_types=valid_types,
                 valid_roles_by_event=valid_roles_by_event
             )
@@ -1179,6 +1437,7 @@ def main():
                     source_text=sample.text,
                     full_response=response,
                     parse_success=parse_success,
+                    parse_diagnostics=parse_diagnostics,
                     valid_event_types=valid_types,
                     valid_roles_by_event=valid_roles_by_event,
                 )
@@ -1229,14 +1488,17 @@ def main():
             "dataset": dataset_name,
             "split": args.split,
             "seed": args.seed,
+            "metric_version": metric_settings.get("version", "2.0"),
             "command": cmdline,
             "config_path": os.path.abspath(args.config),
             "config_hash_sha256": config_hash,
             "protocol_path": os.path.abspath(args.protocol) if args.protocol else None,
             "protocol_hash_sha256": safe_compute_file_sha256(args.protocol),
             "protocol_version": protocol.get("version"),
+            "metric_version": metric_settings.get("version", "2.0"),
             "primary_metric": args.report_primary_metric,
             "canonical_metric_mode": args.canonical_metric_mode,
+            "metric_settings": metric_settings,
             "role_alias_map_path": os.path.abspath(args.role_alias_map) if args.role_alias_map else None,
             "role_alias_map_hash_sha256": safe_compute_file_sha256(args.role_alias_map),
             "checkpoint": os.path.abspath(args.checkpoint),
@@ -1263,6 +1525,12 @@ def main():
             "parse_errors": report.parse_errors,
             "parse_error_rate": round(report.parse_error_rate, 4),
             "parse_success_rate": round(parse_success_rate, 4),
+            "raw_success": report.parse_raw_success,
+            "raw_success_rate": round(report.parse_raw_success_rate, 4),
+            "repair_success": report.parse_repair_success,
+            "repair_success_rate": round(report.parse_repair_success_rate, 4),
+            "extraction_failures": report.parse_extraction_failures,
+            "extraction_failure_rate": round(report.parse_extraction_failure_rate, 4),
         },
         "hallucination": {
             "sample_rate": round(report.hallucination_rate, 4),
@@ -1271,10 +1539,16 @@ def main():
         "cot_faithfulness": {
             "overall": round(report.cot_faithfulness, 4),
             "type_consistency": round(report.cot_type_consistency, 4),
-            "argument_consistency": round(report.cot_argument_consistency, 4)
+            "argument_consistency": round(report.cot_argument_consistency, 4),
+            "coverage_rate": round(report.cot_coverage_rate, 4),
+            "checked": report.cot_checked,
+            "skipped": report.cot_skipped,
+            "parse_fail": report.cot_parse_fail,
         },
         "schema_compliance_rate": round(report.schema_compliance_rate, 4),
         "error_breakdown": report.error_breakdown,
+        "hallucination_breakdown": report.hallucination_breakdown,
+        "schema_violation_breakdown": report.schema_violation_breakdown,
         "primary_metric": args.report_primary_metric,
         "primary_metric_value": round(float({
             "strict_f1": report.strict_f1,
@@ -1346,6 +1620,8 @@ def main():
                 "do_sample": bool(args.do_sample),
                 "batch_size": args.batch_size,
             },
+            "decode_mode": "sampling" if args.do_sample else "deterministic_greedy",
+            "seed_effective": bool(args.do_sample),
             "model_quantized": bool(model_quantized),
             "model_device_strategy": model_device_strategy,
             "model_target_device": device,
@@ -1365,12 +1641,24 @@ def main():
             "parse_success": parse_success,
             "parse_failure": report.parse_errors,
             "parse_success_rate": round(parse_success_rate, 4),
+            "parse_raw_success": report.parse_raw_success,
+            "parse_raw_success_rate": round(report.parse_raw_success_rate, 4),
+            "parse_repair_success": report.parse_repair_success,
+            "parse_repair_success_rate": round(report.parse_repair_success_rate, 4),
+            "parse_extraction_failures": report.parse_extraction_failures,
+            "parse_extraction_failure_rate": round(report.parse_extraction_failure_rate, 4),
             "hallucination_rate": round(report.hallucination_rate, 4),
             "hallucination_entity_rate": round(report.hallucination_entity_rate, 4),
+            "hallucination_breakdown": report.hallucination_breakdown,
             "cot_faithfulness": round(report.cot_faithfulness, 4),
             "cot_type_consistency": round(report.cot_type_consistency, 4),
             "cot_argument_consistency": round(report.cot_argument_consistency, 4),
+            "cot_coverage_rate": round(report.cot_coverage_rate, 4),
+            "cot_checked": report.cot_checked,
+            "cot_skipped": report.cot_skipped,
+            "cot_parse_fail": report.cot_parse_fail,
             "schema_compliance_rate": round(report.schema_compliance_rate, 4),
+            "schema_violation_breakdown": report.schema_violation_breakdown,
             "error_breakdown": report.error_breakdown,
             "bootstrap_ci": None,
             "primary_metric": args.report_primary_metric,
@@ -1398,6 +1686,7 @@ def main():
             "primary_metric": args.report_primary_metric,
             "canonical_metric_mode": args.canonical_metric_mode,
             "canonical_metrics_available": canonical_report is not None,
+            "metric_version": metric_settings.get("version", "2.0"),
             "protocol": protocol,
         },
     }

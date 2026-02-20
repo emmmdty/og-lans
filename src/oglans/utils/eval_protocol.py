@@ -27,6 +27,26 @@ DEFAULT_EVAL_PROTOCOL: Dict[str, Any] = {
         "significance": "paired_permutation",
         "confidence": 0.95,
     },
+    "metrics": {
+        "version": "2.0",
+        "report_level": "core_plus_diagnostics",
+        "cot": {
+            "enabled": True,
+            "mode": "strict_span",
+            "require_thought_block": True,
+        },
+        "relaxed": {
+            "match_mode": "include_or_char_overlap",
+            "char_overlap_threshold": 0.5,
+            "span_iou_threshold": 0.5,
+        },
+        "hallucination": {
+            "match_mode": "normalized_substring",
+        },
+        "schema": {
+            "mode": "schema_strict",
+        },
+    },
 }
 
 

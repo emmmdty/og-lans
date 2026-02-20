@@ -16,7 +16,12 @@ import re
 import json
 import logging
 from typing import Optional, List, Dict, Any, Tuple, Union
-import dirtyjson
+
+try:
+    import dirtyjson as _DIRTYJSON_MODULE
+except ImportError:
+    _DIRTYJSON_MODULE = None
+
 logger = logging.getLogger("OGLANS")
 
 
@@ -59,10 +64,9 @@ class RobustJSONParser:
         # 尝试导入 dirtyjson（可选依赖）
         self._dirtyjson = None
         if enable_dirtyjson:
-            try:
-                
-                self._dirtyjson = dirtyjson
-            except ImportError:
+            if _DIRTYJSON_MODULE is not None:
+                self._dirtyjson = _DIRTYJSON_MODULE
+            else:
                 logger.warning("dirtyjson 未安装，将禁用该兜底策略。安装命令: pip install dirtyjson")
 
     def extract_json_from_text(self, text: str) -> Tuple[Optional[str], str]:

@@ -198,6 +198,46 @@ class TestLANSScheduler:
         
         # 变化应该比 EMA 模式更明显
         assert c2 != c1
+
+    def test_strategy_floor_constraints_apply(self):
+        """测试 HARD/MEDIUM 概率下限约束生效。"""
+        scheduler = LANSScheduler(
+            d_max=4.0,
+            d_min=1.0,
+            hard_floor_prob=0.10,
+            hard_floor_after_warmup=0.25,
+            medium_floor_prob=0.20,
+        )
+        base_probs = {"EASY": 0.85, "MEDIUM": 0.10, "HARD": 0.05}
+
+        # 预热阶段：HARD floor 使用 hard_floor_prob
+        scheduler._step_count = 0
+        adjusted = scheduler._apply_strategy_floors(base_probs)
+        assert adjusted["HARD"] >= 0.10
+        assert adjusted["MEDIUM"] >= 0.20
+        assert abs(sum(adjusted.values()) - 1.0) < 1e-8
+
+        # 预热后：HARD floor 切换到 hard_floor_after_warmup
+        scheduler._step_count = scheduler.warmup_steps + 1
+        adjusted_after = scheduler._apply_strategy_floors(base_probs)
+        assert adjusted_after["HARD"] >= 0.25
+        assert adjusted_after["MEDIUM"] >= 0.20
+        assert abs(sum(adjusted_after.values()) - 1.0) < 1e-8
+
+    def test_current_hard_floor_switches_after_warmup(self):
+        """测试 hard floor 在预热前后切换。"""
+        scheduler = LANSScheduler(
+            d_max=4.0,
+            d_min=1.0,
+            warmup_steps=10,
+            hard_floor_prob=0.05,
+            hard_floor_after_warmup=0.20,
+            medium_floor_prob=0.10,
+        )
+        scheduler._step_count = 5
+        assert scheduler._current_hard_floor() == pytest.approx(0.05)
+        scheduler._step_count = 11
+        assert scheduler._current_hard_floor() == pytest.approx(0.20)
     
     def test_granularity_weights(self, scheduler: LANSScheduler):
         """测试多粒度权重配置"""

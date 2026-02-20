@@ -9,6 +9,7 @@ This checklist tracks what is already implemented and what remains required for 
 - [x] Command line recorded in summary (`meta.command`)
 - [x] Split and sample count explicitly recorded
 - [x] Prompt mode recorded (`zeroshot` / `fewshot`)
+- [x] Local academic eval seed policy documented (`train_seed` preferred over weak `eval_seed`)
 
 ## Metrics and Statistical Reporting
 

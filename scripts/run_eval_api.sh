@@ -11,6 +11,22 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"  # Ensure realtime logging without Python stdout buffering
+resolve_python_bin() {
+  if command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return
+  fi
+  echo ""
+}
+PYTHON_BIN="$(resolve_python_bin)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "ERROR: neither python nor python3 found in PATH."
+  exit 1
+fi
 
 # =========================
 # Defaults
@@ -42,7 +58,7 @@ timestamp() {
 }
 
 infer_dataset_context() {
-  python - "$CONFIG" <<'PY'
+  "$PYTHON_BIN" - "$CONFIG" <<'PY'
 import os
 import yaml
 import sys
@@ -70,10 +86,31 @@ if not dataset_dir:
 
 dataset_name = os.path.basename(os.path.normpath(dataset_dir)) or "DuEE-Fin"
 split_prefix = "duee_fin"
+
+def infer_eval_root(config, default_dataset):
+    project = config.get("project", {})
+    for key in ("output_dir", "logging_dir", "debug_data_dir"):
+        raw = project.get(key)
+        if not raw:
+            continue
+        norm = os.path.normpath(str(raw)).replace("\\", "/")
+        parts = [p for p in norm.split("/") if p and p != "."]
+        if "logs" not in parts:
+            continue
+        idx = parts.index("logs")
+        if idx + 1 < len(parts):
+            tag = parts[idx + 1]
+            if tag:
+                return os.path.normpath(os.path.join("logs", tag, "eval_api"))
+    return os.path.normpath(os.path.join("logs", default_dataset, "eval_api"))
+
+eval_root = infer_eval_root(cfg, dataset_name)
+
 print(dataset_dir)
 print(dataset_name)
 print(taxonomy)
 print(split_prefix)
+print(eval_root)
 PY
 }
 
@@ -147,7 +184,7 @@ preflight() {
   test -f "evaluate_api.py"
   test -f "$CONFIG"
   test -f "$PROTOCOL"
-  if ! python - <<'PY' >/dev/null 2>&1
+  if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
 import yaml  # noqa: F401
 PY
   then
@@ -155,12 +192,13 @@ PY
     exit 1
   fi
 
-  local ds_dir ds_name schema_path split_prefix split_file
+  local ds_dir ds_name schema_path split_prefix split_file eval_root
   mapfile -t ctx < <(infer_dataset_context)
   ds_dir="${ctx[0]}"
   ds_name="${ctx[1]}"
   schema_path="${ctx[2]}"
   split_prefix="${ctx[3]}"
+  eval_root="${ctx[4]}"
   split_file="${ds_dir}/${split_prefix}_${SPLIT}.json"
 
   echo "[2/4] Check dataset..."
@@ -176,7 +214,7 @@ PY
     echo "ERROR: missing split file: $split_file"
     exit 1
   fi
-  echo "Dataset context: name=${ds_name}, dir=${ds_dir}"
+  echo "Dataset context: name=${ds_name}, dir=${ds_dir}, eval_root=${eval_root}"
 
   echo "[3/4] Check API key (env or .env)..."
   if [[ -n "${DEEPSEEK_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ]]; then
@@ -195,7 +233,7 @@ PY
   fi
 
   echo "[4/4] Check Python deps..."
-  python - <<'PY'
+  "$PYTHON_BIN" - <<'PY'
 import importlib
 for m in ["yaml", "openai", "tqdm"]:
     importlib.import_module(m)
@@ -206,7 +244,7 @@ PY
 }
 
 build_run_cmd() {
-  local cmd=(python evaluate_api.py
+  local cmd=("$PYTHON_BIN" evaluate_api.py
     --config "$CONFIG"
     --protocol "$PROTOCOL"
     --split "$SPLIT"
@@ -244,14 +282,14 @@ build_run_cmd() {
 
 run_once() {
   local cmd
-  local ds_name
+  local eval_root
   cmd="$(build_run_cmd)"
   mapfile -t ctx < <(infer_dataset_context)
-  ds_name="${ctx[1]}"
+  eval_root="${ctx[4]}"
 
   if [[ "$BACKGROUND" == "1" ]]; then
-    mkdir -p "logs/${ds_name}/eval_api"
-    local log_path="logs/${ds_name}/eval_api/nohup_eval_api_$(timestamp).log"
+    mkdir -p "$eval_root"
+    local log_path="${eval_root}/nohup_eval_api_$(timestamp).log"
     echo "Running in background:"
     echo "  $cmd"
     nohup bash -lc "$cmd" > "$log_path" 2>&1 &
@@ -276,10 +314,10 @@ sweep() {
   IFS=',' read -r -a seed_arr <<< "$SEEDS"
   IFS=',' read -r -a var_arr <<< "$VARIANTS"
 
-  local ds_name
+  local eval_root
   mapfile -t ctx < <(infer_dataset_context)
-  ds_name="${ctx[1]}"
-  local sweep_root="logs/${ds_name}/eval_api/sweep_$(timestamp)"
+  eval_root="${ctx[4]}"
+  local sweep_root="${eval_root}/sweep_$(timestamp)"
   mkdir -p "$sweep_root"
 
   local v s ts out sum old_few old_seed old_out old_sum

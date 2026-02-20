@@ -4,11 +4,17 @@ import pytest
 
 
 try:
-    from oglans.trainer.unsloth_trainer import LANSCallback  # type: ignore
+    from oglans.trainer.unsloth_trainer import (  # type: ignore
+        CGADPOTrainer,
+        LANSCallback,
+        LANSNegativeSampler,
+    )
 
     _LANS_CALLBACK_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - 仅在缺少训练依赖时触发
     LANSCallback = None  # type: ignore
+    LANSNegativeSampler = None  # type: ignore
+    CGADPOTrainer = None  # type: ignore
     _LANS_CALLBACK_IMPORT_ERROR = exc
 
 
@@ -37,6 +43,24 @@ class _DummySampler:
             "chosen": sample["chosen"],
             "rejected": f"neg_{self.generate_calls}",
         }
+
+
+class _DummyDSCNS:
+    def __init__(self):
+        self._use_lans = False
+
+    def generate_negative_json(self, chosen, strategy, current_step, total_steps):
+        return '[{"event_type":"质押","arguments":[{"role":"质押方","argument":"张三"}]}]'
+
+
+class _DummySCV:
+    def __init__(self, false_negative=False):
+        self.false_negative = bool(false_negative)
+        self.calls = 0
+
+    def is_false_negative(self, text, neg_json):
+        self.calls += 1
+        return self.false_negative
 
 
 @pytest.mark.skipif(LANSCallback is None, reason="LANSCallback 依赖缺失")
@@ -75,3 +99,40 @@ def test_refresh_starts_from_configured_epoch():
     )
     assert sampler.generate_calls == len(base_samples)
     assert trainer_ref.train_dataset != "original"
+
+
+@pytest.mark.skipif(LANSNegativeSampler is None, reason="LANSNegativeSampler 依赖缺失")
+def test_negative_sampler_scv_cache_reduces_repeated_calls():
+    ds = _DummyDSCNS()
+    scv = _DummySCV(false_negative=False)
+    sampler = LANSNegativeSampler(
+        ds_cns=ds,
+        scv=scv,
+        scv_cache_enabled=True,
+        scv_cache_max_entries=16,
+        scv_max_retries=0,
+    )
+
+    example = {"prompt": "p", "chosen": "[]", "text": "t", "event_types": []}
+    sampler.generate_rejected(example)
+    sampler.generate_rejected(example)
+
+    assert scv.calls == 1, "相同文本+负样本应命中缓存，避免重复 SCV 调用"
+    stats = sampler.get_statistics()
+    assert stats["scv_cache_hits"] >= 1
+    assert stats["scv_cache_misses"] == 1
+
+
+@pytest.mark.skipif(CGADPOTrainer is None, reason="CGADPOTrainer 依赖缺失")
+def test_rpo_weight_warmup_schedule():
+    trainer = object.__new__(CGADPOTrainer)
+    trainer.rpo_alpha = 0.2
+    trainer.rpo_warmup_steps = 100
+    trainer.state = SimpleNamespace(global_step=0)
+    assert trainer._compute_rpo_weight() == pytest.approx(0.0)
+
+    trainer.state.global_step = 50
+    assert trainer._compute_rpo_weight() == pytest.approx(0.1)
+
+    trainer.state.global_step = 200
+    assert trainer._compute_rpo_weight() == pytest.approx(0.2)

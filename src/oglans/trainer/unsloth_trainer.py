@@ -21,6 +21,8 @@ import json
 import os
 import logging
 import time
+import hashlib
+from collections import OrderedDict
 # Features, Value 用于显式定义数据集 Schema
 from datasets import Dataset, Features, Value
 from trl import DPOTrainer, DPOConfig
@@ -140,11 +142,19 @@ class CGADPOTrainer(DPOTrainer):
         self, 
         *args, 
         lans_scheduler: Optional[LANSScheduler] = None,
+        rpo_alpha: float = 0.0,
+        rpo_warmup_steps: int = 0,
+        aux_log_interval: int = 50,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.lans_scheduler = lans_scheduler
+        self.rpo_alpha = max(0.0, float(rpo_alpha))
+        self.rpo_warmup_steps = max(0, int(rpo_warmup_steps))
+        self.aux_log_interval = max(1, int(aux_log_interval))
         self._cga_applied_count = 0
+        self._rpo_warning_emitted = False
+        self._last_aux_metrics: Dict[str, float] = {}
         
         if self.lans_scheduler is not None:
             logger.info(
@@ -152,6 +162,55 @@ class CGADPOTrainer(DPOTrainer):
                 f"CGA_enabled={self.lans_scheduler.use_cga}, "
                 f"CGA_beta={self.lans_scheduler.cga_beta}"
             )
+        if self.rpo_alpha > 0:
+            logger.info(
+                f"🎯 RPO 混合损失已启用: alpha={self.rpo_alpha:.4f}, "
+                f"warmup_steps={self.rpo_warmup_steps}"
+            )
+
+    def _compute_rpo_weight(self) -> float:
+        """RPO 权重调度：预热后达到目标 alpha。"""
+        if self.rpo_alpha <= 0:
+            return 0.0
+        if self.rpo_warmup_steps <= 0:
+            return self.rpo_alpha
+        step = int(getattr(self.state, "global_step", 0))
+        scale = min(1.0, max(0.0, step / max(self.rpo_warmup_steps, 1)))
+        return self.rpo_alpha * scale
+
+    @staticmethod
+    def _compute_chosen_sft_loss(
+        model: Any,
+        inputs: Dict[str, Union[torch.Tensor, Any]],
+    ) -> Optional[torch.Tensor]:
+        """计算 chosen 序列的 NLL（SFT anchor）。"""
+        chosen_input_ids = inputs.get("chosen_input_ids")
+        chosen_attention_mask = inputs.get("chosen_attention_mask")
+        chosen_labels = inputs.get("chosen_labels")
+
+        if chosen_input_ids is None or chosen_labels is None:
+            return None
+        if not isinstance(chosen_labels, torch.Tensor):
+            return None
+        if not torch.any(chosen_labels != -100):
+            return None
+
+        outputs = model(
+            input_ids=chosen_input_ids,
+            attention_mask=chosen_attention_mask,
+            labels=chosen_labels,
+            use_cache=False,
+            return_dict=True,
+        )
+        sft_loss = getattr(outputs, "loss", None)
+        if sft_loss is None:
+            return None
+        if not torch.isfinite(sft_loss):
+            return None
+        return sft_loss
+
+    def get_aux_metrics_snapshot(self) -> Dict[str, float]:
+        return dict(self._last_aux_metrics)
     
     def compute_loss(
         self,
@@ -178,26 +237,57 @@ class CGADPOTrainer(DPOTrainer):
                 model, inputs, return_outputs=False, num_items_in_batch=num_items_in_batch
             )
             outputs = None
-        
-        # 应用 CGA 梯度放大
+
+        pref_loss_raw = loss
+        cga_weight = 1.0
+
+        # 应用 CGA 梯度放大（只作用于偏好损失项）
         if self.lans_scheduler is not None and self.lans_scheduler.use_cga:
             cga_weight = self.lans_scheduler.cga_weight
-            
-            # 【关键】仅在预热结束后应用 CGA
             if self.lans_scheduler._step_count > self.lans_scheduler.warmup_steps:
-                loss = loss * cga_weight
+                pref_loss_raw = pref_loss_raw * cga_weight
                 self._cga_applied_count += 1
-                
-                # 每 100 步记录一次
                 if self._cga_applied_count % 100 == 0:
                     logger.debug(
                         f"CGA 梯度放大: weight={cga_weight:.4f}, "
                         f"competence={self.lans_scheduler.competence:.4f}"
                     )
-        
+
+        # RPO: 偏好损失 + alpha * chosen-SFT 锚定项
+        rpo_weight = self._compute_rpo_weight()
+        sft_loss: Optional[torch.Tensor] = None
+        if rpo_weight > 0.0:
+            try:
+                sft_loss = self._compute_chosen_sft_loss(model, inputs)
+            except Exception as exc:
+                if not self._rpo_warning_emitted:
+                    logger.warning(f"RPO 计算失败，已退化为纯 DPO/IPO: {exc}")
+                    self._rpo_warning_emitted = True
+
+        final_loss = pref_loss_raw
+        if sft_loss is not None and rpo_weight > 0.0:
+            final_loss = pref_loss_raw + rpo_weight * sft_loss
+
+        self._last_aux_metrics = {
+            "pref_loss_raw": float(loss.detach().float().item()),
+            "pref_loss_weighted": float(pref_loss_raw.detach().float().item()),
+            "cga_weight": float(cga_weight),
+            "rpo_weight": float(rpo_weight),
+            "rpo_sft_loss": float(sft_loss.detach().float().item()) if sft_loss is not None else 0.0,
+            "combined_loss": float(final_loss.detach().float().item()),
+        }
+        if getattr(self.state, "global_step", 0) % self.aux_log_interval == 0:
+            logger.debug(
+                "loss_components: "
+                f"pref={self._last_aux_metrics['pref_loss_weighted']:.4f}, "
+                f"rpo_w={self._last_aux_metrics['rpo_weight']:.4f}, "
+                f"sft={self._last_aux_metrics['rpo_sft_loss']:.4f}, "
+                f"combined={self._last_aux_metrics['combined_loss']:.4f}"
+            )
+
         if return_outputs:
-            return loss, outputs
-        return loss
+            return final_loss, outputs
+        return final_loss
 
 
 # ============================================================================
@@ -385,13 +475,44 @@ class LANSCallback(TrainerCallback):
                     self._writer.add_scalar("lans/strategy_easy", dist.get("EASY", 0.0), self._global_step)
                     self._writer.add_scalar("lans/strategy_medium", dist.get("MEDIUM", 0.0), self._global_step)
                     self._writer.add_scalar("lans/strategy_hard", dist.get("HARD", 0.0), self._global_step)
+                    if self.trainer_ref is not None and hasattr(self.trainer_ref, "get_aux_metrics_snapshot"):
+                        aux_metrics = self.trainer_ref.get_aux_metrics_snapshot()
+                        if aux_metrics:
+                            self._writer.add_scalar(
+                                "train/pref_loss_weighted",
+                                float(aux_metrics.get("pref_loss_weighted", 0.0)),
+                                self._global_step,
+                            )
+                            self._writer.add_scalar(
+                                "train/rpo_weight",
+                                float(aux_metrics.get("rpo_weight", 0.0)),
+                                self._global_step,
+                            )
+                            self._writer.add_scalar(
+                                "train/rpo_sft_loss",
+                                float(aux_metrics.get("rpo_sft_loss", 0.0)),
+                                self._global_step,
+                            )
+                            self._writer.add_scalar(
+                                "train/loss_combined",
+                                float(aux_metrics.get("combined_loss", 0.0)),
+                                self._global_step,
+                            )
 
                 if self._global_step % 50 == 0:
                     stats = self.lans_scheduler.get_statistics()
+                    aux_info = ""
+                    if self.trainer_ref is not None and hasattr(self.trainer_ref, "get_aux_metrics_snapshot"):
+                        aux_metrics = self.trainer_ref.get_aux_metrics_snapshot()
+                        if aux_metrics:
+                            aux_info = (
+                                f", RPO_w={aux_metrics.get('rpo_weight', 0.0):.4f}, "
+                                f"SFT={aux_metrics.get('rpo_sft_loss', 0.0):.4f}"
+                            )
                     logger.debug(
                         f"LANS [Step {self._global_step}]: "
                         f"Loss={loss:.4f}, C={new_competence:.4f}, "
-                        f"策略分布={stats['strategy_distribution']}"
+                        f"策略分布={stats['strategy_distribution']}{aux_info}"
                     )
     
     def on_train_end(
@@ -445,6 +566,12 @@ class LANSCallback(TrainerCallback):
                 logger.info(f"  📊 LANS 采样统计:")
                 logger.info(f"     生成总数: {stats['total_generated']}")
                 logger.info(f"     SCV 过滤: {stats['scv_filtered_count']} ({stats['scv_filter_rate']:.2%})")
+                if "scv_cache_hit_rate" in stats:
+                    logger.info(
+                        f"     SCV 缓存: hits={stats.get('scv_cache_hits', 0)}, "
+                        f"misses={stats.get('scv_cache_misses', 0)}, "
+                        f"hit_rate={stats.get('scv_cache_hit_rate', 0.0):.2%}"
+                    )
             except Exception as e:
                 logger.warning(f"  ❌ 导出 LANS 样本失败: {e}")
         
@@ -465,12 +592,18 @@ class LANSNegativeSampler:
         self,
         ds_cns: DSCNSampler,
         scv: Optional[SemanticConsistencyVerifier] = None,
-        export_dir: Optional[str] = None  # 导出目录
+        export_dir: Optional[str] = None,  # 导出目录
+        scv_cache_enabled: bool = True,
+        scv_cache_max_entries: int = 50000,
+        scv_max_retries: int = 1,
     ):
         self.ds_cns = ds_cns
         self.scv = scv
         self.epoch = 0
         self.export_dir = export_dir
+        self.scv_cache_enabled = bool(scv_cache_enabled)
+        self.scv_cache_max_entries = max(1000, int(scv_cache_max_entries))
+        self.scv_max_retries = max(0, int(scv_max_retries))
         
         # 记录生成的负样本和 SCV 过滤样本
         self._generated_samples: List[Dict] = []
@@ -479,6 +612,39 @@ class LANSNegativeSampler:
         # [修复 T6] 添加训练进度追踪
         self._current_step = 0
         self._total_steps = 1
+        self._scv_cache: "OrderedDict[str, bool]" = OrderedDict()
+        self._scv_cache_hits = 0
+        self._scv_cache_misses = 0
+
+    @staticmethod
+    def _stable_hash(text: str) -> str:
+        return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+
+    def _get_scv_cache_key(self, text: str, neg_json: str) -> str:
+        return self._stable_hash(f"{text}\n<SEP>\n{neg_json}")
+
+    def _is_false_negative(self, text: str, neg_json: str) -> bool:
+        if self.scv is None:
+            return False
+
+        if not self.scv_cache_enabled:
+            return bool(self.scv.is_false_negative(text, neg_json))
+
+        key = self._get_scv_cache_key(text, neg_json)
+        cached = self._scv_cache.get(key)
+        if cached is not None:
+            self._scv_cache_hits += 1
+            self._scv_cache.move_to_end(key)
+            return bool(cached)
+
+        self._scv_cache_misses += 1
+        result = bool(self.scv.is_false_negative(text, neg_json))
+        self._scv_cache[key] = result
+        self._scv_cache.move_to_end(key)
+
+        if len(self._scv_cache) > self.scv_cache_max_entries:
+            self._scv_cache.popitem(last=False)
+        return result
 
     def set_epoch(self, epoch: int):
         self.epoch = epoch
@@ -499,36 +665,48 @@ class LANSNegativeSampler:
         else:
             strategy = "MEDIUM"
 
-        # [修复 T6] 传递实际的训练步数，使 LANS 阈值生效
-        neg_json = self.ds_cns.generate_negative_json(
-            chosen, strategy, self._current_step, self._total_steps
-        )
-        original_neg_json = neg_json  # 保留原始负样本用于记录
+        strategy_fallback = {"HARD": "MEDIUM", "MEDIUM": "EASY", "EASY": "EASY"}
         scv_filtered = False
-        
-        if self.scv is not None:
+        scv_retry_count = 0
+        neg_json = ""
+        current_strategy = strategy
+
+        for attempt in range(self.scv_max_retries + 1):
+            # [修复 T6] 传递实际的训练步数，使 LANS 阈值生效
+            neg_json = self.ds_cns.generate_negative_json(
+                chosen, current_strategy, self._current_step, self._total_steps
+            )
+
+            if self.scv is None:
+                break
+
             try:
-                is_false_neg = self.scv.is_false_negative(text, neg_json)
-                if is_false_neg:
-                    scv_filtered = True
-                    # 记录被 SCV 过滤的样本
-                    self._scv_filtered_samples.append({
-                        "sample_id": self._sample_counter,
-                        "text_preview": text[:200] if text else "",
-                        "chosen": chosen[:500] if chosen else "",
-                        "filtered_rejected": original_neg_json[:500] if original_neg_json else "",
-                        "strategy": strategy,
-                        "reason": "SCV detected false negative"
-                    })
-                    fallback_strategy = "EASY" if strategy != "EASY" else "MEDIUM"
-                    # [修复 T6] 传递实际的训练步数
-                    neg_json = self.ds_cns.generate_negative_json(
-                        chosen, fallback_strategy, self._current_step, self._total_steps
-                    )
-                    strategy = fallback_strategy  # 更新策略用于记录
+                is_false_neg = self._is_false_negative(text, neg_json)
             except Exception:
-                pass
-        
+                is_false_neg = False
+
+            if not is_false_neg:
+                break
+
+            scv_filtered = True
+            scv_retry_count += 1
+            self._scv_filtered_samples.append({
+                "sample_id": self._sample_counter,
+                "text_preview": text[:200] if text else "",
+                "chosen": chosen[:500] if chosen else "",
+                "filtered_rejected": neg_json[:500] if neg_json else "",
+                "strategy": current_strategy,
+                "attempt": attempt,
+                "reason": "SCV detected false negative"
+            })
+
+            if attempt >= self.scv_max_retries:
+                break
+
+            current_strategy = strategy_fallback.get(current_strategy, "EASY")
+
+        strategy = current_strategy
+
         rejected_cot = ChinesePromptBuilder.build_incorrect_cot_response(
             neg_json, strategy, original_types=event_types
         )
@@ -541,6 +719,7 @@ class LANSNegativeSampler:
             "rejected_preview": rejected_cot[:300] if rejected_cot else "",
             "strategy": strategy,
             "scv_filtered": scv_filtered,
+            "scv_retry_count": scv_retry_count,
             "epoch": self.epoch
         })
         self._sample_counter += 1
@@ -592,6 +771,14 @@ class LANSNegativeSampler:
             "total_generated": len(self._generated_samples),
             "scv_filtered_count": len(self._scv_filtered_samples),
             "scv_filter_rate": len(self._scv_filtered_samples) / max(1, len(self._generated_samples)),
+            "scv_cache": {
+                "enabled": self.scv_cache_enabled,
+                "max_entries": self.scv_cache_max_entries,
+                "size": len(self._scv_cache),
+                "hits": self._scv_cache_hits,
+                "misses": self._scv_cache_misses,
+                "hit_rate": self._scv_cache_hits / max(1, self._scv_cache_hits + self._scv_cache_misses),
+            },
             "strategy_distribution": {}
         }
         
@@ -612,7 +799,10 @@ class LANSNegativeSampler:
         return {
             "total_generated": len(self._generated_samples),
             "scv_filtered_count": len(self._scv_filtered_samples),
-            "scv_filter_rate": len(self._scv_filtered_samples) / max(1, len(self._generated_samples))
+            "scv_filter_rate": len(self._scv_filtered_samples) / max(1, len(self._generated_samples)),
+            "scv_cache_hits": self._scv_cache_hits,
+            "scv_cache_misses": self._scv_cache_misses,
+            "scv_cache_hit_rate": self._scv_cache_hits / max(1, self._scv_cache_hits + self._scv_cache_misses),
         }
 
 
@@ -760,15 +950,15 @@ class UnslothDPOTrainerWrapper:
             time.perf_counter() - ds_cns_start_ts, 4
         )
         
+        self.scv_cfg = config.get('algorithms', {}).get('scv', {})
         self.scv = None
         if config['algorithms']['scv']['enabled']:
-            scv_cfg = config.get('algorithms', {}).get('scv', {})
             scv_start_ts = time.perf_counter()
             self.scv = SemanticConsistencyVerifier(
-                scv_cfg['nli_model'],
-                scv_cfg['nli_threshold'],
-                progress_log_interval=scv_cfg.get('progress_log_interval', 200),
-                progress_log_seconds=scv_cfg.get('progress_log_seconds', 30),
+                self.scv_cfg['nli_model'],
+                self.scv_cfg['nli_threshold'],
+                progress_log_interval=self.scv_cfg.get('progress_log_interval', 200),
+                progress_log_seconds=self.scv_cfg.get('progress_log_seconds', 30),
             )
             self.runtime_stats["phase_timings_seconds"]["scv_init"] = round(
                 time.perf_counter() - scv_start_ts, 4
@@ -880,7 +1070,10 @@ class UnslothDPOTrainerWrapper:
                 use_cga=lans_cfg.get('use_cga', True),
                 granularity_weights=granularity_weights,
                 easy_ratio=lans_cfg.get('strategies', {}).get('easy_ratio', 0.7),
-                hard_ratio=lans_cfg.get('strategies', {}).get('hard_ratio', 0.4)
+                hard_ratio=lans_cfg.get('strategies', {}).get('hard_ratio', 0.4),
+                hard_floor_prob=lans_cfg.get('strategies', {}).get('hard_floor_prob', 0.0),
+                hard_floor_after_warmup=lans_cfg.get('strategies', {}).get('hard_floor_after_warmup'),
+                medium_floor_prob=lans_cfg.get('strategies', {}).get('medium_floor_prob', 0.0),
             )
 
             # 传递导出目录到 LANSNegativeSampler
@@ -888,7 +1081,10 @@ class UnslothDPOTrainerWrapper:
             self.lans_sampler = LANSNegativeSampler(
                 ds_cns=self.ds_cns,
                 scv=self.scv,
-                export_dir=export_dir
+                export_dir=export_dir,
+                scv_cache_enabled=self.scv_cfg.get("cache_enabled", True),
+                scv_cache_max_entries=self.scv_cfg.get("cache_max_entries", 50000),
+                scv_max_retries=self.scv_cfg.get("max_retries", 1),
             )
 
             samples_data = []
@@ -989,12 +1185,16 @@ class UnslothDPOTrainerWrapper:
             per_device_train_batch_size = t_cfg['per_device_train_batch_size'],
             gradient_accumulation_steps = t_cfg['gradient_accumulation_steps'],
             learning_rate = t_cfg['learning_rate'],
+            lr_scheduler_type = t_cfg.get('lr_scheduler_type', 'cosine'),
+            warmup_steps = t_cfg.get('warmup_steps', 0),
             num_train_epochs = t_cfg['num_train_epochs'],
             max_steps = t_cfg.get('max_steps', -1),
             logging_steps = t_cfg['logging_steps'],
             bf16 = t_cfg['bf16'],
             fp16 = False,  # 【修复】bf16 和 fp16 互斥，明确禁用 fp16
             optim = t_cfg['optim'],
+            weight_decay = t_cfg.get('weight_decay', 0.0),
+            max_grad_norm = t_cfg.get('max_grad_norm', 1.0),
             # 【关键修复】调整长度参数，与模型配置一致
             max_prompt_length = min(2048, max_seq_len // 2),  # prompt 占一半
             max_length = max_seq_len,  # 总长度与模型一致
@@ -1021,6 +1221,17 @@ class UnslothDPOTrainerWrapper:
         )
         if dpo_config.gradient_checkpointing:
             logger.info("ℹ️ gradient_checkpointing 已启用：更省显存，但训练吞吐通常会下降。")
+
+        # RPO mixed objective: loss = preference_loss + alpha * SFT(chosen)
+        rpo_cfg = t_cfg.get("rpo", {})
+        rpo_alpha = float(rpo_cfg.get("alpha", t_cfg.get("rpo_alpha", 0.0)))
+        rpo_warmup_steps = int(rpo_cfg.get("warmup_steps", t_cfg.get("rpo_warmup_steps", 0)))
+        aux_log_interval = int(rpo_cfg.get("log_interval", t_cfg.get("aux_log_interval", 50)))
+        if rpo_alpha > 0:
+            logger.info(
+                f"🎯 训练目标: Preference + RPO(SFT), alpha={rpo_alpha:.4f}, "
+                f"warmup_steps={rpo_warmup_steps}"
+            )
         
         callbacks = []
         # 默认采用 Epoch 级刷新，不走 per-batch DataCollator 动态采样
@@ -1115,6 +1326,9 @@ class UnslothDPOTrainerWrapper:
             args = dpo_config,
             callbacks = [],  # 先传空，后面添加
             lans_scheduler = self.lans_scheduler if use_online_lans else None,
+            rpo_alpha = rpo_alpha,
+            rpo_warmup_steps = rpo_warmup_steps,
+            aux_log_interval = aux_log_interval,
         )
 
         # 【核心】创建 LANS Callback 并传递 trainer 引用

@@ -50,3 +50,24 @@ evaluation:
     assert loaded["primary_metric"] == "strict_f1"
     assert loaded["evaluation"]["split"] == "dev"
     assert loaded["evaluation"]["concurrency"] == 8
+
+
+def test_infer_eval_api_root_from_config_debug_tag(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        """
+project:
+  output_dir: ./logs/debug/checkpoints
+  logging_dir: ./logs/debug/tensorboard
+""".strip(),
+        encoding="utf-8",
+    )
+    root = mod.infer_eval_api_root_from_config(str(cfg), "DuEE-Fin")
+    assert root.as_posix().endswith("/logs/debug/eval_api")
+
+
+def test_infer_eval_api_root_from_config_dataset_fallback(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("project: {}", encoding="utf-8")
+    root = mod.infer_eval_api_root_from_config(str(cfg), "DuEE-Fin")
+    assert root.as_posix().endswith("/logs/DuEE-Fin/eval_api")

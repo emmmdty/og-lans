@@ -17,6 +17,22 @@ export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"  # 确保 Python 输出不缓存，实时写入日志
 export HF_HOME="${PROJECT_ROOT}/data/cache/huggingface"
 export HF_DATASETS_CACHE="${PROJECT_ROOT}/data/cache/huggingface/datasets"
+resolve_python_bin() {
+  if command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return
+  fi
+  echo ""
+}
+PYTHON_BIN="$(resolve_python_bin)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "ERROR: neither python nor python3 found in PATH."
+  exit 1
+fi
 # 手动创建目录，防止报错
 mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE"
 
@@ -89,7 +105,7 @@ RUN_MANIFEST="${RUN_DIR}/run_manifest.json"
 echo "📝 Terminal output will be saved to: $LOG_FILE"
 echo "🧾 Run manifest: $RUN_MANIFEST"
 
-python - "$RUN_MANIFEST" "$TIMESTAMP" "$ORIGINAL_CMD" "$CONFIG_PATH" "$DATA_DIR" "$EXP_NAME" "$RUN_DIR" "$USER_SCHEMA_PATH" <<'PY'
+"$PYTHON_BIN" - "$RUN_MANIFEST" "$TIMESTAMP" "$ORIGINAL_CMD" "$CONFIG_PATH" "$DATA_DIR" "$EXP_NAME" "$RUN_DIR" "$USER_SCHEMA_PATH" <<'PY'
 import hashlib
 import json
 import os
@@ -158,7 +174,7 @@ PY
 exec > >(tee -a "$LOG_FILE") 2>&1
 # ==============================
 
-python - "$CONFIG_PATH" <<'PY'
+"$PYTHON_BIN" - "$CONFIG_PATH" <<'PY'
 import sys
 
 config_path = sys.argv[1]
@@ -174,6 +190,8 @@ t = cfg.get("training", {})
 a = cfg.get("algorithms", {})
 lans = a.get("lans", {})
 scv = a.get("scv", {})
+rpo = t.get("rpo", {})
+st = lans.get("strategies", {})
 
 print("🧪 Config Summary:")
 print(f"  seed={cfg.get('project', {}).get('seed')}")
@@ -181,8 +199,16 @@ print(f"  max_steps={t.get('max_steps', -1)} | epochs={t.get('num_train_epochs')
 print(f"  logging_steps={t.get('logging_steps')}")
 print(f"  LANS={lans.get('enabled')} | SCV={scv.get('enabled')}")
 print(
+    "  RPO alpha="
+    f"{rpo.get('alpha', 0.0)} | warmup_steps={rpo.get('warmup_steps', 0)}"
+)
+print(
     "  LANS refresh_start_epoch="
     f"{lans.get('refresh_start_epoch', 1)} | refresh_log_interval={lans.get('refresh_log_interval', 200)}"
+)
+print(
+    "  LANS hard_floor="
+    f"{st.get('hard_floor_prob', 0.0)} -> {st.get('hard_floor_after_warmup', st.get('hard_floor_prob', 0.0))}"
 )
 PY
 
@@ -202,7 +228,7 @@ echo "=========================================================="
 # 3) 若用户未传 --exp_name，则补自动生成的 EXP_NAME。
 RUN_START_EPOCH="$(date +%s)"
 set +e
-MAIN_CMD=(python main.py)
+MAIN_CMD=("$PYTHON_BIN" main.py)
 if [[ "$USER_HAS_CONFIG" -eq 0 ]]; then
   MAIN_CMD+=(--config "$CONFIG_PATH")
 fi
@@ -218,7 +244,7 @@ RC=$?
 set -e
 RUN_END_EPOCH="$(date +%s)"
 
-python - "$RUN_MANIFEST" "$RC" "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$CHECKPOINT_ROOT" "$EXP_NAME" <<'PY'
+"$PYTHON_BIN" - "$RUN_MANIFEST" "$RC" "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$CHECKPOINT_ROOT" "$EXP_NAME" <<'PY'
 import json
 import os
 import sys

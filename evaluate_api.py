@@ -113,6 +113,7 @@ DEFAULT_EVAL_PROTOCOL: Dict[str, Any] = {
         "significance": "paired_permutation",
         "confidence": 0.95,
     },
+    "metrics": copy.deepcopy(AcademicEventEvaluator.DEFAULT_METRIC_SETTINGS),
 }
 
 
@@ -152,6 +153,33 @@ def infer_dataset_name(config: Dict[str, Any]) -> str:
     raise ValueError(
         "无法推断数据集名称。请在配置中设置 algorithms.ds_cns.taxonomy_path 或 project.dataset_cache_dir。"
     )
+
+
+def infer_eval_api_root(config: Dict[str, Any], dataset_name: str) -> str:
+    """
+    推断 API 评估输出根目录。
+
+    规则：
+    1) 若 project.* 路径位于 logs/<tag>/...，则输出到 logs/<tag>/eval_api
+       （例如 debug 配置会写入 logs/debug/eval_api）。
+    2) 否则回退到 logs/<dataset>/eval_api。
+    """
+    project = config.get("project", {})
+    for key in ("output_dir", "logging_dir", "debug_data_dir"):
+        raw = project.get(key)
+        if not raw:
+            continue
+        norm = os.path.normpath(str(raw)).replace("\\", "/")
+        parts = [p for p in norm.split("/") if p and p != "."]
+        if "logs" not in parts:
+            continue
+        idx = parts.index("logs")
+        if idx + 1 < len(parts):
+            tag = parts[idx + 1]
+            if tag:
+                return os.path.join("logs", tag, "eval_api")
+    return os.path.join("logs", dataset_name, "eval_api")
+
 
 def is_retryable_error(exc: Exception) -> bool:
     """判断错误是否适合重试"""
@@ -607,6 +635,7 @@ def main():
         args.canonical_metric_mode = str(protocol.get("canonical_metric_mode", "analysis_only"))
     if args.canonical_metric_mode not in {"off", "analysis_only", "apply_for_aux_metric"}:
         raise ValueError(f"Unsupported canonical metric mode: {args.canonical_metric_mode}")
+    metric_settings = protocol.get("metrics", {})
 
     if args.max_workers is not None:
         args.concurrency = args.max_workers
@@ -650,12 +679,13 @@ def main():
 
     # Setup Logging & Output (学术复现友好：每次运行独立 run_id 目录)
     dataset_name = infer_dataset_name(config)
+    eval_api_root = infer_eval_api_root(config, dataset_name)
     dataset_name_lower = dataset_name.lower().replace("-", "_")
     model_name = args.model or api_cfg.get('model', 'deepseek-chat')
     shot_tag = "fewshot" if args.use_fewshot else "zeroshot"
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_{args.split}_seed{args.seed}_{shot_tag}_{sanitize_tag(model_name)}_p{os.getpid()}"
-    run_dir = os.path.join("logs", dataset_name, "eval_api", run_id)
+    run_dir = os.path.join(eval_api_root, run_id)
     os.makedirs(run_dir, exist_ok=True)
 
     # 默认文件落到 run_dir，避免覆盖历史结果
@@ -693,6 +723,7 @@ def main():
     logger.info(f"⚙️ Config: Split={args.split}, Model={args.model or api_cfg.get('model')}, Seed={args.seed}")
     logger.info(f"📜 Protocol: {args.protocol}")
     logger.info(f"🎯 Primary Metric: {args.report_primary_metric}")
+    logger.info(f"🧪 Metric Spec Version: {metric_settings.get('version', '2.0')}")
     logger.info(f"🧭 Canonical Metric Mode: {args.canonical_metric_mode}")
     logger.info(f"🌐 API Base URL: {base_url}")
 
@@ -728,9 +759,15 @@ def main():
         )
 	
     # Evaluator
-    evaluator = AcademicEventEvaluator()
-    canonical_evaluator = AcademicEventEvaluator() if canonical_enabled and has_gold_labels else None
-    canonical_row_evaluator = AcademicEventEvaluator() if canonical_enabled and has_gold_labels else None
+    evaluator = AcademicEventEvaluator(metric_settings=metric_settings)
+    canonical_evaluator = (
+        AcademicEventEvaluator(metric_settings=metric_settings)
+        if canonical_enabled and has_gold_labels else None
+    )
+    canonical_row_evaluator = (
+        AcademicEventEvaluator(metric_settings=metric_settings)
+        if canonical_enabled and has_gold_labels else None
+    )
     canonical_sample_rows: List[Dict[str, int]] = []
     canonical_rewrites_total = 0
     results = []
@@ -779,6 +816,7 @@ def main():
                         source_text=res['text'],
                         full_response=res['response_text'],
                         parse_success=res["parse_success"],
+                        parse_diagnostics=res["parse_diagnostics"],
                         valid_event_types=valid_event_types,
                         valid_roles_by_event=valid_roles_by_event
                     )
@@ -796,6 +834,7 @@ def main():
                             source_text=res["text"],
                             full_response=res["response_text"],
                             parse_success=res["parse_success"],
+                            parse_diagnostics=res["parse_diagnostics"],
                             valid_event_types=valid_event_types,
                             valid_roles_by_event=valid_roles_by_event,
                         )
@@ -821,6 +860,8 @@ def main():
                     "usage": res['usage'],
                     "parse_success": res["parse_success"],
                     "parse_error": res["parse_diagnostics"].get("error"),
+                    "parse_method": res["parse_diagnostics"].get("extraction_method"),
+                    "repair_steps": res["parse_diagnostics"].get("repair_steps", []),
                     "api_success": res["api_success"],
                     "api_error": res["api_error"],
                     "response_meta": res["response_meta"],
@@ -868,7 +909,7 @@ def main():
             metrics_dict["primary_metric_value"] = metrics_dict.get("strict_f1")
 
         if args.compute_ci:
-            ci_evaluator = AcademicEventEvaluator()
+            ci_evaluator = AcademicEventEvaluator(metric_settings=metric_settings)
             sample_rows = [
                 compute_sample_metric_row(ci_evaluator, item.get("pred", []), item.get("gold", []))
                 for item in results
@@ -988,8 +1029,10 @@ def main():
             "protocol_path": os.path.abspath(args.protocol) if args.protocol else None,
             "protocol_hash_sha256": protocol_hash,
             "protocol_version": protocol.get("version"),
+            "metric_version": metric_settings.get("version", "2.0"),
             "primary_metric": args.report_primary_metric,
             "canonical_metric_mode": args.canonical_metric_mode,
+            "metric_settings": metric_settings,
             "role_alias_map_path": os.path.abspath(args.role_alias_map) if args.role_alias_map else None,
             "role_alias_map_hash_sha256": role_alias_map_hash,
             "role_alias_map_loaded": bool(role_alias_map),
@@ -1001,6 +1044,8 @@ def main():
                 "max_retries": max_retries,
                 "json_mode": args.json_mode,
             },
+            "decode_mode": "api_temperature_0",
+            "seed_effective": False,
             "prompt_hashes": prompt_hashes,
         },
         "metrics": metrics_dict,
@@ -1021,6 +1066,7 @@ def main():
             "primary_metric_value": metrics_dict.get(args.report_primary_metric),
             "canonical_metric_mode": args.canonical_metric_mode,
             "canonical_metrics_available": canonical_metrics_block is not None,
+            "metric_version": metric_settings.get("version", "2.0"),
             "protocol": protocol,
         },
     }

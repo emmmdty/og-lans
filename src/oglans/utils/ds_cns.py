@@ -65,7 +65,10 @@ class LANSScheduler:
         use_cga: bool = True,   # 【消融实验开关】是否使用 CGA
         granularity_weights: Optional[Dict[str, float]] = None,  # 多粒度权重
         easy_ratio: float = 0.7,
-        hard_ratio: float = 0.4
+        hard_ratio: float = 0.4,
+        hard_floor_prob: float = 0.0,
+        hard_floor_after_warmup: Optional[float] = None,
+        medium_floor_prob: float = 0.0,
     ):
         """
         初始化 LANS 调度器
@@ -99,6 +102,20 @@ class LANSScheduler:
         # 策略阈值
         self.easy_ratio = easy_ratio
         self.hard_ratio = hard_ratio
+        self.hard_floor_prob = max(0.0, min(0.95, hard_floor_prob))
+        if hard_floor_after_warmup is None:
+            hard_floor_after_warmup = self.hard_floor_prob
+        self.hard_floor_after_warmup = max(self.hard_floor_prob, min(0.95, hard_floor_after_warmup))
+        self.medium_floor_prob = max(0.0, min(0.95, medium_floor_prob))
+        floor_sum = self.hard_floor_after_warmup + self.medium_floor_prob
+        if floor_sum >= 0.98:
+            scale = 0.98 / max(floor_sum, 1e-8)
+            self.hard_floor_after_warmup *= scale
+            self.medium_floor_prob *= scale
+            logger.warning(
+                "LANS floor_prob 配置过大，已缩放到可行范围: "
+                f"hard={self.hard_floor_after_warmup:.3f}, medium={self.medium_floor_prob:.3f}"
+            )
         
         # 对比梯度放大 (Contrastive Gradient Amplification)
         self.cga_beta = cga_beta
@@ -146,8 +163,46 @@ class LANSScheduler:
             f"D_max={d_max:.2f}, D_min={d_min:.2f}, "
             f"EMA_decay={ema_decay}, Loss_baseline={loss_baseline}, "
             f"Warmup={warmup_steps}, CGA_beta={cga_beta}, "
-            f"Granularity_weights={self.granularity_weights}"
+            f"Granularity_weights={self.granularity_weights}, "
+            f"HardFloor={self.hard_floor_prob:.3f}->{self.hard_floor_after_warmup:.3f}, "
+            f"MediumFloor={self.medium_floor_prob:.3f}"
         )
+
+    def _current_hard_floor(self) -> float:
+        if self._step_count > self.warmup_steps:
+            return self.hard_floor_after_warmup
+        return self.hard_floor_prob
+
+    def _apply_strategy_floors(self, normalized_probs: Dict[str, float]) -> Dict[str, float]:
+        """应用策略概率下限，避免训练被 EASY 样本主导。"""
+        hard_floor = self._current_hard_floor()
+        medium_floor = self.medium_floor_prob
+        floor_sum = hard_floor + medium_floor
+        if floor_sum >= 0.98:
+            # 初始化时已做过缩放；这里做最终保护。
+            hard_floor = hard_floor / floor_sum * 0.98
+            medium_floor = medium_floor / floor_sum * 0.98
+            floor_sum = hard_floor + medium_floor
+
+        remaining = max(0.0, 1.0 - floor_sum)
+        residual = {
+            "HARD": max(0.0, normalized_probs.get("HARD", 0.0) - hard_floor),
+            "MEDIUM": max(0.0, normalized_probs.get("MEDIUM", 0.0) - medium_floor),
+            "EASY": max(0.0, normalized_probs.get("EASY", 0.0)),
+        }
+        residual_total = sum(residual.values())
+
+        adjusted = {"HARD": hard_floor, "MEDIUM": medium_floor, "EASY": 0.0}
+        if residual_total > 1e-8:
+            for key in ("HARD", "MEDIUM", "EASY"):
+                adjusted[key] += remaining * residual[key] / residual_total
+        else:
+            adjusted["EASY"] = remaining
+
+        total = sum(adjusted.values())
+        if total <= 0:
+            return {"EASY": 0.33, "MEDIUM": 0.34, "HARD": 0.33}
+        return {k: v / total for k, v in adjusted.items()}
     
     @property
     def competence(self) -> float:
@@ -319,6 +374,8 @@ class LANSScheduler:
                 normalized_probs = {k: v / total for k, v in adjusted_probs.items()}
             else:
                 normalized_probs = {"EASY": 0.33, "MEDIUM": 0.34, "HARD": 0.33}
+
+            normalized_probs = self._apply_strategy_floors(normalized_probs)
             
             # Step 3: 加权随机采样
             strategies = list(normalized_probs.keys())
@@ -390,6 +447,8 @@ class LANSScheduler:
                 "cumulative_strategy_distribution": {
                     k: v / total for k, v in self._strategy_counts.items()
                 },
+                "hard_floor": self._current_hard_floor(),
+                "medium_floor": self.medium_floor_prob,
                 "granularity_distribution": {
                     k: v / granularity_total for k, v in self._granularity_counts.items()
                 },
@@ -644,7 +703,10 @@ class DSCNSampler:
         use_cga: bool = True,
         granularity_weights: Optional[Dict[str, float]] = None,
         easy_ratio: float = 0.7,
-        hard_ratio: float = 0.4
+        hard_ratio: float = 0.4,
+        hard_floor_prob: float = 0.0,
+        hard_floor_after_warmup: Optional[float] = None,
+        medium_floor_prob: float = 0.0,
     ) -> LANSScheduler:
         """
         启用 OG-LANS 自适应调度器（替代静态课程学习）
@@ -660,6 +722,9 @@ class DSCNSampler:
             cga_beta: 对比梯度放大系数（2026 新增）
             use_cga: 是否使用对比梯度放大（消融实验开关）
             granularity_weights: 多粒度扰动权重配置 {event_level, argument_level, value_level}
+            hard_floor_prob: HARD 采样概率下限（预热阶段）
+            hard_floor_after_warmup: 预热后 HARD 概率下限
+            medium_floor_prob: MEDIUM 采样概率下限
         
         Returns:
             LANSScheduler 实例
@@ -678,7 +743,10 @@ class DSCNSampler:
             use_cga=use_cga,
             granularity_weights=granularity_weights,  # 传递多粒度权重配置
             easy_ratio=easy_ratio,
-            hard_ratio=hard_ratio
+            hard_ratio=hard_ratio,
+            hard_floor_prob=hard_floor_prob,
+            hard_floor_after_warmup=hard_floor_after_warmup,
+            medium_floor_prob=medium_floor_prob,
         )
         self._use_lans = True
         logger.info("✅ OG-LANS 自适应调度器已启用")

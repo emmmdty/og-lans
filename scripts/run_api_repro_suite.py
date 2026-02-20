@@ -36,6 +36,26 @@ DEFAULT_PROTOCOL = {
         "concurrency": 8,
         "significance": "paired_permutation",
     },
+    "metrics": {
+        "version": "2.0",
+        "report_level": "core_plus_diagnostics",
+        "cot": {
+            "enabled": True,
+            "mode": "strict_span",
+            "require_thought_block": True,
+        },
+        "relaxed": {
+            "match_mode": "include_or_char_overlap",
+            "char_overlap_threshold": 0.5,
+            "span_iou_threshold": 0.5,
+        },
+        "hallucination": {
+            "match_mode": "normalized_substring",
+        },
+        "schema": {
+            "mode": "schema_strict",
+        },
+    },
 }
 
 
@@ -210,12 +230,46 @@ def infer_dataset_name_from_config(config_path: str) -> str:
         if key == "dataset_cache_dir" and len(parts) >= 2:
             return parts[-2]
         base = parts[-1]
-        if base in {"checkpoints", "tensorboard", "samples", "eval", "logs", "log", "train"} and len(parts) >= 2:
+        if base in {"checkpoints", "tensorboard", "samples", "eval", "eval_api", "logs", "log", "train"} and len(parts) >= 2:
             base = parts[-2]
         if base:
             return base
 
     return "DuEE-Fin"
+
+
+def infer_eval_api_root_from_config(config_path: str, dataset_name: str) -> Path:
+    """
+    Infer eval_api root directory from config.project paths.
+    Debug configs like logs/debug/checkpoints will map to logs/debug/eval_api.
+    """
+    try:
+        cfg_path = Path(config_path)
+        if not cfg_path.is_absolute():
+            cfg_path = (PROJECT_ROOT / cfg_path).resolve()
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        return PROJECT_ROOT / "logs" / dataset_name / "eval_api"
+
+    project = cfg.get("project", {})
+    for key in ("output_dir", "logging_dir", "debug_data_dir"):
+        raw = project.get(key)
+        if not raw:
+            continue
+        p = Path(raw)
+        if not p.is_absolute():
+            p = (PROJECT_ROOT / p).resolve()
+        parts = [x for x in p.parts if x]
+        if "logs" not in parts:
+            continue
+        idx = parts.index("logs")
+        if idx + 1 < len(parts):
+            tag = parts[idx + 1]
+            if tag:
+                return PROJECT_ROOT / "logs" / tag / "eval_api"
+
+    return PROJECT_ROOT / "logs" / dataset_name / "eval_api"
 
 
 def main():
@@ -269,12 +323,13 @@ def main():
     if args.report_primary_metric is None:
         args.report_primary_metric = protocol_primary
     dataset_name = infer_dataset_name_from_config(args.config)
+    eval_api_root = infer_eval_api_root_from_config(args.config, dataset_name)
 
     ts = time.strftime("%Y%m%d_%H%M%S")
     output_dir = (
         Path(args.output_dir)
         if args.output_dir
-        else (PROJECT_ROOT / "logs" / dataset_name / "eval" / f"repro_suite_{ts}")
+        else (eval_api_root / f"repro_suite_{ts}")
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
