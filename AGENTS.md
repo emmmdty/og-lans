@@ -1,51 +1,82 @@
 # OG-LANS 仓库协作指南
 
+## 仓库定位
+
+- 本仓库是一个围绕 DuEE-Fin 的学术实验工程，方法主线为“本体图 + SCV + IPO/DPO”的事件抽取。
+- 当前主体代码位于 `src/`，并已经包含训练、离线评测、API 基线评测、脚本编排和测试文件。
+- 这是研究型仓库，不应按“通用产品”或“论文终稿配套代码包”来理解。
+
+## 权威文档入口
+
+- `DATASET_DUEE_FIN.md`：当前仓库实际使用的 DuEE-Fin 数据快照与字段说明。
+- `ENGINEERING_STATUS.md`：代码工程的已完成能力、当前边界和后续可补充项。
+- `OG_LANS_METHODOLOGY.md`：项目方法论的学术化表述。
+
+除上述三份文档外，不再维护独立的 metrics、protocol、ethics 或 scripts README 文档。新增说明应优先并入这三份文档，而不是重新分散。
+
 ## 项目结构
-- `src/oglans/` 是核心 Python 包。
-- `src/oglans/data/` 负责数据适配与提示词构造。
-- `src/oglans/inference/` 负责推理后处理逻辑，包括 `cat_lite` 过滤与反事实扰动。
-- `src/oglans/trainer/` 封装 Unsloth DPO 训练流程。
-- `src/oglans/utils/` 包含 LANS/SCV、评测协议、运行清单、量化判断、路径推断与可复现性工具。
-- `configs/` 存放主训练配置与评测相关配置，包括 `config.yaml`、`config_debug.yaml`、`eval_protocol.yaml`、`role_aliases_duee_fin.yaml`。
-- `main.py` 是训练入口；`evaluate.py` 负责本地模型与基础模型评测；`evaluate_api.py` 负责 API 基线评测。
-- `scripts/` 存放运行包装脚本与研究辅助脚本。主线脚本包括 `run_train.sh`、`run_eval_base.sh`、`run_eval_api.sh`、`run_eval_academic.sh`；复现实验与结果检查脚本包括 `run_api_repro_suite.py`、`validate_academic_artifacts.py`；研究辅助脚本包括 `build_graph.py`、`ablation_study.py` 与 `resolve_config_context.py`。
-- `tests/` 是 pytest 测试集，覆盖配置加载、训练调度、SCV/LANS、CAT-lite、指标语义、运行清单、基础评测模式与 API 复现实验。
-- `docs/` 存放指标规范、审计说明与项目描述文档，`PROJECT_DESCRIPTION_*` 属于项目说明材料，不是运行入口。
-- `data/raw/<dataset>/` 存放原始数据集；`data/processed/` 与 `data/schemas/` 存放派生缓存、图或 schema 产物。
-- `logs/<dataset>/` 存放训练和评测产物。当前工作区保留的主线实验目录是 `logs/DuEE-Fin/`。
+
+- `src/oglans/`：核心 Python 包。
+- `src/oglans/data/`：DuEE-Fin 数据适配与中文提示词构造。
+- `src/oglans/trainer/`：Unsloth 偏好训练与 plain SFT 基线封装。
+- `src/oglans/inference/`：CAT-lite 过滤与反事实扰动等推理后处理。
+- `src/oglans/utils/`：LANS、SCV、JSON 解析、评测协议、运行清单、路径推断、模型下载运行时等工具。
+- `configs/`：当前存在 `config.yaml`、`config_debug.yaml`、`config_compare_base.yaml`、`config_plain_sft.yaml`、`eval_protocol.yaml`、`role_aliases_duee_fin.yaml`。
+- `main.py`：训练入口。
+- `evaluate.py`：本地模型与 checkpoint 评测入口。
+- `evaluate_api.py`：外部 API 模型评测入口。
+- `scripts/`：训练、评测、复现实验、图构建、消融实验和产物校验脚本。
+- `tests/`：pytest 测试集；当前有 29 个 `test_*.py` 文件。
+- `data/raw/DuEE-Fin/`：当前仓库内实际使用的数据与 schema。
+- `logs/`：训练、评测和实验产物输出根目录。
 
 ## 常用命令
-- `pip install -e .`：以可编辑模式安装本项目。
-- `pip install -r requirements.txt`：安装研究依赖。
+
+- `pip install -e .`：安装项目运行依赖。
+- `pip install -e '.[dev]'`：安装开发与测试依赖；在 `zsh` 下请保留引号，避免被 glob 展开。
 - `python main.py --config configs/config.yaml --data_dir ./data/raw/DuEE-Fin`：运行主训练流程。
-- `bash scripts/run_train.sh --data_dir ./data/raw/DuEE-Fin`：通过脚本包装训练流程。
+- `bash scripts/run_train.sh --data_dir ./data/raw/DuEE-Fin`：通过 shell wrapper 启动训练。
 - `python evaluate.py --config configs/config.yaml --checkpoint logs/DuEE-Fin/checkpoints/<exp> --output_file logs/DuEE-Fin/eval_checkpoint/<run_id>/eval_results.jsonl`：评测本地 checkpoint。
-- `bash scripts/run_eval_base.sh --model-name <model_or_path> --config configs/config.yaml`：评测基础模型模式。
+- `bash scripts/run_eval_base.sh --model-name <model_or_path> --config configs/config.yaml`：评测本地基座模型。
 - `python evaluate_api.py --config configs/config.yaml --split dev --model deepseek-chat --concurrency 8`：运行 API 基线评测。
-- `python scripts/run_api_repro_suite.py --config configs/config.yaml --split dev --seeds 3407,3408,3409`：运行多种子复现实验汇总。
-- `python scripts/validate_academic_artifacts.py --summary logs/DuEE-Fin/eval_api/<run_id>/eval_summary.json`：校验学术评测产物字段完整性。
-- `python -m pytest`：运行测试套件。
-- `bash scripts/...` 命令默认假设可用的 bash 环境；Python 命令默认假设解释器在 `PATH` 中。
+- `python scripts/run_api_repro_suite.py --config configs/config.yaml --split dev --seeds 3407,3408,3409`：汇总 API 多 seed 复现实验。
+- `python scripts/run_local_repro_suite.py --config configs/config.yaml --base-model Qwen/Qwen3-4B-Instruct-2507 --split dev --checkpoints full=logs/DuEE-Fin/checkpoints/exp1`：汇总本地基座模型与 checkpoint 的多 seed 复现实验。
+- `python scripts/ablation_study.py --config configs/config.yaml --experiments A1,A2`：运行指定消融实验。
+- `bash scripts/run_eval_api.sh --preflight`：检查 API 评测运行前置条件。
+- `bash scripts/run_eval_academic.sh --help`：查看多 seed 学术口径评测入口。
+- `python scripts/build_graph.py --dataset_name DuEE-Fin`：从 schema 构建本体图缓存。
+- `python scripts/resolve_config_context.py --config configs/config.yaml`：输出 shell wrapper 可复用的配置上下文。
+- `python scripts/validate_academic_artifacts.py --summary <summary.json>`：校验学术汇总字段完整性。
+- `python -m pytest`：运行测试。
+
+说明：
+
+- 当前仓库没有 `requirements.txt`，依赖安装以 `pyproject.toml` 为准。
+- 当前仓库也没有 `README.md`；对仓库的结构理解请以本文件和三份核心文档为准。
+- `pyproject.toml` 当前仍引用了缺失的 `README.md` 作为打包元数据；如果后续处理打包或发布，需要同步修正。
+- 若当前环境未安装 dev 依赖，`python -m pytest` 会直接失败。
+- API 评测默认依赖根目录 `.env` 或外部环境变量中的 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`。
 
 ## 编码与测试约定
+
 - 使用 Python 3.10+，4 空格缩进。
 - 模块导入保持在 `oglans` 命名空间下，例如 `from oglans.utils import ...`。
-- 命名尽量贴近实验与配置语义，例如 `lans_alpha`、`taxonomy_path`、`canonical_metric_mode`。
-- 开发工具声明在 `pyproject.toml` 中，当前可见的开发依赖包括 `pytest`、`black`、`isort`、`flake8`。
-- `pytest.ini` 已将 `tests/` 设为测试根目录，并将 `src` 加入 `PYTHONPATH`。
-- 测试命名遵循 `tests/test_*.py`、`Test*`、`test_*`。
-- 修改训练、评测或指标逻辑时，优先补充对应子系统附近的定向测试，而不是只依赖整套回归。
+- 命名优先贴近实验语义，例如 `taxonomy_path`、`prompt_variant`、`preference_mode`、`canonical_metric_mode`。
+- 开发工具在 `pyproject.toml` 中声明，当前可见 dev 依赖包括 `pytest`、`black`、`isort`、`flake8`。
+- `pytest.ini` 已将 `src` 加入 `PYTHONPATH`。
+- 测试文件命名遵循 `tests/test_*.py`。
+- 修改训练、评测、路径推断或脚本行为时，优先补对应子系统附近的定向测试。
 
 ## 实验与产物约定
-- 默认数据目录是 `data/raw/<dataset>/`，不要把派生产物混入原始数据目录。
-- 训练相关产物通常写入 `logs/<dataset>/checkpoints/`、`logs/<dataset>/tensorboard/`、`logs/<dataset>/samples/`、`logs/<dataset>/train/`。
-- 评测相关产物通常写入 `logs/<dataset>/eval_checkpoint/`、`logs/<dataset>/eval_base/`、`logs/<dataset>/eval_api/`、`logs/<dataset>/eval_academic/`。
-- 图构建、schema 解析和缓存类中间产物应写入 `data/schemas/` 或 `data/processed/`，保持源码目录干净。
-- 评测输出通常同时包含 `jsonl` 预测、`summary.json`、`metrics.json`、`run_manifest.json` 或学术汇总文件；新增脚本时尽量复用这一产物组织方式。
 
-## 文档与提交说明
-- `README.md` 提供项目范围、快速开始和复现实验入口。
-- `ACADEMIC_EVALUATION_PROTOCOL.md`、`ACADEMIC_METRICS_GUIDE.md`、`REPRODUCIBILITY_CHECKLIST.md` 规定了评测、汇报和复现口径。
-- `DATA_STATEMENT.md`、`ETHICS_AND_LIMITATIONS.md`、`CITATION.cff` 属于发布与论文配套元信息。
-- `docs/METRIC_SPEC.md` 与 `docs/METRIC_AUDIT.md` 用于指标定义与审计；`docs/PROJECT_DESCRIPTION_*` 用于项目说明与论文叙述参考。
-- 当前工作区快照不包含 `.git` 目录，因此看不到仓库内既有提交规范；如需提交说明，优先使用简短、祈使式摘要，并在必要时补充实验范围。
+- 原始数据保留在 `data/raw/`；不要把派生产物回写进原始数据目录。
+- 图缓存、schema 派生产物和数据缓存应写入 `data/schemas/` 或 `data/processed/`。
+- 训练相关产物通常写入 `logs/<dataset>/checkpoints/`、`logs/<dataset>/tensorboard/`、`logs/<dataset>/samples/`。
+- 评测相关产物通常写入 `logs/<dataset>/eval_checkpoint/`、`logs/<dataset>/eval_base/`、`logs/<dataset>/eval_api/`、`logs/<dataset>/eval_academic/`。
+- 新增脚本时，尽量复用 `jsonl + summary/metrics + run_manifest` 这一产物组织方式。
+
+## 协作说明
+
+- 当前工作区包含 `.git`，提交说明应使用简短、祈使式摘要。
+- 如果你需要描述项目背景、方法或数据，不要在 `AGENTS.md` 内重复展开，直接更新对应的三份核心文档。
+- 如果你发现仓库结构再次发生变化，应优先同步本文件中的路径、命令和文档入口。

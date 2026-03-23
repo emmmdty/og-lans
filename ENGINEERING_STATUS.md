@@ -1,0 +1,86 @@
+# OG-LANS 工程实现现状
+
+## 1. 当前定位
+
+当前仓库是一个围绕 DuEE-Fin 的学术实验工程，主线目标是验证“本体图 + SCV + IPO/DPO”对中文金融事件抽取的作用。它已经具备可组织训练、离线评测、API 基线评测和复现实验的代码骨架，但仍然是研究型仓库，而不是面向通用用户发布的成品系统。
+
+## 2. 已完成模块
+
+| 模块 | 当前状态 | 已实现内容 | 后续可补充 |
+| --- | --- | --- | --- |
+| 数据适配与提示构造 | 已实现 | `DuEEFinAdapter` 支持读取 DuEE-Fin JSONL、保留事件类型信息、构造中文 prompt 与 chosen 响应；`ChinesePromptBuilder` 支持 system prompt、few-shot、推理输入负载构造 | 增加更多 prompt 版本管理、样例版本化与自动对比 |
+| 训练主线 | 已实现 | `main.py` 支持配置解析、数据/Schema 路径推断、运行清单写入；`UnslothDPOTrainerWrapper` 与 `UnslothSFTTrainerWrapper` 分别覆盖偏好训练与 plain SFT 基线 | 增加更稳定的依赖锁定、训练恢复与更明确的 checkpoint 管理说明 |
+| 负样本与课程机制 | 已实现 | `src/oglans/utils/ds_cns.py` 提供基于 schema 图的采样、LANS 能力调度、CGA 权重、多粒度扰动；支持图缓存 | 增加更系统的消融记录、图统计导出和更细粒度可视化 |
+| SCV 语义校验 | 已实现 | `src/oglans/utils/scv.py` 提供 NLI 驱动的语义一致性验证、缓存与长文档滑窗检查 | 将当前部分硬编码窗口策略进一步配置化，并补充更多真实模型验证 |
+| 本地评测 | 已实现 | `evaluate.py` 支持 strict/relaxed/type 指标、解析诊断、schema compliance、hallucination、CoT 一致性、CAT-lite 与反事实扰动评估 | 补充统一的结果汇总模板和更明确的论文表格导出约束 |
+| API 基线评测 | 已实现 | `evaluate_api.py` 支持 DeepSeek/OpenAI 兼容接口、并发请求、重试、usage 统计、运行清单与 dev 集 bootstrap 统计 | 增加对更多供应商别名、成本汇总和结果缓存策略的约束 |
+| 实验脚本 | 已实现 | `scripts/` 下已有训练包装、base 模型评测、API 评测、学术汇总、local/API reproducibility suite、图构建、消融实验和产物校验脚本 | 增加统一 CLI 文档、示例输出以及 CI 级 smoke tests |
+| 测试支撑 | 已实现但当前环境未验证 | `tests/` 下已有 29 个 pytest 文件，覆盖配置、路径推断、LANS、SCV、JSON 解析、评测语义、脚本包装和复现实验工具 | 建立固定依赖环境并接入 CI，让“仓库中有测试”转化为“持续可运行的测试” |
+
+## 3. 当前工程边界
+
+从代码本身可以确认，仓库已经不仅是“概念草图”，而是具备以下实际能力：
+
+- 可从 DuEE-Fin 构造训练样本并执行 Unsloth 训练流程。
+- 可在本地模型上执行结构化事件评测。
+- 可对外部 API 模型做零样本或 few-shot 基线评测。
+- 可围绕论文式实验组织复现实验、学术摘要和消融配置。
+
+但它也仍然有明确边界：
+
+- 当前没有仓库级 `README.md`，对外入口仍偏工程内使用。
+- 当前没有 `requirements.txt` 或 lockfile，依赖安装主要依赖 `pyproject.toml`。
+- 当前环境未安装 `pytest`，因此本次整理只能确认测试文件存在，不能声称全量通过。
+- 许多能力依赖较重的可选环境，包括 `unsloth`、`trl`、`transformers`、`networkx`、`openai` 和外部 API 凭证。
+
+## 4. 已实现但需要弱化表述的部分
+
+以下内容在代码中有实现或接口，但当前更适合写成“已具备实验实现”而不是“已完全稳定成熟”：
+
+- `RPO` 相关逻辑存在，但 `configs/config.yaml` 中 `training.rpo.alpha` 默认为 `0.0`，注释也明确表示主线默认关闭。
+- `LANSDataCollator` 在 `src/oglans/trainer/unsloth_trainer.py` 中被标为 `Legacy`，当前默认训练路径并不依赖它。
+- `SCV` 长文档滑窗参数在配置里有预留注释，但目前主实现仍以代码内逻辑为主。
+- `experiment` 区域包含一些“预留扩展”字段，不能当作已完成功能写入对外文档。
+- `scripts/ablation_study.py`、`run_*_repro_suite.py` 等脚本说明仓库已支持实验编排，但并不等于已经附带完整论文结果。
+
+## 5. 当前最稳妥的项目表述
+
+如果需要一句话描述当前工程状态，建议使用：
+
+“OG-LANS 是一个面向 DuEE-Fin 的研究型事件抽取实验仓库，已经实现中文提示构造、基于本体图的动态负样本采样、SCV 语义校验、IPO/DPO 训练以及本地/API 评测流程，但整体仍处于论文实验工程阶段，尚未整理为通用发布版。”
+
+## 6. 当前学术评测与复现口径
+
+虽然仓库已删除独立的 metrics / protocol / ethics 文档，但相关有效信息仍需要保留在工程说明中。就当前实现而言，较稳妥的论文汇报口径如下：
+
+- 主指标应以 `strict_f1` 为主，`relaxed_f1`、`type_f1`、`parse_error_rate`、`schema_compliance_rate`、`hallucination_rate` 作为辅助指标。
+- `evaluate.py` 与 `evaluate_api.py` 都会输出结构化 `summary` / `run_manifest` 信息，适合记录 `config hash`、`prompt hash`、`parser version`、`normalization version`、命令行与时间戳。
+- 对 dev 集等带金标场景，当前代码已支持 bootstrap 置信区间；多 seed 复现实验脚本还支持聚合统计和 paired permutation 显著性比较。
+- API 评测场景下，应记录请求模型名与实际返回的 `response_model`；这一点很重要，因为上游 API 别名可能漂移。
+- 自动指标不能替代人工误差分析。当前代码已经保留 error breakdown、hallucination、CoT 一致性与反事实检查，但论文或报告仍应补充人工案例分析。
+- 为保证透明性，运行时环境、token usage、wall-clock 等信息也值得保留；这部分当前已经进入 summary 或 manifest，而不是额外依赖手工记录。
+
+## 7. scripts/ 目录的实际作用
+
+当前 `scripts/` 中值得保留在协作文档里的入口如下：
+
+- `run_train.sh`：包装标准训练流程。
+- `run_eval_base.sh`：评测本地基座模型。
+- `run_eval_api.sh`：运行 API 基线评测。
+- `run_eval_academic.sh`：批量执行学术口径评测。
+- `run_api_repro_suite.py`：多 seed、多模式 API 复现实验汇总。
+- `run_local_repro_suite.py`：本地 checkpoint 多 seed 复现实验汇总。
+- `validate_academic_artifacts.py`：检查评测摘要字段完整性。
+- `build_graph.py`：从 schema 构建事件本体图。
+- `ablation_study.py`：按配置覆盖组织消融实验。
+- `resolve_config_context.py`：为 shell wrapper 解析统一配置上下文。
+
+## 8. 下一步最值得补充的工程工作
+
+如果后续继续完善仓库，优先级最高的不是继续堆叠算法名词，而是补齐工程基础设施：
+
+1. 增加仓库级 `README.md`，明确安装、数据准备、训练、评测和结果目录。
+2. 固化依赖安装方式，例如 lockfile、`requirements-dev.txt` 或 CI 环境文件。
+3. 在可复现环境中跑通并记录测试结果，最好接入自动化 CI。
+4. 为训练、评测、复现实验提供最小可运行示例和示例产物。
+5. 对论文口径与工程口径做分层，避免配置注释里的“publication ready”误导真实成熟度判断。
