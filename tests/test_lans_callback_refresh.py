@@ -100,42 +100,41 @@ class _DummyTokenizer:
             "attention_mask": [1] * len(token_ids),
         }
 
+    def pad(
+        self,
+        encoded_inputs,
+        padding=True,
+        max_length=None,
+        pad_to_multiple_of=None,
+        return_tensors=None,
+        **kwargs,
+    ):
+        if isinstance(encoded_inputs, dict):
+            encoded_inputs = [encoded_inputs]
 
-class _DummyPaddingCollator:
-    def __init__(self, tokenizer, max_length=None):
-        self.tokenizer = tokenizer
-        self.max_length = max_length
+        max_len = max(len(item["input_ids"]) for item in encoded_inputs) if encoded_inputs else 0
+        if max_length is not None:
+            max_len = min(max_len, max_length)
+        if pad_to_multiple_of:
+            remainder = max_len % pad_to_multiple_of
+            if remainder:
+                max_len += pad_to_multiple_of - remainder
 
-    def __call__(self, features):
-        batch = {}
-        pad_keys = (
-            "prompt_input_ids",
-            "prompt_attention_mask",
-            "chosen_input_ids",
-            "chosen_attention_mask",
-            "chosen_labels",
-            "rejected_input_ids",
-            "rejected_attention_mask",
-            "rejected_labels",
-        )
+        padded = {"input_ids": [], "attention_mask": []}
+        for item in encoded_inputs:
+            input_ids = list(item.get("input_ids", []))[:max_len]
+            attention_mask = list(item.get("attention_mask", [1] * len(input_ids)))[:max_len]
+            pad_len = max_len - len(input_ids)
+            if self.padding_side == "left":
+                padded["input_ids"].append([self.pad_token_id] * pad_len + input_ids)
+                padded["attention_mask"].append([0] * pad_len + attention_mask)
+            else:
+                padded["input_ids"].append(input_ids + [self.pad_token_id] * pad_len)
+                padded["attention_mask"].append(attention_mask + [0] * pad_len)
 
-        for key in pad_keys:
-            if key not in features[0]:
-                continue
-            pad_value = -100 if key.endswith("labels") else 0
-            max_len = max(len(feature[key]) for feature in features)
-            batch[key] = torch.tensor(
-                [
-                    feature[key] + [pad_value] * (max_len - len(feature[key]))
-                    for feature in features
-                ],
-                dtype=torch.long,
-            )
-
-        for key in features[0]:
-            if key not in batch:
-                batch[key] = [feature[key] for feature in features]
-        return batch
+        if return_tensors == "pt":
+            return {key: torch.tensor(value, dtype=torch.long) for key, value in padded.items()}
+        return padded
 
 
 @pytest.mark.skipif(LANSCallback is None, reason="LANSCallback 依赖缺失")
@@ -348,14 +347,40 @@ def test_explicit_dpo_record_separates_prompt_and_completion():
     assert record["rejected_labels"] == expected_rejected
 
 
-@pytest.mark.skipif(LANSDataCollator is None, reason="LANSDataCollator 依赖缺失")
-def test_online_iterable_collator_regenerates_rejected_and_preserves_chosen(monkeypatch):
-    monkeypatch.setattr(
-        unsloth_trainer_module,
-        "DPODataCollatorWithPadding",
-        _DummyPaddingCollator,
+@pytest.mark.skipif(unsloth_trainer_module is None, reason="显式 DPO collator 依赖缺失")
+def test_dpo_padding_collator_uses_shared_completion_width():
+    tokenizer = _DummyTokenizer()
+    collator = unsloth_trainer_module.DPODataCollatorWithPadding(
+        tokenizer=tokenizer,
+        max_length=128,
     )
 
+    feature_one = build_explicit_dpo_record(
+        tokenizer=tokenizer,
+        prompt="系统提示：",
+        chosen="较长的正样本输出",
+        rejected="短",
+        max_prompt_length=64,
+        max_length=128,
+    )
+    feature_two = build_explicit_dpo_record(
+        tokenizer=tokenizer,
+        prompt="系统提示：",
+        chosen="短",
+        rejected="显著更长的负样本输出，用来触发 shared completion padding 检查",
+        max_prompt_length=64,
+        max_length=128,
+    )
+
+    batch = collator([feature_one, feature_two])
+
+    assert batch["chosen_input_ids"].shape[1] == batch["rejected_input_ids"].shape[1]
+    assert batch["chosen_attention_mask"].shape == batch["rejected_attention_mask"].shape
+    assert batch["chosen_labels"].shape == batch["rejected_labels"].shape
+
+
+@pytest.mark.skipif(LANSDataCollator is None, reason="LANSDataCollator 依赖缺失")
+def test_online_iterable_collator_regenerates_rejected_and_preserves_chosen():
     tokenizer = _DummyTokenizer()
     sampler = _DummySampler()
     collator = LANSDataCollator(
@@ -392,6 +417,50 @@ def test_online_iterable_collator_regenerates_rejected_and_preserves_chosen(monk
     assert not torch.equal(batch_one["rejected_input_ids"][0], batch_two["rejected_input_ids"][0])
     assert torch.equal(batch_one["rejected_input_ids"][0], batch_one["rejected_labels"][0])
     assert torch.equal(batch_two["rejected_input_ids"][0], batch_two["rejected_labels"][0])
+    assert batch_one["chosen_attention_mask"].shape[1] == batch_one["rejected_attention_mask"].shape[1]
+    assert batch_two["chosen_attention_mask"].shape[1] == batch_two["rejected_attention_mask"].shape[1]
+
+
+@pytest.mark.skipif(LANSDataCollator is None, reason="LANSDataCollator 依赖缺失")
+def test_online_iterable_collator_aligns_completion_width_for_single_example():
+    tokenizer = _DummyTokenizer()
+
+    class _ShortRejectedSampler:
+        def generate_rejected(self, sample):
+            return {
+                "prompt": sample["prompt"],
+                "chosen": sample["chosen"],
+                "rejected": "短负样本",
+            }
+
+    collator = LANSDataCollator(
+        tokenizer=tokenizer,
+        lans_sampler=_ShortRejectedSampler(),
+        max_length=128,
+    )
+
+    base_feature = build_explicit_dpo_record(
+        tokenizer=tokenizer,
+        prompt="系统提示：",
+        chosen="这是一个明显更长的 chosen completion，用来触发宽度不一致。",
+        rejected="",
+        max_prompt_length=64,
+        max_length=128,
+    )
+    base_feature.update(
+        {
+            "text": "原始文本",
+            "event_types": ["质押"],
+        }
+    )
+
+    batch = collator([copy.deepcopy(base_feature)])
+
+    assert batch["chosen_input_ids"].shape[1] == batch["rejected_input_ids"].shape[1]
+    assert batch["chosen_attention_mask"].shape[1] == batch["rejected_attention_mask"].shape[1]
+    assert batch["chosen_labels"].shape[1] == batch["rejected_labels"].shape[1]
+    assert batch["rejected_attention_mask"][0, -1].item() == 0
+    assert batch["rejected_labels"][0, -1].item() == -100
 
 
 @pytest.mark.skipif(CGADPOTrainer is None, reason="CGADPOTrainer 依赖缺失")

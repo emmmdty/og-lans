@@ -41,7 +41,7 @@ try:
 except ImportError:
     # Fallback for older trl versions or when not exported
     from dataclasses import dataclass
-    from transformers import PreTrainedTokenizerBase, DataCollatorForSeq2Seq
+    from transformers import PreTrainedTokenizerBase
     from typing import Any, Dict, List, Optional, Union
 
     @dataclass
@@ -56,65 +56,63 @@ except ImportError:
         label_pad_token_id: int = -100
 
         def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-            # 使用 DataCollatorForSeq2Seq 辅助填充
-            base_collator = DataCollatorForSeq2Seq(
-                tokenizer=self.tokenizer,
-                padding=self.padding,
-                max_length=self.max_length,
-                pad_to_multiple_of=self.pad_to_multiple_of,
-                label_pad_token_id=self.label_pad_token_id
+            if not features:
+                return {}
+
+            padding_side = str(getattr(self.tokenizer, "padding_side", "right") or "right").lower()
+            if padding_side not in {"left", "right"}:
+                padding_side = "right"
+            pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
+            if pad_token_id is None:
+                pad_token_id = 0
+
+            def _pad_sequence(values: List[int], *, target_length: int, pad_value: int, side: str) -> List[int]:
+                seq = list(values)
+                pad_len = max(0, int(target_length) - len(seq))
+                padding = [pad_value] * pad_len
+                if side == "left":
+                    return padding + seq
+                return seq + padding
+
+            prompt_width = max(len(feature.get("prompt_input_ids", [])) for feature in features)
+            completion_width = 0
+            for key in ("chosen_input_ids", "rejected_input_ids"):
+                completion_width = max(
+                    completion_width,
+                    max((len(feature.get(key, [])) for feature in features), default=0),
+                )
+
+            field_specs = (
+                ("prompt_input_ids", prompt_width, int(pad_token_id), "left"),
+                ("prompt_attention_mask", prompt_width, 0, "left"),
+                ("chosen_input_ids", completion_width, int(pad_token_id), "right"),
+                ("chosen_attention_mask", completion_width, 0, "right"),
+                ("chosen_labels", completion_width, int(self.label_pad_token_id), "right"),
+                ("rejected_input_ids", completion_width, int(pad_token_id), "right"),
+                ("rejected_attention_mask", completion_width, 0, "right"),
+                ("rejected_labels", completion_width, int(self.label_pad_token_id), "right"),
             )
 
-            batch = {}
-
-            # 定义需要处理的 DPO 字段组
-            # 格式: {目标前缀: {原始字段名: 临时字段名}}
-            groups = {
-                "chosen": {
-                    "chosen_input_ids": "input_ids",
-                    "chosen_attention_mask": "attention_mask",
-                    "chosen_labels": "labels"
-                },
-                "rejected": {
-                    "rejected_input_ids": "input_ids",
-                    "rejected_attention_mask": "attention_mask",
-                    "rejected_labels": "labels"
-                },
-                "prompt": {
-                    "prompt_input_ids": "input_ids",
-                    "prompt_attention_mask": "attention_mask"
-                }
-            }
-
-            for group_name, mapping in groups.items():
-                # 提取子 batch
-                sub_features = []
-                for f in features:
-                    item = {}
-                    has_data = False
-                    for orig, temp in mapping.items():
-                        if orig in f:
-                            item[temp] = f[orig]
-                            has_data = True
-                    if has_data:
-                        sub_features.append(item)
-
-                if not sub_features:
+            batch: Dict[str, Any] = {}
+            for field_name, target_length, pad_value, side in field_specs:
+                if not any(field_name in feature for feature in features):
                     continue
+                batch[field_name] = torch.tensor(
+                    [
+                        _pad_sequence(
+                            list(feature.get(field_name, [])),
+                            target_length=target_length,
+                            pad_value=pad_value,
+                            side=side,
+                        )
+                        for feature in features
+                    ],
+                    dtype=torch.long,
+                )
 
-                # 填充
-                padded = base_collator(sub_features)
-
-                # 还原字段名并合并到 batch
-                for orig, temp in mapping.items():
-                    if temp in padded:
-                        batch[orig] = padded[temp]
-
-            # 复制其他非 Tensor 字段 (如 prompt 文本等)
-            if features:
-                for k in features[0].keys():
-                    if k not in batch:
-                        batch[k] = [f[k] for f in features]
+            for key in features[0]:
+                if key not in batch:
+                    batch[key] = [feature.get(key) for feature in features]
 
             return batch
 
@@ -1188,8 +1186,36 @@ class LANSDataCollator:
         self.tokenizer = tokenizer
         self.lans_sampler = lans_sampler
         self.max_length = max_length
-        # 使用 DPODataCollatorWithPadding 处理最终的 Padding
-        self.base_collator = DPODataCollatorWithPadding(tokenizer, max_length=max_length)
+
+    @staticmethod
+    def _to_list(values: Any) -> List[int]:
+        if isinstance(values, torch.Tensor):
+            return values.detach().cpu().tolist()
+        return list(values)
+
+    @staticmethod
+    def _shared_max_length(*groups: List[List[int]]) -> int:
+        lengths = [len(seq) for group in groups for seq in group]
+        return max(lengths, default=0)
+
+    @staticmethod
+    def _pad_batch(
+        sequences: List[List[int]],
+        *,
+        pad_value: int,
+        padding_side: str,
+        target_length: int,
+    ) -> torch.Tensor:
+        padded: List[List[int]] = []
+        for seq in sequences:
+            pad_len = max(0, target_length - len(seq))
+            if padding_side == "left":
+                padded.append(([pad_value] * pad_len) + seq)
+            else:
+                padded.append(seq + ([pad_value] * pad_len))
+        if not padded:
+            return torch.empty((0, target_length), dtype=torch.long)
+        return torch.tensor(padded, dtype=torch.long)
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -1197,8 +1223,7 @@ class LANSDataCollator:
         1. 提取原始信息 (chosen, prompt, etc)
         2. 调用 lans_sampler 生成动态 rejected
         3. Tokenize 新的 rejected
-        4. 构造 labels (mask prompt)
-        5. 调用 base_collator 进行 Padding
+        4. 显式对齐 chosen/rejected completion 宽度
         """
         prepared_features: List[Dict[str, Any]] = []
         required_fields = (
@@ -1237,7 +1262,12 @@ class LANSDataCollator:
             result = self.lans_sampler.generate_rejected(sample)
             rejected_content = result["rejected"]
             eos_token = self.tokenizer.eos_token or ""
-            prompt_len = len(prepared["prompt_input_ids"])
+            prompt_input_ids = self._to_list(prepared["prompt_input_ids"])
+            prompt_attention_mask = self._to_list(prepared["prompt_attention_mask"])
+            chosen_input_ids = self._to_list(prepared["chosen_input_ids"])
+            chosen_attention_mask = self._to_list(prepared["chosen_attention_mask"])
+            chosen_labels = self._to_list(prepared["chosen_labels"])
+            prompt_len = len(prompt_input_ids)
             max_completion_length = max(0, int(self.max_length) - prompt_len)
 
             # 3. Tokenize Rejected completion（prompt 单独保存在 prompt_input_ids 中）
@@ -1249,12 +1279,17 @@ class LANSDataCollator:
                 add_special_tokens=False,
             )
 
-            rejected_input_ids = tokenized_rejected["input_ids"]
-            rejected_attention_mask = tokenized_rejected["attention_mask"]
+            rejected_input_ids = list(tokenized_rejected["input_ids"])
+            rejected_attention_mask = list(tokenized_rejected["attention_mask"])
             rejected_labels = list(rejected_input_ids)
 
             # 5. 更新 feature (覆盖 DPOTrainer 预处理的 dummy rejected)
             prepared["rejected"] = rejected_content
+            prepared["prompt_input_ids"] = prompt_input_ids
+            prepared["prompt_attention_mask"] = prompt_attention_mask
+            prepared["chosen_input_ids"] = chosen_input_ids
+            prepared["chosen_attention_mask"] = chosen_attention_mask
+            prepared["chosen_labels"] = chosen_labels
             prepared["rejected_input_ids"] = rejected_input_ids
             prepared["rejected_attention_mask"] = rejected_attention_mask
             prepared["rejected_labels"] = rejected_labels
@@ -1262,8 +1297,75 @@ class LANSDataCollator:
             # chosen_input_ids 等字段保持不变 (由 DPOTrainer 预处理好)
             prepared_features.append(prepared)
 
-        # 6. 交给 Base Collator 进行 Padding 和 Tensor 转换
-        return self.base_collator(prepared_features)
+        prompt_pad_id = (
+            int(self.tokenizer.pad_token_id)
+            if getattr(self.tokenizer, "pad_token_id", None) is not None
+            else 0
+        )
+        prompt_width = self._shared_max_length(
+            [feature["prompt_input_ids"] for feature in prepared_features],
+        )
+        completion_width = self._shared_max_length(
+            [feature["chosen_input_ids"] for feature in prepared_features],
+            [feature["rejected_input_ids"] for feature in prepared_features],
+        )
+
+        batch: Dict[str, Any] = {
+            "prompt_input_ids": self._pad_batch(
+                [feature["prompt_input_ids"] for feature in prepared_features],
+                pad_value=prompt_pad_id,
+                padding_side="left",
+                target_length=prompt_width,
+            ),
+            "prompt_attention_mask": self._pad_batch(
+                [feature["prompt_attention_mask"] for feature in prepared_features],
+                pad_value=0,
+                padding_side="left",
+                target_length=prompt_width,
+            ),
+            "chosen_input_ids": self._pad_batch(
+                [feature["chosen_input_ids"] for feature in prepared_features],
+                pad_value=prompt_pad_id,
+                padding_side="right",
+                target_length=completion_width,
+            ),
+            "chosen_attention_mask": self._pad_batch(
+                [feature["chosen_attention_mask"] for feature in prepared_features],
+                pad_value=0,
+                padding_side="right",
+                target_length=completion_width,
+            ),
+            "chosen_labels": self._pad_batch(
+                [feature["chosen_labels"] for feature in prepared_features],
+                pad_value=-100,
+                padding_side="right",
+                target_length=completion_width,
+            ),
+            "rejected_input_ids": self._pad_batch(
+                [feature["rejected_input_ids"] for feature in prepared_features],
+                pad_value=prompt_pad_id,
+                padding_side="right",
+                target_length=completion_width,
+            ),
+            "rejected_attention_mask": self._pad_batch(
+                [feature["rejected_attention_mask"] for feature in prepared_features],
+                pad_value=0,
+                padding_side="right",
+                target_length=completion_width,
+            ),
+            "rejected_labels": self._pad_batch(
+                [feature["rejected_labels"] for feature in prepared_features],
+                pad_value=-100,
+                padding_side="right",
+                target_length=completion_width,
+            ),
+        }
+
+        for key in prepared_features[0]:
+            if key not in batch:
+                batch[key] = [feature[key] for feature in prepared_features]
+
+        return batch
 
 
 class UnslothDPOTrainerWrapper:
