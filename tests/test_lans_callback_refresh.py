@@ -1,3 +1,4 @@
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -8,18 +9,24 @@ try:
     from oglans.trainer.unsloth_trainer import (  # type: ignore
         CGADPOTrainer,
         LANSCallback,
+        LANSDataCollator,
         LANSIterableDataset,
         LANSNegativeSampler,
+        build_explicit_dpo_record,
         derive_online_iterable_max_steps,
     )
+    import oglans.trainer.unsloth_trainer as unsloth_trainer_module  # type: ignore
 
     _LANS_CALLBACK_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - 仅在缺少训练依赖时触发
     LANSCallback = None  # type: ignore
+    LANSDataCollator = None  # type: ignore
     LANSIterableDataset = None  # type: ignore
     LANSNegativeSampler = None  # type: ignore
     CGADPOTrainer = None  # type: ignore
+    build_explicit_dpo_record = None  # type: ignore
     derive_online_iterable_max_steps = None  # type: ignore
+    unsloth_trainer_module = None  # type: ignore
     _LANS_CALLBACK_IMPORT_ERROR = exc
 
 
@@ -77,6 +84,58 @@ class _DummySCV:
     def is_false_negative(self, text, neg_json):
         self.calls += 1
         return self.false_negative
+
+
+class _DummyTokenizer:
+    eos_token = "<eos>"
+    pad_token_id = 0
+    padding_side = "right"
+
+    def __call__(self, text, add_special_tokens=False, truncation=False, max_length=None):
+        token_ids = [((ord(ch) - 31) % 97) + 1 for ch in text]
+        if truncation and max_length is not None:
+            token_ids = token_ids[:max_length]
+        return {
+            "input_ids": token_ids,
+            "attention_mask": [1] * len(token_ids),
+        }
+
+
+class _DummyPaddingCollator:
+    def __init__(self, tokenizer, max_length=None):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __call__(self, features):
+        batch = {}
+        pad_keys = (
+            "prompt_input_ids",
+            "prompt_attention_mask",
+            "chosen_input_ids",
+            "chosen_attention_mask",
+            "chosen_labels",
+            "rejected_input_ids",
+            "rejected_attention_mask",
+            "rejected_labels",
+        )
+
+        for key in pad_keys:
+            if key not in features[0]:
+                continue
+            pad_value = -100 if key.endswith("labels") else 0
+            max_len = max(len(feature[key]) for feature in features)
+            batch[key] = torch.tensor(
+                [
+                    feature[key] + [pad_value] * (max_len - len(feature[key]))
+                    for feature in features
+                ],
+                dtype=torch.long,
+            )
+
+        for key in features[0]:
+            if key not in batch:
+                batch[key] = [feature[key] for feature in features]
+        return batch
 
 
 @pytest.mark.skipif(LANSCallback is None, reason="LANSCallback 依赖缺失")
@@ -198,6 +257,42 @@ def test_on_step_end_uses_fresh_aux_loss_snapshot():
     assert scheduler.last_loss == pytest.approx(0.123)
 
 
+@pytest.mark.skipif(LANSCallback is None, reason="LANSCallback 依赖缺失")
+def test_online_iterable_callback_skips_dataset_refresh():
+    base_samples = [
+        {"prompt": "p1", "chosen": "c1", "text": "t1", "event_types": []},
+        {"prompt": "p2", "chosen": "c2", "text": "t2", "event_types": []},
+    ]
+    scheduler = _DummyScheduler()
+    sampler = _DummySampler()
+    original_dataset = object()
+    trainer_ref = SimpleNamespace(
+        train_dataset=original_dataset,
+        _train_dataloader="cached",
+        accelerator=None,
+    )
+
+    cb = LANSCallback(
+        lans_scheduler=scheduler,
+        lans_sampler=sampler,
+        trainer_ref=trainer_ref,
+        base_samples=base_samples,
+        runtime_mode="online_iterable",
+        refresh_log_interval=1,
+    )
+
+    cb.on_epoch_begin(
+        args=SimpleNamespace(output_dir="."),
+        state=SimpleNamespace(epoch=1),
+        control=SimpleNamespace(),
+    )
+
+    assert sampler.epoch == 1
+    assert sampler.generate_calls == 0
+    assert trainer_ref.train_dataset is original_dataset
+    assert trainer_ref._train_dataloader == "cached"
+
+
 @pytest.mark.skipif(LANSIterableDataset is None, reason="LANSIterableDataset 依赖缺失")
 def test_online_iterable_dataset_reports_length():
     dataset = LANSIterableDataset(
@@ -226,6 +321,55 @@ def test_online_iterable_max_steps_is_derived_from_length():
     )
 
     assert derived == 9
+
+
+@pytest.mark.skipif(LANSDataCollator is None, reason="LANSDataCollator 依赖缺失")
+def test_online_iterable_collator_regenerates_rejected_and_preserves_chosen(monkeypatch):
+    monkeypatch.setattr(
+        unsloth_trainer_module,
+        "DPODataCollatorWithPadding",
+        _DummyPaddingCollator,
+    )
+
+    tokenizer = _DummyTokenizer()
+    sampler = _DummySampler()
+    collator = LANSDataCollator(
+        tokenizer=tokenizer,
+        lans_sampler=sampler,
+        max_length=128,
+    )
+
+    base_feature = build_explicit_dpo_record(
+        tokenizer=tokenizer,
+        prompt="系统提示：",
+        chosen='{"event_list":[]}',
+        rejected="占位符",
+        max_prompt_length=64,
+        max_length=128,
+    )
+    base_feature.update(
+        {
+            "text": "原始文本",
+            "event_types": ["质押"],
+        }
+    )
+    chosen_input_ids = list(base_feature["chosen_input_ids"])
+    chosen_labels = list(base_feature["chosen_labels"])
+    prompt_len = len(base_feature["prompt_input_ids"])
+
+    batch_one = collator([copy.deepcopy(base_feature)])
+    batch_two = collator([copy.deepcopy(base_feature)])
+
+    assert sampler.generate_calls == 2
+    assert torch.equal(batch_one["chosen_input_ids"][0], torch.tensor(chosen_input_ids))
+    assert torch.equal(batch_two["chosen_input_ids"][0], torch.tensor(chosen_input_ids))
+    assert torch.equal(batch_one["chosen_labels"][0], torch.tensor(chosen_labels))
+    assert torch.equal(batch_two["chosen_labels"][0], torch.tensor(chosen_labels))
+    assert not torch.equal(batch_one["rejected_input_ids"][0], batch_two["rejected_input_ids"][0])
+    assert torch.all(batch_one["rejected_labels"][0][:prompt_len] == -100)
+    assert torch.all(batch_two["rejected_labels"][0][:prompt_len] == -100)
+    assert torch.any(batch_one["rejected_labels"][0][prompt_len:] != -100)
+    assert torch.any(batch_two["rejected_labels"][0][prompt_len:] != -100)
 
 
 @pytest.mark.skipif(CGADPOTrainer is None, reason="CGADPOTrainer 依赖缺失")
