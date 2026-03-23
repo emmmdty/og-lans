@@ -1,0 +1,14 @@
+extends: ./config_compare_base.yaml
+
+project:
+  name: "Plain-SFT-Gen"
+  description: "Comparable plain SFT baseline for Route A preparation"
+
+training:
+  mode: "sft"
+
+algorithms:
+  lans:
+    enabled: false
+  scv:
+    enabled: false

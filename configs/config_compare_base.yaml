@@ -1,0 +1,16 @@
+extends: ./config.yaml
+
+project:
+  name: "OG-LANS-Compare-Base"
+
+training:
+  mode: "preference"
+
+comparison:
+  eval_protocol_path: "./configs/eval_protocol.yaml"
+  role_alias_map_path: "./configs/role_aliases_duee_fin.yaml"
+  prompt_variant: "zeroshot"
+  fewshot_num_examples: 3
+  prompt_builder_version: "route_a_compare_v1"
+  parser_version: "route_a_compare_v1"
+  normalization_version: "route_a_compare_v1"

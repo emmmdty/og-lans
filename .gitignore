@@ -1,0 +1,71 @@
+# Secrets and local machine configuration
+.env
+.env.*
+!.env.example
+sync_config.yaml
+sync_config.json
+sync_to_remote.py
+
+# Local data and derived artifacts
+data/raw/
+data/processed/
+data/schemas/
+logs/
+backup/
+
+# Python cache and environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
+.python-version
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Model weights and large local binaries
+*.bin
+*.safetensors
+*.gguf
+*.ggml
+*.pt
+*.pth
+*.onnx
+*.h5
+*.ckpt
+
+# Runtime caches
+.cache/
+cache/
+hub/
+.huggingface/
+unsloth_compiled_cache/
+
+# IDE and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Temporary files and logs
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
