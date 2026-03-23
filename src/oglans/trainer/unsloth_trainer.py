@@ -222,9 +222,6 @@ def has_explicit_dpo_columns(dataset: Any) -> bool:
     if column_names is None:
         return False
     required_columns = {
-        "prompt",
-        "chosen",
-        "rejected",
         "prompt_input_ids",
         "prompt_attention_mask",
         "chosen_input_ids",
@@ -1217,6 +1214,23 @@ class LANSDataCollator:
             return torch.empty((0, target_length), dtype=torch.long)
         return torch.tensor(padded, dtype=torch.long)
 
+    def _decode_text_from_ids(self, token_ids: List[int], *, strip_eos: bool = False) -> str:
+        decode = getattr(self.tokenizer, "decode", None)
+        if decode is None:
+            raise ValueError(
+                "online_iterable collator needs raw prompt/chosen text or a tokenizer.decode() "
+                "implementation to reconstruct them from explicit DPO token ids."
+            )
+        text = decode(
+            token_ids,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        eos_token = getattr(self.tokenizer, "eos_token", None)
+        if strip_eos and eos_token and text.endswith(eos_token):
+            text = text[: -len(eos_token)]
+        return text
+
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         处理一个 Batch 的数据：
@@ -1227,8 +1241,6 @@ class LANSDataCollator:
         """
         prepared_features: List[Dict[str, Any]] = []
         required_fields = (
-            "prompt",
-            "chosen",
             "text",
             "event_types",
             "prompt_input_ids",
@@ -1243,18 +1255,30 @@ class LANSDataCollator:
             missing_fields = [field_name for field_name in required_fields if field_name not in prepared]
             if missing_fields:
                 raise ValueError(
-                    "online_iterable collator requires explicit DPO fields plus raw sampling "
+                    "online_iterable collator requires explicit DPO fields plus sampling "
                     f"context; missing={missing_fields}. "
-                    "Ensure the training dataset keeps prompt/chosen/text/event_types and "
-                    "pre-tokenized prompt/chosen columns."
+                    "Ensure the training dataset keeps text/event_types and pre-tokenized "
+                    "prompt/chosen columns."
                 )
+
+            prompt_input_ids = self._to_list(prepared["prompt_input_ids"])
+            prompt_attention_mask = self._to_list(prepared["prompt_attention_mask"])
+            chosen_input_ids = self._to_list(prepared["chosen_input_ids"])
+            chosen_attention_mask = self._to_list(prepared["chosen_attention_mask"])
+            chosen_labels = self._to_list(prepared["chosen_labels"])
+            prompt_text = prepared.get("prompt")
+            if prompt_text is None:
+                prompt_text = self._decode_text_from_ids(prompt_input_ids)
+            chosen_text = prepared.get("chosen")
+            if chosen_text is None:
+                chosen_text = self._decode_text_from_ids(chosen_input_ids, strip_eos=True)
 
             # 1. 构造采样所需的样本字典
             sample = {
-                "chosen": prepared["chosen"],
+                "chosen": chosen_text,
                 "text": prepared["text"],
                 "event_types": prepared["event_types"],
-                "prompt": prepared["prompt"],
+                "prompt": prompt_text,
             }
 
             # 2. 动态生成 Negative (基于当前 LANS Competence)
@@ -1262,11 +1286,6 @@ class LANSDataCollator:
             result = self.lans_sampler.generate_rejected(sample)
             rejected_content = result["rejected"]
             eos_token = self.tokenizer.eos_token or ""
-            prompt_input_ids = self._to_list(prepared["prompt_input_ids"])
-            prompt_attention_mask = self._to_list(prepared["prompt_attention_mask"])
-            chosen_input_ids = self._to_list(prepared["chosen_input_ids"])
-            chosen_attention_mask = self._to_list(prepared["chosen_attention_mask"])
-            chosen_labels = self._to_list(prepared["chosen_labels"])
             prompt_len = len(prompt_input_ids)
             max_completion_length = max(0, int(self.max_length) - prompt_len)
 
@@ -1284,6 +1303,8 @@ class LANSDataCollator:
             rejected_labels = list(rejected_input_ids)
 
             # 5. 更新 feature (覆盖 DPOTrainer 预处理的 dummy rejected)
+            prepared["prompt"] = prompt_text
+            prepared["chosen"] = chosen_text
             prepared["rejected"] = rejected_content
             prepared["prompt_input_ids"] = prompt_input_ids
             prepared["prompt_attention_mask"] = prompt_attention_mask

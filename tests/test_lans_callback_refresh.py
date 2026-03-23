@@ -14,6 +14,7 @@ try:
         LANSNegativeSampler,
         build_explicit_dpo_record,
         derive_online_iterable_max_steps,
+        has_explicit_dpo_columns,
     )
     import oglans.trainer.unsloth_trainer as unsloth_trainer_module  # type: ignore
 
@@ -26,6 +27,7 @@ except Exception as exc:  # pragma: no cover - 仅在缺少训练依赖时触发
     CGADPOTrainer = None  # type: ignore
     build_explicit_dpo_record = None  # type: ignore
     derive_online_iterable_max_steps = None  # type: ignore
+    has_explicit_dpo_columns = None  # type: ignore
     unsloth_trainer_module = None  # type: ignore
     _LANS_CALLBACK_IMPORT_ERROR = exc
 
@@ -91,14 +93,35 @@ class _DummyTokenizer:
     pad_token_id = 0
     padding_side = "right"
 
+    def __init__(self):
+        self._char_to_id = {}
+        self._id_to_char = {}
+        self._next_token_id = 1
+
     def __call__(self, text, add_special_tokens=False, truncation=False, max_length=None):
-        token_ids = [((ord(ch) - 31) % 97) + 1 for ch in text]
+        token_ids = []
+        for ch in text:
+            token_id = self._char_to_id.get(ch)
+            if token_id is None:
+                token_id = self._next_token_id
+                self._next_token_id += 1
+                self._char_to_id[ch] = token_id
+                self._id_to_char[token_id] = ch
+            token_ids.append(token_id)
         if truncation and max_length is not None:
             token_ids = token_ids[:max_length]
         return {
             "input_ids": token_ids,
             "attention_mask": [1] * len(token_ids),
         }
+
+    def decode(self, token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False):
+        decoded = []
+        for token_id in token_ids:
+            if token_id == self.pad_token_id:
+                continue
+            decoded.append(self._id_to_char.get(int(token_id), "?"))
+        return "".join(decoded)
 
     def pad(
         self,
@@ -322,6 +345,26 @@ def test_online_iterable_max_steps_is_derived_from_length():
     assert derived == 9
 
 
+@pytest.mark.skipif(has_explicit_dpo_columns is None, reason="显式 DPO 列检测依赖缺失")
+def test_explicit_dpo_column_detection_accepts_tokenized_only_dataset():
+    dataset = SimpleNamespace(
+        column_names=[
+            "prompt_input_ids",
+            "prompt_attention_mask",
+            "chosen_input_ids",
+            "chosen_attention_mask",
+            "chosen_labels",
+            "rejected_input_ids",
+            "rejected_attention_mask",
+            "rejected_labels",
+            "text",
+            "event_types",
+        ]
+    )
+
+    assert has_explicit_dpo_columns(dataset) is True
+
+
 @pytest.mark.skipif(build_explicit_dpo_record is None, reason="显式 DPO record 构造依赖缺失")
 def test_explicit_dpo_record_separates_prompt_and_completion():
     tokenizer = _DummyTokenizer()
@@ -419,6 +462,41 @@ def test_online_iterable_collator_regenerates_rejected_and_preserves_chosen():
     assert torch.equal(batch_two["rejected_input_ids"][0], batch_two["rejected_labels"][0])
     assert batch_one["chosen_attention_mask"].shape[1] == batch_one["rejected_attention_mask"].shape[1]
     assert batch_two["chosen_attention_mask"].shape[1] == batch_two["rejected_attention_mask"].shape[1]
+
+
+@pytest.mark.skipif(LANSDataCollator is None, reason="LANSDataCollator 依赖缺失")
+def test_online_iterable_collator_reconstructs_missing_prompt_and_chosen_from_tokens():
+    tokenizer = _DummyTokenizer()
+    sampler = _DummySampler()
+    collator = LANSDataCollator(
+        tokenizer=tokenizer,
+        lans_sampler=sampler,
+        max_length=128,
+    )
+
+    base_feature = build_explicit_dpo_record(
+        tokenizer=tokenizer,
+        prompt="系统提示：",
+        chosen='{"event_list":[]}',
+        rejected="占位符",
+        max_prompt_length=64,
+        max_length=128,
+    )
+    base_feature.pop("prompt")
+    base_feature.pop("chosen")
+    base_feature.update(
+        {
+            "text": "原始文本",
+            "event_types": ["质押"],
+        }
+    )
+
+    batch = collator([copy.deepcopy(base_feature)])
+
+    assert sampler.generate_calls == 1
+    assert batch["prompt"] == ["系统提示："]
+    assert batch["chosen"] == ['{"event_list":[]}']
+    assert batch["chosen_input_ids"].shape[1] == batch["rejected_input_ids"].shape[1]
 
 
 @pytest.mark.skipif(LANSDataCollator is None, reason="LANSDataCollator 依赖缺失")
