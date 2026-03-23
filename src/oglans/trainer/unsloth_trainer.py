@@ -218,6 +218,27 @@ def derive_online_iterable_max_steps(
     return max(1, int(math.ceil(steps_per_epoch * epochs)))
 
 
+def has_explicit_dpo_columns(dataset: Any) -> bool:
+    """检查数据集是否已经包含显式 DPO tokenized 字段。"""
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is None:
+        return False
+    required_columns = {
+        "prompt",
+        "chosen",
+        "rejected",
+        "prompt_input_ids",
+        "prompt_attention_mask",
+        "chosen_input_ids",
+        "chosen_attention_mask",
+        "chosen_labels",
+        "rejected_input_ids",
+        "rejected_attention_mask",
+        "rejected_labels",
+    }
+    return required_columns.issubset(set(column_names))
+
+
 # ============================================================================
 # CGA-Enhanced DPO Trainer: 对比梯度放大机制
 # ============================================================================
@@ -296,6 +317,14 @@ class CGADPOTrainer(DPOTrainer):
             f"odpo_offset_static={self.odpo_offset_static:.4f}, "
             f"odpo_offset_clip={self.odpo_offset_clip}"
         )
+
+    def _prepare_dataset(self, dataset, processing_class, args, dataset_name):
+        if isinstance(dataset, Dataset) and has_explicit_dpo_columns(dataset):
+            logger.info(
+                f"♻️ {dataset_name} dataset 已包含显式 DPO 字段，跳过上游 map 预处理。"
+            )
+            return dataset
+        return super()._prepare_dataset(dataset, processing_class, args, dataset_name)
 
     def _compute_rpo_weight(self) -> float:
         """RPO 权重调度：预热后达到目标 alpha。"""
@@ -1083,6 +1112,11 @@ class LANSIterableDataset(IterableDataset):
 
     ⚠️ 警告：此类不支持 num_workers > 0，因为 Worker 进程无法同步主进程的能力值更新。
     请确保 DPOConfig 中设置 dataloader_num_workers=0。
+
+    说明：
+    当前 Unsloth/TRL 初始化链路会在 Trainer 构造阶段调用 `dataset.map(...)`。
+    因此 active online 训练主路径不再直接使用本 IterableDataset，而改为
+    `datasets.Dataset + LANSDataCollator` 的组合实现真正的按 batch 在线负采样。
     """
 
     def __init__(
@@ -1123,11 +1157,10 @@ class LANSIterableDataset(IterableDataset):
 
 class LANSDataCollator:
     """
-    [Legacy] LANS 动态负采样 Collator（默认训练路径未启用）
+    LANS 动态负采样 Collator。
 
-    历史实现：在 DataLoader 批次生成时动态调用 LANS 采样器生成负样本。
-    当前默认主路径采用“初始全量 + 每 Epoch 刷新”的训练机制，不启用 per-batch collator。
-    该类仅保留用于对照实验与向后兼容。
+    online_iterable 运行时通过 map-style Dataset 满足 Unsloth/TRL 的初始化要求，
+    再由该 collator 在 DataLoader 取 batch 时按当前 competence 动态生成 rejected。
     """
 
     def __init__(self, tokenizer, lans_sampler: LANSNegativeSampler, max_length: int = 2048):
@@ -1146,30 +1179,48 @@ class LANSDataCollator:
         4. 构造 labels (mask prompt)
         5. 调用 base_collator 进行 Padding
         """
-        # 预先计算 pad_token_id (如果 base_collator 需要，虽然后面调用了它)
+        prepared_features: List[Dict[str, Any]] = []
+        required_fields = (
+            "prompt",
+            "chosen",
+            "text",
+            "event_types",
+            "prompt_input_ids",
+            "prompt_attention_mask",
+            "chosen_input_ids",
+            "chosen_attention_mask",
+            "chosen_labels",
+        )
 
         for feature in features:
-            # 确保有必要的字段 (DPOTrainer remove_unused_columns=False 应保留这些)
-            if "prompt" not in feature or "chosen" not in feature:
-                continue
+            prepared = dict(feature)
+            missing_fields = [field_name for field_name in required_fields if field_name not in prepared]
+            if missing_fields:
+                raise ValueError(
+                    "online_iterable collator requires explicit DPO fields plus raw sampling "
+                    f"context; missing={missing_fields}. "
+                    "Ensure the training dataset keeps prompt/chosen/text/event_types and "
+                    "pre-tokenized prompt/chosen columns."
+                )
 
             # 1. 构造采样所需的样本字典
             sample = {
-                "chosen": feature["chosen"],
-                "text": feature.get("text", ""),
-                "event_types": feature.get("event_types", []),
-                "prompt": feature.get("prompt", "")
+                "chosen": prepared["chosen"],
+                "text": prepared["text"],
+                "event_types": prepared["event_types"],
+                "prompt": prepared["prompt"],
             }
 
             # 2. 动态生成 Negative (基于当前 LANS Competence)
             # 注意：generate_rejected 内部会读取 lans_scheduler 的最新状态
             result = self.lans_sampler.generate_rejected(sample)
             rejected_content = result["rejected"]
+            eos_token = self.tokenizer.eos_token or ""
 
             # 3. Tokenize Prompt + Rejected
             # prompt 已经包含 Chat Template 格式
-            prompt = feature["prompt"]
-            full_rejected_text = prompt + rejected_content + self.tokenizer.eos_token
+            prompt = prepared["prompt"]
+            full_rejected_text = prompt + rejected_content + eos_token
 
             tokenized_rejected = self.tokenizer(
                 full_rejected_text,
@@ -1198,14 +1249,16 @@ class LANSDataCollator:
                 rejected_labels[i] = -100
 
             # 5. 更新 feature (覆盖 DPOTrainer 预处理的 dummy rejected)
-            feature["rejected_input_ids"] = rejected_input_ids
-            feature["rejected_attention_mask"] = rejected_attention_mask
-            feature["rejected_labels"] = rejected_labels
+            prepared["rejected"] = rejected_content
+            prepared["rejected_input_ids"] = rejected_input_ids
+            prepared["rejected_attention_mask"] = rejected_attention_mask
+            prepared["rejected_labels"] = rejected_labels
 
             # chosen_input_ids 等字段保持不变 (由 DPOTrainer 预处理好)
+            prepared_features.append(prepared)
 
         # 6. 交给 Base Collator 进行 Padding 和 Tensor 转换
-        return self.base_collator(features)
+        return self.base_collator(prepared_features)
 
 
 class UnslothDPOTrainerWrapper:
@@ -1437,6 +1490,39 @@ class UnslothDPOTrainerWrapper:
         logger.info(
             f"✅ {log_prefix}完成，共 {len(records)} 条样本 "
             f"(耗时 {elapsed:.1f}s, 吞吐 {speed:.2f} samples/s)"
+        )
+        return dataset, elapsed
+
+    def _build_online_lans_scaffold_dataset(
+        self,
+        base_samples: List[Dict[str, Any]],
+        *,
+        require_valid_labels: bool,
+    ) -> Tuple[Dataset, float]:
+        """
+        为 online_iterable 构造可被 Unsloth/TRL 预处理的 map-style Dataset。
+
+        rejected 字段先使用占位值；真实负样本在 LANSDataCollator 中按 batch 动态生成。
+        """
+        init_start_ts = time.perf_counter()
+        records = [
+            self._build_tokenized_dpo_record(
+                prompt=sample["prompt"],
+                chosen=sample["chosen"],
+                rejected="",
+                require_valid_labels=require_valid_labels,
+                extra_fields={
+                    "text": sample.get("text", ""),
+                    "event_types": sample.get("event_types", []),
+                },
+            )
+            for sample in base_samples
+        ]
+        dataset = Dataset.from_list(records)
+        elapsed = time.perf_counter() - init_start_ts
+        logger.info(
+            "✅ online_iterable 初始 scaffold 构建完成，共 "
+            f"{len(records)} 条样本 (耗时 {elapsed:.1f}s)"
         )
         return dataset, elapsed
 
@@ -1703,19 +1789,21 @@ class UnslothDPOTrainerWrapper:
 
         if use_online_lans:
             if runtime_mode == "online_iterable":
-                logger.info("🔄 启用 LANS 自适应采样模式 (lazy online_iterable)")
+                logger.info("🔄 启用 LANS 自适应采样模式 (collator-backed online_iterable)")
                 self.lans_runtime_mode = "online_iterable"
-                self.lans_dataset = LANSIterableDataset(
+                dataset, scaffold_elapsed = self._build_online_lans_scaffold_dataset(
                     base_samples=base_dataset,
-                    lans_sampler=self.lans_sampler,
-                    sample_builder=lambda sample, result: self._build_tokenized_record_from_sampler(
-                        sample,
-                        result,
-                        require_valid_labels=rpo_require_valid_labels and rpo_alpha > 0,
-                    ),
-                    seed=self.config['project']['seed'],
+                    require_valid_labels=rpo_require_valid_labels and rpo_alpha > 0,
                 )
-                dataset = self.lans_dataset
+                self.lans_dataset = None
+                data_collator = LANSDataCollator(
+                    tokenizer=self.tokenizer,
+                    lans_sampler=self.lans_sampler,
+                    max_length=max_seq_len,
+                )
+                self.runtime_stats["phase_timings_seconds"]["online_dataset_scaffold"] = round(
+                    scaffold_elapsed, 4
+                )
                 self.runtime_stats["phase_timings_seconds"]["initial_negative_generation"] = 0.0
             else:
                 logger.info("🔄 启用 LANS 自适应采样模式 (materialized_epoch_refresh)")
@@ -1729,6 +1817,7 @@ class UnslothDPOTrainerWrapper:
                 self.runtime_stats["phase_timings_seconds"]["initial_negative_generation"] = round(
                     init_elapsed, 4
                 )
+                self.runtime_stats["phase_timings_seconds"]["online_dataset_scaffold"] = 0.0
 
             if self.scv is not None:
                 self.runtime_stats["scv_runtime"] = {
@@ -1742,6 +1831,7 @@ class UnslothDPOTrainerWrapper:
         else:
             dataset = base_dataset
             self.runtime_stats["phase_timings_seconds"]["initial_negative_generation"] = 0.0
+            self.runtime_stats["phase_timings_seconds"]["online_dataset_scaffold"] = 0.0
 
         if use_online_lans and runtime_mode == "online_iterable" and int(getattr(dpo_config, "max_steps", -1)) <= 0:
             derived_max_steps = derive_online_iterable_max_steps(
