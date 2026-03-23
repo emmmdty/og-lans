@@ -323,6 +323,31 @@ def test_online_iterable_max_steps_is_derived_from_length():
     assert derived == 9
 
 
+@pytest.mark.skipif(build_explicit_dpo_record is None, reason="显式 DPO record 构造依赖缺失")
+def test_explicit_dpo_record_separates_prompt_and_completion():
+    tokenizer = _DummyTokenizer()
+    record = build_explicit_dpo_record(
+        tokenizer=tokenizer,
+        prompt="系统提示：",
+        chosen='{"event_list":[]}',
+        rejected='{"event_list":[1]}',
+        max_prompt_length=64,
+        max_length=128,
+    )
+
+    expected_prompt = tokenizer("系统提示：", add_special_tokens=False)["input_ids"]
+    expected_chosen = tokenizer('{"event_list":[]}' + tokenizer.eos_token, add_special_tokens=False)["input_ids"]
+    expected_rejected = tokenizer('{"event_list":[1]}' + tokenizer.eos_token, add_special_tokens=False)["input_ids"]
+
+    assert record["prompt_input_ids"] == expected_prompt
+    assert record["chosen_input_ids"] == expected_chosen
+    assert record["rejected_input_ids"] == expected_rejected
+    assert record["chosen_attention_mask"] == [1] * len(expected_chosen)
+    assert record["rejected_attention_mask"] == [1] * len(expected_rejected)
+    assert record["chosen_labels"] == expected_chosen
+    assert record["rejected_labels"] == expected_rejected
+
+
 @pytest.mark.skipif(LANSDataCollator is None, reason="LANSDataCollator 依赖缺失")
 def test_online_iterable_collator_regenerates_rejected_and_preserves_chosen(monkeypatch):
     monkeypatch.setattr(
@@ -355,7 +380,6 @@ def test_online_iterable_collator_regenerates_rejected_and_preserves_chosen(monk
     )
     chosen_input_ids = list(base_feature["chosen_input_ids"])
     chosen_labels = list(base_feature["chosen_labels"])
-    prompt_len = len(base_feature["prompt_input_ids"])
 
     batch_one = collator([copy.deepcopy(base_feature)])
     batch_two = collator([copy.deepcopy(base_feature)])
@@ -366,10 +390,39 @@ def test_online_iterable_collator_regenerates_rejected_and_preserves_chosen(monk
     assert torch.equal(batch_one["chosen_labels"][0], torch.tensor(chosen_labels))
     assert torch.equal(batch_two["chosen_labels"][0], torch.tensor(chosen_labels))
     assert not torch.equal(batch_one["rejected_input_ids"][0], batch_two["rejected_input_ids"][0])
-    assert torch.all(batch_one["rejected_labels"][0][:prompt_len] == -100)
-    assert torch.all(batch_two["rejected_labels"][0][:prompt_len] == -100)
-    assert torch.any(batch_one["rejected_labels"][0][prompt_len:] != -100)
-    assert torch.any(batch_two["rejected_labels"][0][prompt_len:] != -100)
+    assert torch.equal(batch_one["rejected_input_ids"][0], batch_one["rejected_labels"][0])
+    assert torch.equal(batch_two["rejected_input_ids"][0], batch_two["rejected_labels"][0])
+
+
+@pytest.mark.skipif(CGADPOTrainer is None, reason="CGADPOTrainer 依赖缺失")
+def test_compute_chosen_sft_loss_reconstructs_prompt_and_completion():
+    class _SpyModel:
+        def __init__(self):
+            self.input_ids = None
+            self.attention_mask = None
+            self.labels = None
+
+        def __call__(self, input_ids, attention_mask, labels, use_cache=False, return_dict=True):
+            self.input_ids = input_ids
+            self.attention_mask = attention_mask
+            self.labels = labels
+            return SimpleNamespace(loss=torch.tensor(0.5))
+
+    model = _SpyModel()
+    inputs = {
+        "prompt_input_ids": torch.tensor([[10, 11, 12]], dtype=torch.long),
+        "prompt_attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.long),
+        "chosen_input_ids": torch.tensor([[21, 22, 0]], dtype=torch.long),
+        "chosen_attention_mask": torch.tensor([[1, 1, 0]], dtype=torch.long),
+        "chosen_labels": torch.tensor([[21, 22, -100]], dtype=torch.long),
+    }
+
+    loss = CGADPOTrainer._compute_chosen_sft_loss(model, inputs)
+
+    assert loss is not None
+    assert torch.equal(model.input_ids, torch.tensor([[10, 11, 12, 21, 22, 0]], dtype=torch.long))
+    assert torch.equal(model.attention_mask, torch.tensor([[1, 1, 1, 1, 1, 0]], dtype=torch.long))
+    assert torch.equal(model.labels, torch.tensor([[-100, -100, -100, 21, 22, -100]], dtype=torch.long))
 
 
 @pytest.mark.skipif(CGADPOTrainer is None, reason="CGADPOTrainer 依赖缺失")

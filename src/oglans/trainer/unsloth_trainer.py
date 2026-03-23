@@ -145,7 +145,7 @@ def build_explicit_dpo_record(
     require_valid_chosen_labels: bool = False,
 ) -> Dict[str, Any]:
     """
-    显式构造 DPO 样本，避免依赖 TRL 隐式 preprocessing。
+    显式构造 DPO 样本，遵循 TRL/Unsloth 的 prompt/completion 分离契约。
     """
     prompt = prompt or ""
     chosen = chosen or ""
@@ -178,12 +178,12 @@ def build_explicit_dpo_record(
     chosen_completion_ids = _encode_completion(chosen)
     rejected_completion_ids = _encode_completion(rejected)
 
-    chosen_input_ids = prompt_input_ids + chosen_completion_ids
-    rejected_input_ids = prompt_input_ids + rejected_completion_ids
+    chosen_input_ids = list(chosen_completion_ids)
+    rejected_input_ids = list(rejected_completion_ids)
     chosen_attention_mask = [1] * len(chosen_input_ids)
     rejected_attention_mask = [1] * len(rejected_input_ids)
-    chosen_labels = ([-100] * len(prompt_input_ids)) + chosen_completion_ids
-    rejected_labels = ([-100] * len(prompt_input_ids)) + rejected_completion_ids
+    chosen_labels = list(chosen_completion_ids)
+    rejected_labels = list(rejected_completion_ids)
 
     if require_valid_chosen_labels and not any(label != -100 for label in chosen_labels):
         raise ValueError(
@@ -342,21 +342,42 @@ class CGADPOTrainer(DPOTrainer):
         inputs: Dict[str, Union[torch.Tensor, Any]],
     ) -> Optional[torch.Tensor]:
         """计算 chosen 序列的 NLL（SFT anchor）。"""
+        prompt_input_ids = inputs.get("prompt_input_ids")
+        prompt_attention_mask = inputs.get("prompt_attention_mask")
         chosen_input_ids = inputs.get("chosen_input_ids")
         chosen_attention_mask = inputs.get("chosen_attention_mask")
         chosen_labels = inputs.get("chosen_labels")
 
-        if chosen_input_ids is None or chosen_labels is None:
+        if prompt_input_ids is None or chosen_input_ids is None or chosen_labels is None:
             return None
         if not isinstance(chosen_labels, torch.Tensor):
             return None
         if not torch.any(chosen_labels != -100):
             return None
 
+        if not isinstance(prompt_input_ids, torch.Tensor):
+            return None
+        if not isinstance(chosen_input_ids, torch.Tensor):
+            return None
+
+        if prompt_attention_mask is None:
+            prompt_attention_mask = torch.ones_like(prompt_input_ids)
+        if chosen_attention_mask is None:
+            chosen_attention_mask = torch.ones_like(chosen_input_ids)
+        if not isinstance(prompt_attention_mask, torch.Tensor):
+            return None
+        if not isinstance(chosen_attention_mask, torch.Tensor):
+            return None
+
+        prompt_labels = torch.full_like(prompt_input_ids, -100)
+        full_input_ids = torch.cat((prompt_input_ids, chosen_input_ids), dim=1)
+        full_attention_mask = torch.cat((prompt_attention_mask, chosen_attention_mask), dim=1)
+        full_labels = torch.cat((prompt_labels, chosen_labels), dim=1)
+
         outputs = model(
-            input_ids=chosen_input_ids,
-            attention_mask=chosen_attention_mask,
-            labels=chosen_labels,
+            input_ids=full_input_ids,
+            attention_mask=full_attention_mask,
+            labels=full_labels,
             use_cache=False,
             return_dict=True,
         )
@@ -1216,37 +1237,21 @@ class LANSDataCollator:
             result = self.lans_sampler.generate_rejected(sample)
             rejected_content = result["rejected"]
             eos_token = self.tokenizer.eos_token or ""
+            prompt_len = len(prepared["prompt_input_ids"])
+            max_completion_length = max(0, int(self.max_length) - prompt_len)
 
-            # 3. Tokenize Prompt + Rejected
-            # prompt 已经包含 Chat Template 格式
-            prompt = prepared["prompt"]
-            full_rejected_text = prompt + rejected_content + eos_token
-
+            # 3. Tokenize Rejected completion（prompt 单独保存在 prompt_input_ids 中）
+            rejected_text = rejected_content + eos_token
             tokenized_rejected = self.tokenizer(
-                full_rejected_text,
+                rejected_text,
                 truncation=True,
-                max_length=self.max_length,
-                add_special_tokens=False  # Prompt 已含特殊 token
+                max_length=max_completion_length,
+                add_special_tokens=False,
             )
 
             rejected_input_ids = tokenized_rejected["input_ids"]
             rejected_attention_mask = tokenized_rejected["attention_mask"]
-
-            # 4. 构造 Rejected Labels (Mask Prompt 部分)
-            # 为了准确 Mask，我们需要知道 Prompt 的长度
-            # Tokenize Prompt 单独获取长度
-            prompt_tokens = self.tokenizer(
-                prompt,
-                truncation=True,
-                max_length=self.max_length,
-                add_special_tokens=False
-            )["input_ids"]
-            prompt_len = len(prompt_tokens)
-
             rejected_labels = list(rejected_input_ids)
-            # 将 Prompt 部分设为 -100 (Ignore Index)
-            for i in range(min(prompt_len, len(rejected_labels))):
-                rejected_labels[i] = -100
 
             # 5. 更新 feature (覆盖 DPOTrainer 预处理的 dummy rejected)
             prepared["rejected"] = rejected_content
