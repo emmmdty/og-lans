@@ -13,6 +13,7 @@ data/processed/
 data/schemas/
 logs/
 backup/
+.worktrees/
 
 # Python cache and environments
 __pycache__/
