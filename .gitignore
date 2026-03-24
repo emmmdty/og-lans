@@ -5,6 +5,7 @@
 sync_config.yaml
 sync_config.json
 sync_to_remote.py
+sync-remote.yaml
 
 # Local data and derived artifacts
 data/raw/
@@ -69,3 +70,7 @@ Thumbs.db
 *.temp
 *.bak
 *.orig
+
+# Windows alternate data stream artifacts
+*:Zone.Identifier
+*.Identifier
