@@ -163,7 +163,7 @@ class AcademicEventEvaluator:
         "version": "2.0",
         "report_level": "core_plus_diagnostics",  # core_only | core_plus_diagnostics
         "cot": {
-            "enabled": False,
+            "enabled": True,
             "mode": "strict_span",  # strict_span | weak_mention
             "require_thought_block": False,
             "eval_mode": "self_consistency",  # self_consistency | counterfactual

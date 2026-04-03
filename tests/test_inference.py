@@ -1,6 +1,12 @@
 import os
 import sys
+
+import pytest
 import torch
+
+if not torch.cuda.is_available():
+    pytest.skip("requires CUDA/Unsloth GPU runtime", allow_module_level=True)
+
 from unsloth import FastLanguageModel
 
 sys.path.append(os.getcwd())

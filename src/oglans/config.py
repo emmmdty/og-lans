@@ -62,7 +62,13 @@ class ConfigManager:
         return cls._instance
 
     @classmethod
-    def load_config(cls, config_path: str = "configs/config.yaml", overrides: list = None) -> Dict[str, Any]:
+    def load_config(
+        cls,
+        config_path: str = "configs/config.yaml",
+        overrides: list = None,
+        *,
+        validate_semantic: bool = True,
+    ) -> Dict[str, Any]:
         """
         加载配置文件并应用覆盖
         """
@@ -72,7 +78,8 @@ class ConfigManager:
             cls._apply_cli_overrides(config, overrides)
 
         cls._apply_runtime_defaults(config)
-        cls._validate_semantic_contract(config)
+        if validate_semantic:
+            cls._validate_semantic_contract(config)
 
         cls._config = config
         return config

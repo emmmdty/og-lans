@@ -112,7 +112,9 @@ def build_runtime_context_from_config_path(
     if not cfg_path.is_absolute():
         cfg_path = (root / cfg_path).resolve()
 
-    config = ConfigManager.load_config(str(cfg_path))
+    # Wrapper-facing context only needs extends resolution plus runtime defaults.
+    # Full semantic contract validation belongs to execution entrypoints.
+    config = ConfigManager.load_config(str(cfg_path), validate_semantic=False)
     dataset_name = infer_dataset_name_from_config(config) or "DuEE-Fin"
     taxonomy_path = config.get("algorithms", {}).get("ds_cns", {}).get("taxonomy_path") or ""
     dataset_dir = os.path.dirname(os.path.normpath(str(taxonomy_path))) if taxonomy_path else os.path.normpath(
