@@ -60,6 +60,7 @@ unsloth_compiled_cache/
 # IDE and OS noise
 .idea/
 .vscode/
+.codex
 .DS_Store
 Thumbs.db
 *.swp
