@@ -37,8 +37,12 @@ from oglans.config import ConfigManager
 from oglans.utils.json_parser import (
     NORMALIZATION_VERSION,
     PARSER_VERSION,
+    POSTPROCESS_VERSION,
     RobustJSONParser,
-    parse_event_list_with_diagnostics,
+    compute_postprocess_metric_summary,
+    parse_event_list_strict_with_diagnostics,
+    postprocess_event_list,
+    write_postprocess_diagnostics_sidecar,
 )
 from oglans.data.prompt_builder import (
     ChinesePromptBuilder,
@@ -50,8 +54,12 @@ from oglans.utils.eval_protocol import (
     canonicalize_pred_roles as shared_canonicalize_pred_roles,
     load_eval_protocol as shared_load_eval_protocol,
     load_role_alias_map as shared_load_role_alias_map,
+    resolve_primary_metric_value,
+    validate_primary_metric,
 )
+from oglans.utils.scv import evaluate_scv_lite
 from oglans.utils.run_manifest import (
+    build_contract_record,
     build_run_manifest,
     collect_runtime_manifest,
     compute_file_sha256,
@@ -59,9 +67,15 @@ from oglans.utils.run_manifest import (
 )
 from oglans.utils.model_quantization import is_quantized_model
 from oglans.utils.hub_runtime import (
+    build_unsloth_from_pretrained_kwargs,
     configure_model_download_runtime,
     get_model_download_runtime_snapshot,
     resolve_model_name_or_path,
+)
+from oglans.utils.model_profile import (
+    load_local_model_profile,
+    prepare_tokenizer_for_profile,
+    resolve_profile_terminator_token_ids,
 )
 
 
@@ -149,9 +163,9 @@ class AcademicEventEvaluator:
         "version": "2.0",
         "report_level": "core_plus_diagnostics",  # core_only | core_plus_diagnostics
         "cot": {
-            "enabled": True,
+            "enabled": False,
             "mode": "strict_span",  # strict_span | weak_mention
-            "require_thought_block": True,
+            "require_thought_block": False,
             "eval_mode": "self_consistency",  # self_consistency | counterfactual
             "counterfactual": {
                 "enabled": False,
@@ -1272,12 +1286,20 @@ def main():
 
     # 1. 加载配置（支持 extends 继承与运行时默认值）
     config = ConfigManager().load_config(args.config)
+    evaluation_mode = str(config.get("evaluation", {}).get("mode", "")).strip().lower()
+    if evaluation_mode not in {"scored", "prediction_only"}:
+        raise ValueError(
+            f"Unsupported evaluation.mode: {evaluation_mode}. "
+            "Expected one of scored, prediction_only."
+        )
     model_source = str(config.get("model", {}).get("source", "modelscope"))
+    model_profile = load_local_model_profile(config["model"]["profile"])
     model_runtime = configure_model_download_runtime(repo_dir, source=model_source)
     protocol = load_eval_protocol(args.protocol)
     comparison_cfg = config.get("comparison", {})
     if args.report_primary_metric is None:
         args.report_primary_metric = str(protocol.get("primary_metric", "strict_f1"))
+    args.report_primary_metric = validate_primary_metric(args.report_primary_metric)
     if args.canonical_metric_mode is None:
         args.canonical_metric_mode = str(protocol.get("canonical_metric_mode", "analysis_only"))
     if args.canonical_metric_mode not in {"off", "analysis_only", "apply_for_aux_metric"}:
@@ -1360,16 +1382,27 @@ def main():
         config['model'],
         project_root=repo_dir,
     )
+    contract = build_contract_record(
+        model_profile=model_profile.name,
+        model_source=model_source,
+        effective_model_path=str(base_model_path),
+    )
     load_in_4bit = config['model'].get('load_in_4bit', True)
     if device == "cpu" and load_in_4bit:
-        # bitsandbytes 4bit 在 CPU 路径通常不可用，显式降级为非 4bit 以避免直接崩溃
-        print("⚠️ 检测到 CPU 推理，自动禁用 load_in_4bit（原配置为 True）。")
-        load_in_4bit = False
+        raise RuntimeError(
+            "CPU inference with load_in_4bit=true is not supported in official evaluation. "
+            "Set model.load_in_4bit=false or use CUDA."
+        )
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=base_model_path,
-        max_seq_length=config['model'].get('max_seq_length', 4096),
-        load_in_4bit=load_in_4bit,
+        **build_unsloth_from_pretrained_kwargs(
+            model_name=base_model_path,
+            max_seq_length=config['model'].get('max_seq_length', 4096),
+            dtype=None,
+            load_in_4bit=load_in_4bit,
+            source=model_source,
+            attn_implementation=config['model'].get('attn_implementation'),
+        )
     )
     if args.base_only:
         adapter_loaded = False
@@ -1389,16 +1422,13 @@ def main():
         model.to(device)
     model.eval()  # 显式设置为评估模式
     print(f"🖥️ 推理设备: {device}")
-    
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    # [修复] 显式检查 EOS token（Qwen3 通常使用 <|im_end|>）
-    expected_eos = "<|im_end|>"
-    if tokenizer.eos_token is None or tokenizer.eos_token == "":
-        tokenizer.eos_token = expected_eos
-    elif tokenizer.eos_token != expected_eos:
-        print(f"⚠️ EOS token 为 {tokenizer.eos_token}，期望 {expected_eos}。将保留当前设置。")
+
+    tokenizer = prepare_tokenizer_for_profile(tokenizer, model_profile, mode="eval")
+    terminator_token_ids = resolve_profile_terminator_token_ids(tokenizer, model_profile)
+    if not terminator_token_ids:
+        raise RuntimeError(
+            f"Local model profile {model_profile.name} did not resolve any generation terminator token ids."
+        )
     print(f"🔧 EOS Token: {tokenizer.eos_token} | EOS Token ID: {tokenizer.eos_token_id}")
 
     # 4. 加载数据
@@ -1417,6 +1447,11 @@ def main():
         all_samples = all_samples[:args.num_samples]
 
     print(f"   加载 {len(all_samples)} 条样本")
+    has_gold_labels = any(bool(getattr(s, "events", [])) for s in all_samples)
+    if evaluation_mode == "scored" and not has_gold_labels:
+        raise ValueError(
+            f"evaluation.mode=scored requires gold labels, but split={args.split} has no gold event_list."
+        )
     valid_types = set(adapter.get_event_types()) if hasattr(adapter, 'get_event_types') else None
     valid_roles_by_event = None
     if hasattr(adapter, 'schema') and isinstance(adapter.schema, dict):
@@ -1431,11 +1466,22 @@ def main():
     # 5. 初始化评估器和解析器
     evaluator = AcademicEventEvaluator(metric_settings=metric_settings)
     role_alias_map = load_role_alias_map(args.role_alias_map)
+    inference_cfg = config.get("inference", {})
+    postprocess_cfg = dict(inference_cfg.get("postprocess", {}))
+    scv_lite_cfg = dict(inference_cfg.get("scv_lite", {}))
     canonical_enabled = bool(args.canonical_metric_mode != "off" and role_alias_map)
+    if args.canonical_metric_mode != "off" and not role_alias_map:
+        raise ValueError(
+            "canonical_metric_mode requires a valid role alias map; no semantic fallback is allowed. "
+            f"path={args.role_alias_map}"
+        )
     canonical_evaluator = AcademicEventEvaluator(metric_settings=metric_settings) if canonical_enabled else None
     canonical_rewrites_total = 0
 
     results_to_save = []
+    diagnostics_to_save = []
+    scv_lite_call_count = 0
+    scv_lite_total_seconds = 0.0
 
     # 6. 批量推理
     decoding_strategy = "采样解码 (Sampling)" if args.do_sample else "确定性解码 (Greedy)"
@@ -1475,7 +1521,11 @@ def main():
                 "max_new_tokens": inf_cfg.get('max_new_tokens', 2048),
                 "use_cache": True,
                 "pad_token_id": tokenizer.pad_token_id,
-                "eos_token_id": tokenizer.eos_token_id,
+                "eos_token_id": (
+                    terminator_token_ids[0]
+                    if len(terminator_token_ids) == 1
+                    else terminator_token_ids
+                ),
             }
 
             # 根据 do_sample 参数选择解码策略
@@ -1501,8 +1551,41 @@ def main():
         for j, response in enumerate(decoded_responses):
             sample = batch_samples[j]
             
-            pred_events, parse_diagnostics = parse_event_list_with_diagnostics(response)
+            pred_events, parse_diagnostics = parse_event_list_strict_with_diagnostics(response)
             parse_success = parse_diagnostics.get("success", False)
+            postprocess_diagnostics = {
+                "enabled": bool(postprocess_cfg.get("enabled", False)),
+                "changed": False,
+                "grounding_breakdown": {},
+                "grounded_arguments": 0,
+                "ungrounded_arguments": 0,
+                "alias_rewrites": 0,
+                "illegal_roles_removed": 0,
+                "duplicate_splits": 0,
+                "argument_diagnostics": [],
+                "event_diagnostics": [],
+                "scv_lite_triggered": False,
+                "scv_lite_reasons": [],
+            }
+            if postprocess_cfg.get("enabled", False):
+                pred_events, postprocess_diagnostics = postprocess_event_list(
+                    pred_events,
+                    source_text=sample.text,
+                    schema=getattr(adapter, "schema", None),
+                    role_alias_map=role_alias_map,
+                    config=postprocess_cfg,
+                )
+
+            scv_lite_decision = evaluate_scv_lite(
+                postprocess_diagnostics,
+                mode=scv_lite_cfg.get("mode", "off"),
+                source_text=sample.text,
+                pred_events=pred_events,
+            )
+            scv_lite_call_count += scv_lite_decision.call_count
+            scv_lite_total_seconds += scv_lite_decision.wall_clock_seconds
+            postprocess_diagnostics["scv_lite_triggered"] = scv_lite_decision.triggered
+            postprocess_diagnostics["scv_lite_reasons"] = list(scv_lite_decision.reasons)
 
             cat_result = None
             if args.pipeline_mode == "cat_lite":
@@ -1519,22 +1602,22 @@ def main():
             if hasattr(sample, 'events') and sample.events:
                 gold_events = sample.events
             else:
-                gold_events, _ = parse_event_list_with_diagnostics(sample.chosen)
-            
-            # 使用扩展版评估方法，支持幻觉检测、CoT 忠实度和严格 Schema 校验
-            evaluator.update_with_extended_metrics(
-                pred_events=pred_events, 
-                gold_events=gold_events, 
-                source_text=sample.text,
-                full_response=response,
-                parse_success=parse_success,
-                parse_diagnostics=parse_diagnostics,
-                valid_event_types=valid_types,
-                valid_roles_by_event=valid_roles_by_event
-            )
+                gold_events, _ = parse_event_list_strict_with_diagnostics(sample.chosen)
+
+            if evaluation_mode == "scored":
+                evaluator.update_with_extended_metrics(
+                    pred_events=pred_events, 
+                    gold_events=gold_events, 
+                    source_text=sample.text,
+                    full_response=response,
+                    parse_success=parse_success,
+                    parse_diagnostics=parse_diagnostics,
+                    valid_event_types=valid_types,
+                    valid_roles_by_event=valid_roles_by_event
+                )
             canonical_pred_events = pred_events
             rewrite_count = 0
-            if canonical_evaluator is not None:
+            if canonical_evaluator is not None and evaluation_mode == "scored":
                 canonical_pred_events, rewrite_count = canonicalize_pred_roles(pred_events, role_alias_map)
                 canonical_rewrites_total += rewrite_count
                 canonical_evaluator.update_with_extended_metrics(
@@ -1575,7 +1658,7 @@ def main():
                         cf_outputs = model.generate(**cf_inputs, **generate_kwargs)
                     cf_ids = cf_outputs[:, cf_inputs.input_ids.shape[1]:]
                     cf_response = tokenizer.batch_decode(cf_ids, skip_special_tokens=True)[0]
-                    cf_events, _ = parse_event_list_with_diagnostics(cf_response)
+                    cf_events, _ = parse_event_list_strict_with_diagnostics(cf_response)
                     if args.pipeline_mode == "cat_lite":
                         cf_cat_result = apply_cat_lite_pipeline(
                             pred_events=cf_events,
@@ -1584,8 +1667,9 @@ def main():
                             require_argument_in_text=True,
                         )
                         cf_events = cf_cat_result.events
-                    evaluator.update_counterfactual_consistency(cf_events, perturbation)
-                    if canonical_evaluator is not None:
+                    if evaluation_mode == "scored":
+                        evaluator.update_counterfactual_consistency(cf_events, perturbation)
+                    if canonical_evaluator is not None and evaluation_mode == "scored":
                         cf_events_canonical, _ = canonicalize_pred_roles(cf_events, role_alias_map)
                         canonical_evaluator.update_counterfactual_consistency(
                             cf_events_canonical,
@@ -1607,7 +1691,30 @@ def main():
                 "raw_response": response[:1000] if len(response) > 1000 else response,
                 "parse_success": parse_success,
                 "parse_method": parse_diagnostics.get("extraction_method", "unknown"),
-                "repair_steps": parse_diagnostics.get("repair_steps", [])
+                "repair_steps": parse_diagnostics.get("repair_steps", []),
+                "postprocess_changed": postprocess_diagnostics.get("changed", False),
+                "alias_rewrites": postprocess_diagnostics.get("alias_rewrites", 0),
+                "illegal_roles_removed": postprocess_diagnostics.get("illegal_roles_removed", 0),
+                "duplicate_splits": postprocess_diagnostics.get("duplicate_splits", 0),
+                "grounding_summary": postprocess_diagnostics.get("grounding_breakdown", {}),
+                "scv_lite_triggered": scv_lite_decision.triggered,
+                "scv_lite_reasons": list(scv_lite_decision.reasons),
+            })
+            diagnostics_to_save.append({
+                "id": sample.id,
+                "split": args.split,
+                "pipeline_mode": args.pipeline_mode,
+                "parse_success": parse_success,
+                "parse_diagnostics": parse_diagnostics,
+                "postprocess_diagnostics": postprocess_diagnostics,
+                "argument_diagnostics": postprocess_diagnostics.get("argument_diagnostics", []),
+                "event_diagnostics": postprocess_diagnostics.get("event_diagnostics", []),
+                "grounding_breakdown": postprocess_diagnostics.get("grounding_breakdown", {}),
+                "scv_lite_triggered": scv_lite_decision.triggered,
+                "scv_lite_reasons": list(scv_lite_decision.reasons),
+                "scv_lite_mode": scv_lite_decision.mode,
+                "scv_lite_call_count": scv_lite_decision.call_count,
+                "scv_lite_wall_clock_seconds": round(scv_lite_decision.wall_clock_seconds, 6),
             })
             
             # 详细日志
@@ -1628,9 +1735,23 @@ def main():
         for res in results_to_save:
             f.write(json.dumps(res, ensure_ascii=False) + "\n")
 
+    diagnostics_sidecar_path = None
+    if postprocess_cfg.get("enabled", False) and postprocess_cfg.get("sidecar_diagnostics", True):
+        diagnostics_sidecar_path = write_postprocess_diagnostics_sidecar(
+            final_output_path.replace(".jsonl", "_diagnostics.jsonl"),
+            diagnostics_to_save,
+        )
+
+    wall_clock_seconds = round(time.time() - run_start_ts, 4)
     parse_success = report.total_samples - report.parse_errors
     parse_success_rate = (parse_success / report.total_samples) if report.total_samples > 0 else 0.0
     canonical_report = canonical_evaluator.compute_metrics() if canonical_evaluator is not None else None
+    postprocess_metric_summary = compute_postprocess_metric_summary(
+        diagnostics_to_save,
+        scv_call_count=scv_lite_call_count,
+        scv_total_seconds=scv_lite_total_seconds,
+        total_runtime_seconds=wall_clock_seconds,
+    )
 
     # 兼容旧版指标文件结构（保留）
     metrics_file = final_output_path.replace(".jsonl", "_metrics.json")
@@ -1664,6 +1785,7 @@ def main():
             "base_model_name_or_path": str(base_model_path),
             "base_model_override": bool(args.model_name_or_path),
             "output_file": os.path.abspath(final_output_path),
+            "diagnostics_sidecar_file": os.path.abspath(diagnostics_sidecar_path) if diagnostics_sidecar_path else None,
             "runtime_manifest": runtime_manifest,
         },
         "strict": {
@@ -1709,15 +1831,27 @@ def main():
             "counterfactual_pass_rate": round(report.cot_counterfactual_pass_rate, 4),
         },
         "schema_compliance_rate": round(report.schema_compliance_rate, 4),
+        "grounding_rate": postprocess_metric_summary["grounding_rate"],
+        "ungrounded_argument_rate": postprocess_metric_summary["ungrounded_argument_rate"],
+        "scv_lite_trigger_count": postprocess_metric_summary["scv_lite_trigger_count"],
+        "scv_lite_triggered_samples": postprocess_metric_summary["scv_lite_triggered_samples"],
+        "scv_call_count": postprocess_metric_summary["scv_call_count"],
+        "scv_wall_clock_ratio": postprocess_metric_summary["scv_wall_clock_ratio"],
         "error_breakdown": report.error_breakdown,
         "hallucination_breakdown": report.hallucination_breakdown,
         "schema_violation_breakdown": report.schema_violation_breakdown,
         "primary_metric": args.report_primary_metric,
-        "primary_metric_value": round(float({
-            "strict_f1": report.strict_f1,
-            "relaxed_f1": report.relaxed_f1,
-            "type_f1": report.type_f1,
-        }.get(args.report_primary_metric, report.strict_f1)), 4),
+        "primary_metric_value": round(
+            resolve_primary_metric_value(
+                {
+                    "strict_f1": report.strict_f1,
+                    "relaxed_f1": report.relaxed_f1,
+                    "type_f1": report.type_f1,
+                },
+                args.report_primary_metric,
+            ),
+            4,
+        ),
     }
     if canonical_report is not None:
         metrics_dict["auxiliary_metrics"] = {
@@ -1780,9 +1914,10 @@ def main():
             "has_gold_labels": True,
             "use_fewshot": bool(args.use_oneshot),
             "fewshot_num_examples": 1 if args.use_oneshot else 0,
-            "prompt_style": "qwen",
+            "prompt_style": "profile_contract",
             "json_mode": "off",
             "seed": args.seed,
+            "evaluation_mode": evaluation_mode,
             "config_hash_sha256": config_hash,
             "config_path": os.path.abspath(args.config),
             "command": cmdline,
@@ -1817,17 +1952,23 @@ def main():
             "model_quantized": bool(model_quantized),
             "model_device_strategy": model_device_strategy,
             "model_target_device": device,
+            "model_profile": model_profile.name,
+            "model_source": model_source,
             "model_variant": model_variant,
             "adapter_loaded": bool(adapter_loaded),
             "adapter_path": optional_abspath(args.checkpoint),
             "base_model_name_or_path": str(base_model_path),
             "base_model_override": bool(args.model_name_or_path),
-            "control_group_tag": "qwen_base_local" if args.base_only else None,
+            "control_group_tag": f"{model_profile.name}_base_local" if args.base_only else None,
             "prompt_hashes": prompt_hashes,
             "prompt_variant": "fewshot" if args.use_oneshot else "zeroshot",
             "prompt_builder_version": str(comparison_cfg.get("prompt_builder_version", PROMPT_BUILDER_VERSION)),
             "parser_version": str(comparison_cfg.get("parser_version", PARSER_VERSION)),
             "normalization_version": str(comparison_cfg.get("normalization_version", NORMALIZATION_VERSION)),
+            "postprocess_enabled": bool(postprocess_cfg.get("enabled", False)),
+            "postprocess_version": POSTPROCESS_VERSION if postprocess_cfg.get("enabled", False) else None,
+            "postprocess_diagnostics_file": os.path.abspath(diagnostics_sidecar_path) if diagnostics_sidecar_path else None,
+            "scv_lite_mode": str(scv_lite_cfg.get("mode", "off")),
             "training_mode": str(config.get("training", {}).get("mode", "preference")),
             "checkpoint": optional_abspath(args.checkpoint),
         },
@@ -1866,15 +2007,27 @@ def main():
             "cot_counterfactual_checked": report.cot_counterfactual_checked,
             "cot_counterfactual_pass_rate": round(report.cot_counterfactual_pass_rate, 4),
             "schema_compliance_rate": round(report.schema_compliance_rate, 4),
+            "grounding_rate": postprocess_metric_summary["grounding_rate"],
+            "ungrounded_argument_rate": postprocess_metric_summary["ungrounded_argument_rate"],
+            "scv_lite_trigger_count": postprocess_metric_summary["scv_lite_trigger_count"],
+            "scv_lite_triggered_samples": postprocess_metric_summary["scv_lite_triggered_samples"],
+            "scv_call_count": postprocess_metric_summary["scv_call_count"],
+            "scv_wall_clock_ratio": postprocess_metric_summary["scv_wall_clock_ratio"],
             "schema_violation_breakdown": report.schema_violation_breakdown,
             "error_breakdown": report.error_breakdown,
             "bootstrap_ci": None,
             "primary_metric": args.report_primary_metric,
-            "primary_metric_value": round(float({
-                "strict_f1": report.strict_f1,
-                "relaxed_f1": report.relaxed_f1,
-                "type_f1": report.type_f1,
-            }.get(args.report_primary_metric, report.strict_f1)), 4),
+            "primary_metric_value": round(
+                resolve_primary_metric_value(
+                    {
+                        "strict_f1": report.strict_f1,
+                        "relaxed_f1": report.relaxed_f1,
+                        "type_f1": report.type_f1,
+                    },
+                    args.report_primary_metric,
+                ),
+                4,
+            ),
         },
         "token_usage": {
             "prompt_tokens": 0,
@@ -1887,7 +2040,7 @@ def main():
             "failed_call_rate": 0.0,
         },
         "runtime": {
-            "wall_clock_seconds": round(time.time() - run_start_ts, 4),
+            "wall_clock_seconds": wall_clock_seconds,
         },
         "runtime_manifest": runtime_manifest,
         "analysis": {
@@ -1929,7 +2082,9 @@ def main():
             "result_file": os.path.abspath(final_output_path),
             "metrics_file": os.path.abspath(metrics_file),
             "summary_file": os.path.abspath(summary_file),
+            "diagnostics_sidecar_file": os.path.abspath(diagnostics_sidecar_path) if diagnostics_sidecar_path else None,
         },
+        contract=contract,
         runtime=eval_summary["runtime"],
         runtime_manifest=runtime_manifest,
     )
@@ -1938,6 +2093,8 @@ def main():
     print(f"   结果文件: {final_output_path}")
     print(f"   指标文件: {metrics_file}")
     print(f"   摘要文件: {summary_file}")
+    if diagnostics_sidecar_path:
+        print(f"   诊断文件: {diagnostics_sidecar_path}")
     print(f"   运行清单: {run_manifest_path}")
     print("\n✅ 评估完成!")
 

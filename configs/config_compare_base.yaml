@@ -11,6 +11,6 @@ comparison:
   role_alias_map_path: "./configs/role_aliases_duee_fin.yaml"
   prompt_variant: "zeroshot"
   fewshot_num_examples: 3
-  prompt_builder_version: "route_a_compare_v1"
-  parser_version: "route_a_compare_v1"
-  normalization_version: "route_a_compare_v1"
+  prompt_builder_version: "phase3_mvp_v1"
+  parser_version: "phase3_mvp_v1"
+  normalization_version: "phase3_mvp_v1"

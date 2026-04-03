@@ -72,7 +72,7 @@ class DuEEFinAdapter:
         
         schema_dict = {}
         with open(self.schema_path, 'r', encoding='utf-8') as f:
-            for line in f:
+            for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
                     continue
@@ -83,8 +83,9 @@ class DuEEFinAdapter:
                     if event_type:
                         schema_dict[event_type] = roles
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Schema 解析错误: {e}")
-                    continue
+                    raise ValueError(
+                        f"Schema JSON 解析失败: path={self.schema_path}, line={line_num}, error={e}"
+                    ) from e
         
         logger.info(f"加载 Schema 成功，包含 {len(schema_dict)} 种事件类型")
         return schema_dict
@@ -138,11 +139,9 @@ class DuEEFinAdapter:
         file_path = os.path.join(self.data_path, f"duee_fin_{split}.json")
         
         if not os.path.exists(file_path):
-            logger.error(f"数据文件不存在: {file_path}")
-            return []
+            raise FileNotFoundError(f"数据文件不存在: {file_path}")
 
         samples = []
-        error_count = 0
         
         with open(file_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
@@ -153,13 +152,15 @@ class DuEEFinAdapter:
                 try:
                     entry = json.loads(line)
                 except json.JSONDecodeError as e:
-                    error_count += 1
-                    logger.warning(f"第 {line_num} 行 JSON 解析失败: {e}")
-                    continue
+                    raise ValueError(
+                        f"数据文件 JSON 解析失败: path={file_path}, line={line_num}, error={e}"
+                    ) from e
                 
                 text = entry.get('text', '')
                 if not text:
-                    continue
+                    raise ValueError(
+                        f"数据样本缺少非空 text 字段: path={file_path}, line={line_num}"
+                    )
                 
                 # 截断过长文本
                 original_length = len(text)
@@ -190,9 +191,6 @@ class DuEEFinAdapter:
                     event_types=event_types,
                     events=event_list  # 存储原始事件列表
                 ))
-        
-        if error_count > 0:
-            logger.warning(f"共 {error_count} 条数据解析失败")
         
         logger.info(f"从 {split} 集加载 {len(samples)} 条样本")
         return samples

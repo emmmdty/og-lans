@@ -30,12 +30,14 @@ import copy
 import json
 import argparse
 import subprocess
+import statistics
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from oglans.config import ConfigManager
+from oglans.utils.pathing import infer_dataset_name_from_config as infer_dataset_name_from_loaded_config
 
 # 添加项目根目录到路径
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -135,6 +137,66 @@ def load_config(config_path: str) -> Dict:
     return ConfigManager.load_config(config_path)
 
 
+def parse_seeds(text: str) -> List[int]:
+    seeds: List[int] = []
+    for token in str(text).split(","):
+        token = token.strip()
+        if token:
+            seeds.append(int(token))
+    if not seeds:
+        raise ValueError("No valid seeds parsed.")
+    return seeds
+
+
+def require_explicit_seeds(text: Optional[str]) -> List[int]:
+    if text is None or not str(text).strip():
+        raise ValueError("Ablation study requires explicit --seeds.")
+    return parse_seeds(str(text))
+
+
+def validate_eval_split(split: str) -> str:
+    normalized = str(split or "").strip().lower()
+    if normalized != "dev":
+        raise ValueError("Ablation evaluation must use dev split.")
+    return normalized
+
+
+def build_seeded_experiment_name(tag: str, seed: int) -> str:
+    return f"{tag}_s{int(seed)}"
+
+
+def resolve_checkpoint_dir(
+    *,
+    project_root: Path,
+    dataset_name: str,
+    experiment_name: str,
+) -> Path:
+    return project_root / "logs" / dataset_name / "checkpoints" / experiment_name
+
+
+def aggregate_seed_metrics(seed_results: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
+    successful = [
+        result.get("metrics", {})
+        for result in seed_results.values()
+        if result.get("status") == "success" and isinstance(result.get("metrics"), dict)
+    ]
+    if not successful:
+        return {}
+
+    metric_names = sorted({key for row in successful for key in row.keys()})
+    aggregated: Dict[str, Any] = {"n_success_runs": len(successful), "metrics": {}}
+    for metric in metric_names:
+        values = [float(row[metric]) for row in successful if metric in row]
+        if not values:
+            continue
+        aggregated["metrics"][metric] = {
+            "mean": round(statistics.fmean(values), 6),
+            "std": round(statistics.pstdev(values), 6) if len(values) > 1 else 0.0,
+            "n_runs": len(values),
+        }
+    return aggregated
+
+
 def save_config(config: Dict, output_path: str):
     """保存配置文件"""
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -188,9 +250,14 @@ def run_experiment(
     base_config_path: str,
     ablation: AblationConfig,
     output_dir: str,
+    seed: int,
     eval_split: str = "dev",
     eval_batch_size: int = 16,
     eval_num_samples: Optional[int] = None,
+    protocol_path: str = "configs/eval_protocol.yaml",
+    role_alias_map: str = "configs/role_aliases_duee_fin.yaml",
+    canonical_metric_mode: str = "analysis_only",
+    report_primary_metric: str = "strict_f1",
     dry_run: bool = False
 ) -> Optional[Dict]:
     """
@@ -210,14 +277,20 @@ def run_experiment(
     print(f"Description: {ablation.description}")
     print(f"{'='*60}")
     
+    eval_split = validate_eval_split(eval_split)
+
     # 加载并修改配置
     config = load_config(base_config_path)
     config = apply_overrides(config, ablation.config_overrides)
+    config.setdefault("project", {})
+    config["project"]["seed"] = int(seed)
 
     config.setdefault("experiment", {})
     config["experiment"]["ablation_tag"] = ablation.tag
+    dataset_name = infer_dataset_name_from_loaded_config(config) or "DuEE-Fin"
+    experiment_name = build_seeded_experiment_name(ablation.tag, seed)
 
-    exp_output_dir = Path(output_dir) / ablation.tag
+    exp_output_dir = Path(output_dir) / experiment_name
     exp_output_dir.mkdir(parents=True, exist_ok=True)
 
     # 保留原始配置文件名（例如 config_debug.yaml），避免 main.py 的 debug 判定失效
@@ -230,6 +303,8 @@ def run_experiment(
         return {
             "status": "dry_run",
             "config_path": str(exp_config_path),
+            "seed": int(seed),
+            "experiment_name": experiment_name,
         }
 
     train_log_path = exp_output_dir / "train.log"
@@ -241,7 +316,7 @@ def run_experiment(
         "--config",
         str(exp_config_path),
         "--exp_name",
-        ablation.tag,
+        experiment_name,
     ]
     print(f"Training command: {' '.join(train_cmd)}")
     print(f"Training log: {train_log_path}")
@@ -265,19 +340,16 @@ def run_experiment(
                 "returncode": train_result.returncode,
             }
 
-        # 推断训练输出目录（main.py 在非 debug 配置下会重写 project.output_dir）
-        configured_output_dir = config.get("project", {}).get("output_dir", "./logs/DuEE-Fin/checkpoints")
-        checkpoint_candidates = [
-            _resolve_path(configured_output_dir) / ablation.tag,
-            _resolve_path("./logs/DuEE-Fin/checkpoints") / ablation.tag,
-            exp_output_dir / "checkpoints",
-        ]
-        checkpoint_path = next((p for p in checkpoint_candidates if p.exists()), None)
-        if checkpoint_path is None:
+        checkpoint_path = resolve_checkpoint_dir(
+            project_root=PROJECT_ROOT,
+            dataset_name=dataset_name,
+            experiment_name=experiment_name,
+        )
+        if not checkpoint_path.exists():
             return {
                 "status": "failed_checkpoint_missing",
                 "train_log": str(train_log_path),
-                "checkpoint_candidates": [str(p) for p in checkpoint_candidates],
+                "expected_checkpoint_dir": str(checkpoint_path),
             }
 
         eval_output_jsonl = exp_output_dir / "eval_results.jsonl"
@@ -288,12 +360,20 @@ def run_experiment(
             str(exp_config_path),
             "--checkpoint",
             str(checkpoint_path),
+            "--protocol",
+            protocol_path,
             "--split",
             eval_split,
             "--batch_size",
             str(eval_batch_size),
             "--output_file",
             str(eval_output_jsonl),
+            "--role_alias_map",
+            role_alias_map,
+            "--canonical_metric_mode",
+            canonical_metric_mode,
+            "--report_primary_metric",
+            report_primary_metric,
         ]
         if eval_num_samples is not None:
             eval_cmd.extend(["--num_samples", str(eval_num_samples)])
@@ -347,6 +427,9 @@ def run_experiment(
             "metrics_file": str(metrics_path),
             "summary_file": str(summary_path),
             "config_path": str(exp_config_path),
+            "seed": int(seed),
+            "experiment_name": experiment_name,
+            "dataset_name": dataset_name,
         }
 
     except subprocess.TimeoutExpired:
@@ -385,8 +468,18 @@ def generate_latex_table(results: Dict[str, Dict]) -> str:
     latex.append(r"\midrule")
     
     for exp_id, exp_config in ABLATION_EXPERIMENTS.items():
-        if exp_id in results and results[exp_id].get("status") == "success":
-            metrics = _flatten_metrics(results[exp_id].get("metrics", {}))
+        row_source = results.get(exp_id, {})
+        metrics_source: Optional[Dict[str, Any]] = None
+        if row_source.get("status") == "success":
+            metrics_source = row_source.get("metrics", {})
+        elif row_source.get("aggregated", {}).get("metrics"):
+            metrics_source = {
+                metric: values.get("mean", 0.0)
+                for metric, values in row_source["aggregated"]["metrics"].items()
+            }
+
+        if metrics_source:
+            metrics = _flatten_metrics(metrics_source)
 
             p = metrics["strict_precision"] * 100
             r = metrics["strict_recall"] * 100
@@ -418,12 +511,23 @@ def main():
                         help="要运行的实验，逗号分隔 (e.g., A1,A2,A3) 或 'all'")
     parser.add_argument("--output_dir", type=str, default="./ablation_results",
                         help="结果输出目录")
+    parser.add_argument("--seeds", type=str, default=None,
+                        help="训练/评测 seeds，逗号分隔。必填。")
     parser.add_argument("--eval_split", type=str, default="dev",
                         help="评估数据划分 (默认: dev)")
     parser.add_argument("--eval_batch_size", type=int, default=16,
                         help="评估 batch size (默认: 16)")
     parser.add_argument("--eval_num_samples", type=int, default=None,
                         help="仅评估前 N 条样本 (默认: 全量)")
+    parser.add_argument("--protocol", type=str, default="configs/eval_protocol.yaml",
+                        help="评测 protocol 路径")
+    parser.add_argument("--role_alias_map", type=str, default="configs/role_aliases_duee_fin.yaml",
+                        help="角色别名表路径")
+    parser.add_argument("--canonical_metric_mode", type=str, default="analysis_only",
+                        choices=["off", "analysis_only", "apply_for_aux_metric"],
+                        help="辅助规范化评测模式")
+    parser.add_argument("--report_primary_metric", type=str, default="strict_f1",
+                        help="主汇报指标")
     parser.add_argument("--dry_run", action="store_true",
                         help="仅生成配置，不执行训练")
     parser.add_argument("--generate_latex", action="store_true",
@@ -449,23 +553,47 @@ def main():
     print(f"Experiments to run: {experiments_to_run}")
     print(f"Output directory: {args.output_dir}")
     print(f"{'='*60}")
-    
+
+    validate_eval_split(args.eval_split)
+    base_config = load_config(args.config)
+    _ = base_config
+    seeds = require_explicit_seeds(args.seeds)
+
     # 运行实验
     results = {}
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     for exp_id in experiments_to_run:
         ablation = ABLATION_EXPERIMENTS[exp_id]
-        result = run_experiment(
-            args.config,
-            ablation,
-            args.output_dir,
-            args.eval_split,
-            args.eval_batch_size,
-            args.eval_num_samples,
-            args.dry_run
-        )
-        results[exp_id] = result
+        per_seed_results: Dict[int, Dict[str, Any]] = {}
+        for seed in seeds:
+            result = run_experiment(
+                args.config,
+                ablation,
+                args.output_dir,
+                seed,
+                args.eval_split,
+                args.eval_batch_size,
+                args.eval_num_samples,
+                args.protocol,
+                args.role_alias_map,
+                args.canonical_metric_mode,
+                args.report_primary_metric,
+                args.dry_run
+            )
+            per_seed_results[int(seed)] = result
+
+        success_count = sum(1 for result in per_seed_results.values() if result.get("status") == "success")
+        if len(seeds) == 1:
+            summary_result = dict(per_seed_results[seeds[0]])
+        else:
+            summary_result = {
+                "status": "success" if success_count == len(seeds) else "partial_failure",
+                "aggregated": aggregate_seed_metrics(per_seed_results),
+            }
+        summary_result["per_seed"] = per_seed_results
+        summary_result["seeds"] = [int(seed) for seed in seeds]
+        results[exp_id] = summary_result
     
     # 保存结果汇总
     summary_path = os.path.join(args.output_dir, f"ablation_summary_{timestamp}.json")
@@ -475,6 +603,7 @@ def main():
         json.dump({
             "timestamp": timestamp,
             "experiments": experiments_to_run,
+            "seeds": [int(seed) for seed in seeds],
             "results": results
         }, f, indent=2, ensure_ascii=False)
     

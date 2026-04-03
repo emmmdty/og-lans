@@ -15,7 +15,8 @@
 import re
 import json
 import logging
-from typing import Optional, List, Dict, Any, Tuple, Union
+from pathlib import Path
+from typing import Optional, List, Dict, Any, Tuple, Union, Sequence
 
 try:
     import dirtyjson as _DIRTYJSON_MODULE
@@ -24,8 +25,24 @@ except ImportError:
 
 logger = logging.getLogger("OGLANS")
 
-PARSER_VERSION = "route_a_compare_v1"
-NORMALIZATION_VERSION = "route_a_compare_v1"
+PARSER_VERSION = "phase3_mvp_v1"
+NORMALIZATION_VERSION = "phase3_mvp_v1"
+POSTPROCESS_VERSION = "phase3_mvp_v1"
+
+_GROUNDING_STATUSES = (
+    "exact",
+    "normalized_exact",
+    "shortname_or_code_local",
+    "ungrounded",
+)
+_MULTI_VALUE_SPLIT_RE = re.compile(r"\s*(?:、|，|,|；|;|/|及|和)\s*")
+_COMPANY_SUFFIX_RE = re.compile(
+    r"(股份有限公司|控股股份有限公司|有限责任公司|有限公司|集团股份有限公司|集团有限公司|集团|公司|银行|证券|科技)$"
+)
+_LOCAL_COMPANY_RE = re.compile(
+    r"[\u4e00-\u9fa5A-Za-z0-9]{2,40}"
+    r"(?:股份有限公司|控股股份有限公司|有限责任公司|有限公司|集团股份有限公司|集团有限公司|集团|公司|银行|证券|科技)"
+)
 
 
 class RobustJSONParser:
@@ -347,6 +364,408 @@ def parse_event_list_with_diagnostics(text: str) -> Tuple[List[Dict[str, Any]], 
     if not diagnostics.get("success", False):
         return [], diagnostics
     return normalize_parsed_events(parsed_obj), diagnostics
+
+
+def parse_event_list_strict(text: str) -> List[Dict[str, Any]]:
+    """
+    官方训练/评测入口使用的严格 JSON 解析器。
+
+    仅接受可被 json.loads 直接解析的 JSON 文本；不做代码块提取、
+    repair、括号补全或 dirtyjson 兜底。
+    """
+    raw = str(text or "").strip()
+    try:
+        parsed_obj = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Official evaluation requires strict JSON output; repair fallback is disabled.") from exc
+    return normalize_parsed_events(parsed_obj)
+
+
+def parse_event_list_strict_with_diagnostics(text: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    diagnostics: Dict[str, Any] = {
+        "success": False,
+        "extraction_method": "strict_json",
+        "repair_steps": [],
+    }
+    try:
+        events = parse_event_list_strict(text)
+    except ValueError as exc:
+        diagnostics["error"] = str(exc)
+        return [], diagnostics
+    diagnostics["success"] = True
+    return events, diagnostics
+
+
+def _normalize_for_grounding(value: str) -> str:
+    return re.sub(
+        r"[\s\.,，。；;、:：/\\()（）\[\]【】\"'“”‘’《》<>·\-—_]+",
+        "",
+        str(value or "").strip().lower(),
+    )
+
+
+def _build_role_schema(schema: Optional[Dict[str, Any]]) -> Dict[str, set[str]]:
+    role_schema: Dict[str, set[str]] = {}
+    if not isinstance(schema, dict):
+        return role_schema
+    for event_type, raw_roles in schema.items():
+        if not isinstance(event_type, str):
+            continue
+        roles: set[str] = set()
+        if isinstance(raw_roles, (list, tuple, set)):
+            for item in raw_roles:
+                if isinstance(item, str) and item.strip():
+                    roles.add(item.strip())
+                elif isinstance(item, dict):
+                    role = item.get("role")
+                    if isinstance(role, str) and role.strip():
+                        roles.add(role.strip())
+        role_schema[event_type.strip()] = roles
+    return role_schema
+
+
+def _normalize_postprocess_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized = dict(config or {})
+    normalized.setdefault("enabled", True)
+    normalized.setdefault("role_whitelist", True)
+    normalized.setdefault("alias_map", True)
+    normalized.setdefault("duplicate_role_split", True)
+    normalized.setdefault("normalization_mode", "diagnostics_only")
+    normalized.setdefault("grounding_mode", "exact+fuzzy+code_local")
+    normalized.setdefault("sidecar_diagnostics", True)
+    normalized.setdefault("preserve_ungrounded_arguments", True)
+    normalized.setdefault("trigger_on_grounding_failure", True)
+    return normalized
+
+
+def _extract_local_company_forms(source_text: str) -> Sequence[str]:
+    seen = []
+    for match in _LOCAL_COMPANY_RE.finditer(str(source_text or "")):
+        company = match.group(0)
+        if company not in seen:
+            seen.append(company)
+    return seen
+
+
+def _strip_company_suffix(value: str) -> str:
+    return _COMPANY_SUFFIX_RE.sub("", value)
+
+
+def _ground_argument(argument: str, source_text: str, grounding_mode: str) -> Tuple[str, str]:
+    raw_argument = str(argument or "").strip()
+    raw_source = str(source_text or "")
+    if not raw_argument or not raw_source:
+        return "ungrounded", "empty_input"
+    if raw_argument in raw_source:
+        return "exact", "substring"
+
+    normalized_mode = str(grounding_mode or "off")
+    normalized_argument = _normalize_for_grounding(raw_argument)
+    normalized_source = _normalize_for_grounding(raw_source)
+
+    if "fuzzy" in normalized_mode and normalized_argument and normalized_argument in normalized_source:
+        return "normalized_exact", "normalized_substring"
+
+    if "code_local" in normalized_mode and normalized_argument:
+        stripped_argument = _strip_company_suffix(normalized_argument)
+        for company in _extract_local_company_forms(raw_source):
+            normalized_company = _normalize_for_grounding(company)
+            stripped_company = _strip_company_suffix(normalized_company)
+            if stripped_argument and stripped_argument == stripped_company:
+                return "shortname_or_code_local", "local_company_match"
+        if re.fullmatch(r"[a-z]*\d{4,8}", normalized_argument):
+            if normalized_argument in normalized_source:
+                return "shortname_or_code_local", "local_code_match"
+
+    return "ungrounded", "not_found"
+
+
+def _build_argument_payload(role: str, argument: str) -> Dict[str, str]:
+    return {"role": str(role).strip(), "argument": str(argument).strip()}
+
+
+def _safe_split_multi_value_argument(
+    event_type: str,
+    role: str,
+    argument: str,
+    source_text: str,
+    grounding_mode: str,
+) -> Tuple[List[str], Dict[str, Any]]:
+    raw_argument = str(argument or "").strip()
+    if not raw_argument:
+        return [], {"applied": False, "reason": "empty_argument"}
+    if not _MULTI_VALUE_SPLIT_RE.search(raw_argument):
+        return [raw_argument], {"applied": False, "reason": "no_delimiter"}
+
+    parts = [part.strip() for part in _MULTI_VALUE_SPLIT_RE.split(raw_argument) if part.strip()]
+    if len(parts) < 2 or len(parts) > 4:
+        return [raw_argument], {"applied": False, "reason": "segment_count_out_of_range"}
+
+    part_groundings = []
+    for part in parts:
+        status, reason = _ground_argument(part, source_text, grounding_mode)
+        part_groundings.append(
+            {
+                "event_type": event_type,
+                "role": role,
+                "argument": part,
+                "grounding_status": status,
+                "grounding_reason": reason,
+            }
+        )
+        if status not in {"exact", "normalized_exact"}:
+            return [raw_argument], {
+                "applied": False,
+                "reason": "segment_not_grounded",
+                "part_groundings": part_groundings,
+            }
+
+    return parts, {
+        "applied": True,
+        "reason": "all_segments_grounded",
+        "part_groundings": part_groundings,
+    }
+
+
+def postprocess_event_list(
+    pred_events: Optional[List[Dict[str, Any]]],
+    *,
+    source_text: str,
+    schema: Optional[Dict[str, Any]] = None,
+    role_alias_map: Optional[Dict[str, Dict[str, str]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Conservative parser-side repair and diagnostics for Phase 3.
+    """
+    cfg = _normalize_postprocess_config(config)
+    role_schema = _build_role_schema(schema)
+    events = pred_events if isinstance(pred_events, list) else []
+    final_events: List[Dict[str, Any]] = []
+    argument_diagnostics: List[Dict[str, Any]] = []
+    event_diagnostics: List[Dict[str, Any]] = []
+    grounding_breakdown = {status: 0 for status in _GROUNDING_STATUSES}
+    scv_lite_reasons: List[str] = []
+
+    diagnostics: Dict[str, Any] = {
+        "version": POSTPROCESS_VERSION,
+        "enabled": bool(cfg.get("enabled", True)),
+        "changed": False,
+        "events_input": len(events),
+        "events_output": 0,
+        "events_removed": 0,
+        "arguments_input": 0,
+        "arguments_output": 0,
+        "illegal_event_types_removed": 0,
+        "illegal_roles_removed": 0,
+        "alias_rewrites": 0,
+        "duplicate_splits": 0,
+        "duplicate_split_unsafe": 0,
+        "grounded_arguments": 0,
+        "ungrounded_arguments": 0,
+        "grounding_breakdown": grounding_breakdown,
+        "argument_diagnostics": argument_diagnostics,
+        "event_diagnostics": event_diagnostics,
+        "scv_lite_triggered": False,
+        "scv_lite_reasons": scv_lite_reasons,
+    }
+
+    if not cfg.get("enabled", True):
+        diagnostics["events_output"] = len(events)
+        return events, diagnostics
+
+    valid_event_types = set(role_schema.keys()) if role_schema else set()
+    for event in events:
+        if not isinstance(event, dict):
+            diagnostics["events_removed"] += 1
+            diagnostics["changed"] = True
+            continue
+
+        event_type = str(event.get("event_type", "")).strip()
+        if valid_event_types and event_type not in valid_event_types:
+            diagnostics["illegal_event_types_removed"] += 1
+            diagnostics["events_removed"] += 1
+            diagnostics["changed"] = True
+            event_diagnostics.append(
+                {"event_type": event_type, "action": "drop_event", "reason": "invalid_event_type"}
+            )
+            continue
+
+        allowed_roles = role_schema.get(event_type, set())
+        alias_map = role_alias_map.get(event_type, {}) if isinstance(role_alias_map, dict) else {}
+        args = event.get("arguments", [])
+        if not isinstance(args, list):
+            diagnostics["events_removed"] += 1
+            diagnostics["changed"] = True
+            event_diagnostics.append(
+                {"event_type": event_type, "action": "drop_event", "reason": "invalid_arguments"}
+            )
+            continue
+
+        kept_arguments: List[Dict[str, str]] = []
+        for arg in args:
+            diagnostics["arguments_input"] += 1
+            if not isinstance(arg, dict):
+                diagnostics["illegal_roles_removed"] += 1
+                diagnostics["changed"] = True
+                continue
+
+            role = str(arg.get("role", "")).strip()
+            argument = str(arg.get("argument", "")).strip()
+            if not role or not argument:
+                diagnostics["illegal_roles_removed"] += 1
+                diagnostics["changed"] = True
+                continue
+
+            if cfg.get("alias_map", True):
+                canonical_role = alias_map.get(role)
+                if canonical_role and canonical_role != role:
+                    role = canonical_role
+                    diagnostics["alias_rewrites"] += 1
+                    diagnostics["changed"] = True
+
+            if cfg.get("role_whitelist", True) and allowed_roles and role not in allowed_roles:
+                diagnostics["illegal_roles_removed"] += 1
+                diagnostics["changed"] = True
+                argument_diagnostics.append(
+                    {
+                        "event_type": event_type,
+                        "role": role,
+                        "argument": argument,
+                        "action": "drop_argument",
+                        "reason": "invalid_role",
+                    }
+                )
+                continue
+
+            candidate_values = [argument]
+            split_result = {"applied": False, "reason": "disabled"}
+            if cfg.get("duplicate_role_split", True):
+                candidate_values, split_result = _safe_split_multi_value_argument(
+                    event_type=event_type,
+                    role=role,
+                    argument=argument,
+                    source_text=source_text,
+                    grounding_mode=str(cfg.get("grounding_mode", "off")),
+                )
+                if split_result.get("applied"):
+                    diagnostics["duplicate_splits"] += 1
+                    diagnostics["changed"] = True
+                elif split_result.get("reason") not in {"no_delimiter", "disabled", "empty_argument"}:
+                    diagnostics["duplicate_split_unsafe"] += 1
+
+            for candidate in candidate_values:
+                grounding_status, grounding_reason = _ground_argument(
+                    candidate,
+                    source_text=source_text,
+                    grounding_mode=str(cfg.get("grounding_mode", "off")),
+                )
+                grounding_breakdown[grounding_status] += 1
+
+                if grounding_status == "ungrounded":
+                    diagnostics["ungrounded_arguments"] += 1
+                    if cfg.get("trigger_on_grounding_failure", True) and "grounding_failed" not in scv_lite_reasons:
+                        scv_lite_reasons.append("grounding_failed")
+                else:
+                    diagnostics["grounded_arguments"] += 1
+
+                arg_diag = {
+                    "event_type": event_type,
+                    "role": role,
+                    "argument": candidate,
+                    "grounding_status": grounding_status,
+                    "grounding_reason": grounding_reason,
+                    "action": "keep_argument",
+                }
+                if split_result.get("applied"):
+                    arg_diag["duplicate_split"] = "applied"
+                elif split_result.get("reason") not in {"no_delimiter", "disabled", "empty_argument"}:
+                    arg_diag["duplicate_split"] = "unsafe"
+                    arg_diag["duplicate_split_reason"] = split_result.get("reason")
+                argument_diagnostics.append(arg_diag)
+
+                if grounding_status != "ungrounded" or cfg.get("preserve_ungrounded_arguments", True):
+                    kept_arguments.append(_build_argument_payload(role, candidate))
+                    diagnostics["arguments_output"] += 1
+                else:
+                    diagnostics["changed"] = True
+
+        if kept_arguments:
+            final_event: Dict[str, Any] = {
+                "event_type": event_type,
+                "arguments": kept_arguments,
+            }
+            trigger = event.get("trigger")
+            if isinstance(trigger, str) and trigger.strip():
+                final_event["trigger"] = trigger
+            final_events.append(final_event)
+        else:
+            diagnostics["events_removed"] += 1
+            diagnostics["changed"] = True
+            event_diagnostics.append(
+                {"event_type": event_type, "action": "drop_event", "reason": "no_arguments_after_postprocess"}
+            )
+
+    diagnostics["events_output"] = len(final_events)
+    diagnostics["scv_lite_triggered"] = bool(scv_lite_reasons)
+    return final_events, diagnostics
+
+
+def compute_postprocess_metric_summary(
+    diagnostics_rows: Sequence[Dict[str, Any]],
+    *,
+    scv_call_count: int = 0,
+    scv_total_seconds: float = 0.0,
+    total_runtime_seconds: Optional[float] = None,
+) -> Dict[str, Any]:
+    total_arguments = 0
+    grounded_arguments = 0
+    ungrounded_arguments = 0
+    scv_lite_triggered_samples = 0
+
+    for row in diagnostics_rows or []:
+        if row.get("scv_lite_triggered"):
+            scv_lite_triggered_samples += 1
+        for arg_diag in row.get("argument_diagnostics", []) or []:
+            status = str(arg_diag.get("grounding_status", ""))
+            if status not in _GROUNDING_STATUSES:
+                continue
+            total_arguments += 1
+            if status == "ungrounded":
+                ungrounded_arguments += 1
+            else:
+                grounded_arguments += 1
+
+    grounding_rate: Union[str, float] = "NA"
+    ungrounded_rate: Union[str, float] = "NA"
+    if total_arguments > 0:
+        grounding_rate = round(grounded_arguments / total_arguments, 4)
+        ungrounded_rate = round(ungrounded_arguments / total_arguments, 4)
+
+    scv_wall_clock_ratio: Union[str, float] = "NA"
+    if scv_call_count > 0 and total_runtime_seconds and total_runtime_seconds > 0:
+        scv_wall_clock_ratio = round(float(scv_total_seconds) / float(total_runtime_seconds), 4)
+
+    return {
+        "grounding_rate": grounding_rate,
+        "ungrounded_argument_rate": ungrounded_rate,
+        "scv_lite_trigger_count": scv_lite_triggered_samples,
+        "scv_lite_triggered_samples": scv_lite_triggered_samples,
+        "scv_call_count": int(scv_call_count),
+        "scv_wall_clock_ratio": scv_wall_clock_ratio,
+    }
+
+
+def write_postprocess_diagnostics_sidecar(
+    path: Union[str, Path],
+    diagnostics_rows: Sequence[Dict[str, Any]],
+) -> str:
+    path_obj = Path(path)
+    path_obj.parent.mkdir(parents=True, exist_ok=True)
+    with path_obj.open("w", encoding="utf-8") as f:
+        for row in diagnostics_rows or []:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return str(path_obj)
 
 
 def validate_event_structure(events: List[Dict]) -> Tuple[bool, List[str]]:

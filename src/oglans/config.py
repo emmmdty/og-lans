@@ -43,6 +43,15 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger("OGLANS")
 
+
+SEMANTIC_REQUIRED_PATHS = (
+    "model.profile",
+    "comparison.prompt_builder_version",
+    "comparison.parser_version",
+    "comparison.normalization_version",
+    "evaluation.mode",
+)
+
 class ConfigManager:
     _instance = None
     _config = None
@@ -63,6 +72,7 @@ class ConfigManager:
             cls._apply_cli_overrides(config, overrides)
 
         cls._apply_runtime_defaults(config)
+        cls._validate_semantic_contract(config)
 
         cls._config = config
         return config
@@ -169,6 +179,8 @@ class ConfigManager:
         scv_cfg.setdefault("cache_enabled", True)
         scv_cfg.setdefault("cache_max_entries", 50000)
         scv_cfg.setdefault("max_retries", 1)
+        scv_cfg.setdefault("source", "modelscope")
+        scv_cfg.setdefault("entailment_idx", None)
 
         training_cfg = config.setdefault("training", {})
         training_cfg.setdefault("mode", "preference")
@@ -190,12 +202,63 @@ class ConfigManager:
 
         inference_cfg = config.setdefault("inference", {})
         inference_cfg.setdefault("pipeline_mode", "e2e")
+        postprocess_cfg = inference_cfg.setdefault("postprocess", {})
+        postprocess_cfg.setdefault("enabled", False)
+        postprocess_cfg.setdefault("role_whitelist", True)
+        postprocess_cfg.setdefault("alias_map", True)
+        postprocess_cfg.setdefault("duplicate_role_split", True)
+        postprocess_cfg.setdefault("normalization_mode", "diagnostics_only")
+        postprocess_cfg.setdefault("grounding_mode", "exact+fuzzy+code_local")
+        postprocess_cfg.setdefault("sidecar_diagnostics", True)
+        postprocess_cfg.setdefault("preserve_ungrounded_arguments", True)
+        scv_lite_cfg = inference_cfg.setdefault("scv_lite", {})
+        scv_lite_cfg.setdefault("mode", "off")
+        scv_lite_cfg.setdefault("trigger_on_grounding_failure", True)
+        scv_lite_cfg.setdefault("trigger_on_mutual_exclusion", False)
+        scv_lite_cfg.setdefault("trigger_on_shared_role_conflict", False)
 
         comparison_cfg = config.setdefault("comparison", {})
         comparison_cfg.setdefault("eval_protocol_path", "./configs/eval_protocol.yaml")
         comparison_cfg.setdefault("role_alias_map_path", "./configs/role_aliases_duee_fin.yaml")
         comparison_cfg.setdefault("prompt_variant", "zeroshot")
         comparison_cfg.setdefault("fewshot_num_examples", 3)
-        comparison_cfg.setdefault("prompt_builder_version", "route_a_compare_v1")
-        comparison_cfg.setdefault("parser_version", "route_a_compare_v1")
-        comparison_cfg.setdefault("normalization_version", "route_a_compare_v1")
+
+    @staticmethod
+    def _get_nested(config: Dict[str, Any], path: str) -> Any:
+        cur: Any = config
+        for key in path.split("."):
+            if not isinstance(cur, dict) or key not in cur:
+                return None
+            cur = cur[key]
+        return cur
+
+    @classmethod
+    def _validate_semantic_contract(cls, config: Dict[str, Any]) -> None:
+        missing = [path for path in SEMANTIC_REQUIRED_PATHS if cls._get_nested(config, path) is None]
+        if missing:
+            raise ValueError(
+                "Missing required semantic config fields: " + ", ".join(missing)
+            )
+        model_source = str(cls._get_nested(config, "model.source") or "").strip().lower()
+        if model_source not in {"local", "modelscope", "huggingface"}:
+            raise ValueError(
+                f"Unsupported model.source: {model_source}. "
+                "Expected one of local, modelscope, huggingface."
+            )
+        scv_source = str(cls._get_nested(config, "algorithms.scv.source") or "").strip().lower()
+        if scv_source and scv_source not in {"local", "modelscope", "huggingface"}:
+            raise ValueError(
+                f"Unsupported algorithms.scv.source: {scv_source}. "
+                "Expected one of local, modelscope, huggingface."
+            )
+        evaluation_mode = str(cls._get_nested(config, "evaluation.mode") or "").strip().lower()
+        if evaluation_mode not in {"scored", "prediction_only"}:
+            raise ValueError(
+                f"Unsupported evaluation.mode: {evaluation_mode}. "
+                "Expected one of scored, prediction_only."
+            )
+        if cls._get_nested(config, "api_evaluation.system_prompt_style") is not None:
+            raise ValueError(
+                "api_evaluation.system_prompt_style is no longer supported. "
+                "Prompt style is determined by model.profile."
+            )

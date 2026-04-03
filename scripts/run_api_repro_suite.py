@@ -46,9 +46,9 @@ DEFAULT_PROTOCOL = {
         "version": "2.0",
         "report_level": "core_plus_diagnostics",
         "cot": {
-            "enabled": True,
+            "enabled": False,
             "mode": "strict_span",
-            "require_thought_block": True,
+            "require_thought_block": False,
         },
         "relaxed": {
             "match_mode": "include_or_char_overlap",
@@ -203,14 +203,14 @@ def markdown_table(agg: Dict[str, Dict], metrics: List[str]) -> str:
 
 def infer_dataset_name_from_config(config_path: str) -> str:
     """Infer dataset name from config.yaml to avoid hardcoded output paths."""
-    try:
-        cfg_path = Path(config_path)
-        if not cfg_path.is_absolute():
-            cfg_path = (PROJECT_ROOT / cfg_path).resolve()
-        cfg = ConfigManager.load_config(str(cfg_path))
-    except Exception:
-        return "DuEE-Fin"
-    return infer_dataset_name_from_loaded_config(cfg) or "DuEE-Fin"
+    cfg_path = Path(config_path)
+    if not cfg_path.is_absolute():
+        cfg_path = (PROJECT_ROOT / cfg_path).resolve()
+    cfg = ConfigManager._load_config_file(str(cfg_path))
+    dataset_name = infer_dataset_name_from_loaded_config(cfg)
+    if not dataset_name:
+        raise ValueError(f"Unable to infer dataset name from config: {cfg_path}")
+    return dataset_name
 
 
 def infer_eval_api_root_from_config(config_path: str, dataset_name: str) -> Path:
@@ -218,13 +218,10 @@ def infer_eval_api_root_from_config(config_path: str, dataset_name: str) -> Path
     Infer eval_api root directory from config.project paths.
     Debug configs like logs/debug/checkpoints will map to logs/debug/eval_api.
     """
-    try:
-        cfg_path = Path(config_path)
-        if not cfg_path.is_absolute():
-            cfg_path = (PROJECT_ROOT / cfg_path).resolve()
-        cfg = ConfigManager.load_config(str(cfg_path))
-    except Exception:
-        return PROJECT_ROOT / "logs" / dataset_name / "eval_api"
+    cfg_path = Path(config_path)
+    if not cfg_path.is_absolute():
+        cfg_path = (PROJECT_ROOT / cfg_path).resolve()
+    cfg = ConfigManager._load_config_file(str(cfg_path))
     return PROJECT_ROOT / infer_eval_root_from_config(cfg, dataset_name, eval_task="eval_api")
 
 

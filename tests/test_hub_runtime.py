@@ -55,6 +55,8 @@ def test_resolve_model_name_or_path_prefers_existing_local_path(tmp_path):
 
 
 def test_resolve_model_name_or_path_uses_modelscope_when_available(monkeypatch, tmp_path):
+    monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
+
     hub_runtime = _load_module()
 
     fake_modelscope = types.ModuleType("modelscope")
@@ -71,6 +73,7 @@ def test_resolve_model_name_or_path_uses_modelscope_when_available(monkeypatch, 
     resolved = hub_runtime.resolve_model_name_or_path(
         "Qwen/Qwen3-4B-Instruct-2507",
         source="modelscope",
+        modelscope_cache_dir=str(expected_cache),
         project_root=str(tmp_path),
     )
 
@@ -78,9 +81,12 @@ def test_resolve_model_name_or_path_uses_modelscope_when_available(monkeypatch, 
 
 
 def test_resolve_model_name_or_path_raises_when_modelscope_fails(monkeypatch, caplog, tmp_path):
+    monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
+
     hub_runtime = _load_module()
 
     fake_modelscope = types.ModuleType("modelscope")
+    expected_cache = tmp_path / "data" / "cache" / "modelscope"
 
     def snapshot_download(model_name_or_path, cache_dir=None):
         raise RuntimeError("network timeout")
@@ -93,6 +99,7 @@ def test_resolve_model_name_or_path_raises_when_modelscope_fails(monkeypatch, ca
             hub_runtime.resolve_model_name_or_path(
                 "Qwen/Qwen3-4B-Instruct-2507",
                 source="modelscope",
+                modelscope_cache_dir=str(expected_cache),
                 project_root=str(tmp_path),
             )
 
@@ -120,3 +127,76 @@ def test_resolve_model_name_or_path_allows_explicit_huggingface(monkeypatch, tmp
 
     assert resolved == "Qwen/Qwen3-4B-Instruct-2507"
     assert os.environ["HF_HOME"].endswith(str(Path("data") / "cache" / "huggingface"))
+
+
+def test_local_model_source_requires_existing_local_path(tmp_path):
+    hub_runtime = _load_module()
+
+    with pytest.raises(RuntimeError, match="model.source=local requires an existing local filesystem path"):
+        hub_runtime.resolve_model_name_or_path(
+            str(tmp_path / "missing-model"),
+            source="local",
+            project_root=str(tmp_path),
+        )
+
+
+def test_build_unsloth_from_pretrained_kwargs_enforces_local_files_only_for_local_source():
+    hub_runtime = _load_module()
+
+    kwargs = hub_runtime.build_unsloth_from_pretrained_kwargs(
+        model_name="/abs/model",
+        max_seq_length=4096,
+        load_in_4bit=True,
+        source="local",
+    )
+
+    assert kwargs["model_name"] == "/abs/model"
+    assert kwargs["max_seq_length"] == 4096
+    assert kwargs["load_in_4bit"] is True
+    assert kwargs["local_files_only"] is True
+
+
+def test_build_unsloth_from_pretrained_kwargs_keeps_remote_sources_online():
+    hub_runtime = _load_module()
+
+    kwargs = hub_runtime.build_unsloth_from_pretrained_kwargs(
+        model_name="Qwen/Qwen3-4B-Instruct-2507",
+        max_seq_length=4096,
+        load_in_4bit=True,
+        source="modelscope",
+    )
+
+    assert kwargs["local_files_only"] is False
+
+
+def test_build_unsloth_from_pretrained_kwargs_passes_attn_implementation(monkeypatch):
+    hub_runtime = _load_module()
+    fake_import_utils = types.ModuleType("transformers.utils.import_utils")
+    fake_import_utils.is_flash_attn_2_available = lambda: True
+    monkeypatch.setitem(sys.modules, "transformers.utils.import_utils", fake_import_utils)
+
+    kwargs = hub_runtime.build_unsloth_from_pretrained_kwargs(
+        model_name="/abs/model",
+        max_seq_length=4096,
+        load_in_4bit=True,
+        source="local",
+        attn_implementation="flash_attention_2",
+    )
+
+    assert kwargs["attn_implementation"] == "flash_attention_2"
+
+
+def test_flash_attention_2_requires_runtime_support(monkeypatch):
+    hub_runtime = _load_module()
+    fake_import_utils = types.ModuleType("transformers.utils.import_utils")
+    fake_import_utils.is_flash_attn_2_available = lambda: False
+    monkeypatch.setitem(sys.modules, "transformers.utils.import_utils", fake_import_utils)
+
+    with pytest.raises(RuntimeError, match="flash_attention_2"):
+        hub_runtime.build_unsloth_from_pretrained_kwargs(
+            model_name="/abs/model",
+            max_seq_length=4096,
+            load_in_4bit=True,
+            source="local",
+            attn_implementation="flash_attention_2",
+        )

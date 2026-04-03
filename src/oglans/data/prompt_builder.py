@@ -1,19 +1,19 @@
 # src/data/prompt_builder.py
 """
 中文化提示词构建模块 (Chinese-First Prompt Engineering)
-符合 Qwen3/DeepSeek 中文能力优化的 CoT 引导策略
+符合 Qwen3/DeepSeek 中文能力优化的严格 JSON 抽取契约
 
 解决问题:
 1. 语言失配 - 英文 Prompt 配合中文数据集导致输出混乱
 2. JSON 约束失效 - 模型生成过于冗长破坏 JSON 结构
-3. CoT 规范化 - Wait-then-Answer 模式标准化
+3. 官方评测需要 strict JSON，不能依赖解析修复
 """
 
 from typing import Any, Dict, List, Optional
 import json
 import re
 
-PROMPT_BUILDER_VERSION = "route_a_compare_v1"
+PROMPT_BUILDER_VERSION = "phase3_mvp_v1"
 
 
 class ChinesePromptBuilder:
@@ -21,7 +21,7 @@ class ChinesePromptBuilder:
     中文化提示词构建器 - 适配 DuEE-Fin 金融事件抽取任务
     核心设计:
     - System Prompt: 强约束 JSON 格式 + 反幻觉规则
-    - CoT Template: 中文三步推理法
+    - Response Template: 严格 JSON 数组
     - Few-Shot Examples: 多类型/多场景示例，提升泛化稳定性
     """
     
@@ -31,13 +31,11 @@ class ChinesePromptBuilder:
     SYSTEM_PROMPT = """你是一位专业的中文金融事件抽取专家。你的任务是从金融新闻/公告中识别和抽取结构化事件信息。
 
 ## 输出格式要求【必须严格遵守】
-1. 先在 <thought> 标签内用中文进行三步推理分析
-2. 推理结束后，紧跟一个 ```json 代码块输出最终结果
-3. JSON 必须是一个事件列表 (数组)，即使只有一个事件也要用 []
-4. 每个事件包含: event_type(事件类型), trigger(触发词), arguments(论元列表)
-5. 每个论元包含: role(角色), argument(论元值)
-6. 仅允许在 JSON 之前输出一个 <thought> 分析块；除 <thought> 外，禁止添加任何解释性文字
-7. 如果没有检测到任何事件，输出: ```json\n[]\n```
+1. 严格输出 JSON 数组，禁止输出任何解释、分析、标签或额外文本
+2. JSON 根节点必须是事件列表，即使只有一个事件也要使用 []
+3. 每个事件对象包含: event_type(事件类型), trigger(触发词), arguments(论元列表)
+4. 每个论元对象包含: role(角色), argument(论元值)
+5. 如果没有检测到任何事件，直接输出 []
 
 ## 学术评测约束（降低幻觉与格式偏差）
 1. 论元值必须直接来自原文连续片段，不得改写、归一化或补全
@@ -50,22 +48,6 @@ class ChinesePromptBuilder:
 质押, 股份回购, 企业融资, 公司上市, 企业收购, 中标, 高管变动, 解除质押, 股东减持, 股东增持, 企业破产, 亏损, 被约谈
 
 ## 标准输出示例
-<thought>
-第一步：Schema 分析（模式识别）
-- 文本中出现"融资"、"投资方"等关键词，可能触发"企业融资"事件
-- 检测到"上市"触发词，可能存在"公司上市"事件
-
-第二步：实体扫描（论元抽取）
-- 企业融资事件：被投资方="某科技公司", 融资金额="1亿美元", 融资轮次="B"
-- 公司上市事件：上市公司="某科技公司", 证券代码="ABC"
-
-第三步：约束校验（自我修正）
-- 校验论元边界是否准确
-- 确认多值论元（如多个投资方）已全部识别
-- 所有约束检查通过
-</thought>
-
-```json
 [
   {
     "event_type": "企业融资",
@@ -77,7 +59,7 @@ class ChinesePromptBuilder:
     ]
   }
 ]
-```"""
+"""
 
     # ========================================
     # 用户输入模板
@@ -88,12 +70,7 @@ class ChinesePromptBuilder:
 {text}
 
 【抽取要求】
-请按照"三步推理法"进行分析：
-1. Schema 分析：识别可能触发的事件类型
-2. 实体扫描：提取各事件的论元角色和值
-3. 约束校验：验证抽取结果的准确性和完整性
-
-完成推理后，输出标准 JSON 格式的事件列表。"""
+请直接输出标准 JSON 格式的事件列表，不要添加任何额外说明。"""
 
     # ========================================
     # Few-Shot 示例（默认多样本）
@@ -106,35 +83,8 @@ class ChinesePromptBuilder:
 2023年3月15日，新能源龙头企业阳光电源发布公告称，公司拟以自有资金回购公司股份，回购金额不低于5亿元、不超过10亿元，回购价格不超过150元/股，回购股份将用于员工持股计划。本次回购已于2023年3月实施完毕，累计回购股份数量为500万股，占公司总股本的0.35%。
 
 【抽取要求】
-请按照"三步推理法"进行分析：
-1. Schema 分析：识别可能触发的事件类型
-2. 实体扫描：提取各事件的论元角色和值
-3. 约束校验：验证抽取结果的准确性和完整性
-
-完成推理后，输出标准 JSON 格式的事件列表。""",
-            "assistant": """<thought>
-第一步：Schema 分析（模式识别）
-- 检测到"回购"触发词，触发事件类型：股份回购
-- 文本描述的是一个已完成的股份回购事件
-
-第二步：实体扫描（论元抽取）
-- 回购方：阳光电源（主语，执行回购动作的公司）
-- 交易金额：不低于5亿元、不超过10亿元（文本提及"不低于5亿元、不超过10亿元"，取区间描述）
-- 每股交易价格：不超过150元/股
-- 回购股份数量：500万股（明确数字）
-- 占公司总股本比例：0.35%
-- 回购完成时间：2023年3月
-- 披露时间：2023年3月15日
-
-第三步：约束校验（自我修正）
-- 校验论元边界："阳光电源"边界准确，未包含多余字符
-- 确认数值类论元格式规范
-- 所有角色均属于"股份回购"事件的标准 Schema
-- 约束检查通过
-</thought>
-
-```json
-[
+请直接输出标准 JSON 格式的事件列表，不要添加任何额外说明。""",
+            "assistant": """[
       {
         "event_type": "股份回购",
         "trigger": "回购",
@@ -149,7 +99,7 @@ class ChinesePromptBuilder:
         ]
   }
 ]
-```"""
+"""
         },
         {
             "user": """请从以下金融文本中抽取所有事件信息。
@@ -158,29 +108,8 @@ class ChinesePromptBuilder:
 2024年4月1日，星河科技公告称公司于2024年3月完成B轮融资，融资金额2亿元，领投方为红杉资本，投资方包括腾讯。公告同时披露，公司计划于2025年启动上市筹备。
 
 【抽取要求】
-请按照"三步推理法"进行分析：
-1. Schema 分析：识别可能触发的事件类型
-2. 实体扫描：提取各事件的论元角色和值
-3. 约束校验：验证抽取结果的准确性和完整性
-
-完成推理后，输出标准 JSON 格式的事件列表。""",
-            "assistant": """<thought>
-第一步：Schema 分析（模式识别）
-- 检测到"融资"触发词，触发事件类型：企业融资
-- 检测到"上市筹备"语义，触发事件类型：公司上市（环节=上市筹备）
-
-第二步：实体扫描（论元抽取）
-- 企业融资事件：被投资方=星河科技，融资金额=2亿元，融资轮次=B轮，领投方=红杉资本，投资方=腾讯，事件时间=2024年3月，披露时间=2024年4月1日
-- 公司上市事件：上市公司=星河科技，环节=上市筹备，事件时间=2025年，披露时间=2024年4月1日
-
-第三步：约束校验（自我修正）
-- 论元均为原文可定位片段
-- role 与事件类型匹配，未使用 schema 外字段
-- 约束检查通过
-</thought>
-
-```json
-[
+请直接输出标准 JSON 格式的事件列表，不要添加任何额外说明。""",
+            "assistant": """[
   {
     "event_type": "企业融资",
     "trigger": "融资",
@@ -205,7 +134,7 @@ class ChinesePromptBuilder:
     ]
   }
 ]
-```"""
+"""
         },
         {
             "user": """请从以下金融文本中抽取所有事件信息。
@@ -214,27 +143,8 @@ class ChinesePromptBuilder:
 公司今日召开年度战略发布会，介绍了新产品路线图与组织升级计划。公告未涉及融资、上市、收购、股东增减持、质押、回购、亏损或被约谈等事项。
 
 【抽取要求】
-请按照"三步推理法"进行分析：
-1. Schema 分析：识别可能触发的事件类型
-2. 实体扫描：提取各事件的论元角色和值
-3. 约束校验：验证抽取结果的准确性和完整性
-
-完成推理后，输出标准 JSON 格式的事件列表。""",
-            "assistant": """<thought>
-第一步：Schema 分析（模式识别）
-- 文本不包含 DuEE-Fin 定义的事件触发模式
-
-第二步：实体扫描（论元抽取）
-- 未发现可抽取事件及其论元
-
-第三步：约束校验（自我修正）
-- 按 schema 约束，应返回空列表而非猜测事件
-- 约束检查通过
-</thought>
-
-```json
-[]
-```"""
+请直接输出标准 JSON 格式的事件列表，不要添加任何额外说明。""",
+            "assistant": "[]"
         },
     ]
     # 兼容旧代码引用
@@ -283,6 +193,8 @@ class ChinesePromptBuilder:
             else:
                 lines.append(f"- {event_type}: (无角色定义)")
         lines.append("若 role 无法确定，请省略该 role，不要使用近义字段名。")
+        lines.append("请使用 schema 中的标准角色名，不要输出别名角色名。")
+        lines.append("若同一 role 对应多个论元值，请拆成多个独立的 arguments 项。")
         return "\n".join(lines)
 
     @classmethod
@@ -315,60 +227,17 @@ class ChinesePromptBuilder:
     @classmethod
     def build_cot_response(cls, event_list: List[Dict], schema: Optional[Dict] = None) -> str:
         """
-        构建中文化的 CoT 响应（用于训练数据的 chosen）
-        
+        构建训练数据的标准响应。
+
         Args:
             event_list: 标注的事件列表
-            schema: 可选的 Schema 信息，用于增强推理描述
-        
+            schema: 保留兼容入参；严格 JSON 契约下不再生成中间推理文本
+
         Returns:
-            包含 <thought> 推理过程和 JSON 结果的完整响应
+            标准 JSON 数组字符串
         """
-        # 提取检测到的事件类型
-        detected_types = list(set([e.get('event_type', '未知') for e in event_list]))
-        
-        # 构建思维链
-        cot_parts = ["<thought>"]
-        
-        # 第一步：Schema 分析
-        cot_parts.append("第一步：Schema 分析（模式识别）")
-        if not detected_types or not event_list:
-            cot_parts.append("- 未检测到明确的金融事件触发词")
-        else:
-            triggers = [e.get('trigger', '') for e in event_list if e.get('trigger')]
-            if triggers:
-                cot_parts.append(f"- 检测到触发词：{', '.join(triggers)}")
-            cot_parts.append(f"- 识别的事件类型：{', '.join(detected_types)}")
-        
-        # 第二步：实体扫描
-        cot_parts.append("\n第二步：实体扫描（论元抽取）")
-        if event_list:
-            for event in event_list:
-                etype = event.get('event_type', '未知')
-                args = event.get('arguments', [])
-                cot_parts.append(f"- {etype}事件：")
-                for arg in args:
-                    role = arg.get('role', '')
-                    value = arg.get('argument', '')
-                    if role and value:
-                        # 截断过长的论元值
-                        display_value = value if len(value) <= 30 else value[:27] + "..."
-                        cot_parts.append(f"  · {role} = \"{display_value}\"")
-        else:
-            cot_parts.append("- 无需抽取论元")
-        
-        # 第三步：约束校验
-        cot_parts.append("\n第三步：约束校验（自我修正）")
-        cot_parts.append("- 校验论元边界准确性")
-        cot_parts.append("- 确认多值论元已完整识别")
-        cot_parts.append("- 所有约束检查通过")
-        
-        cot_parts.append("</thought>")
-        
-        # 构建 JSON 输出
-        json_output = json.dumps(event_list, ensure_ascii=False, indent=2)
-        
-        return "\n".join(cot_parts) + f"\n\n```json\n{json_output}\n```"
+        _ = schema
+        return json.dumps(event_list, ensure_ascii=False, indent=2)
 
     @classmethod
     def build_incorrect_cot_response(
@@ -378,13 +247,11 @@ class ChinesePromptBuilder:
         original_types: Optional[List[str]] = None
     ) -> str:
         """
-        构建负样本的 CoT 响应（用于训练数据的 rejected）
-        
+        构建负样本响应（用于训练数据的 rejected）
+
         设计原则（基于代码审查反馈）：
-        - 不使用显式错误标记（如 [推理偏差: ...]），避免让模型轻易区分 chosen/rejected
-        - 生成"看似合理但结论错误"的推理链，增加 DPO 的学习难度
-        - 根据不同策略模拟不同类型的推理偏差
-        - 【关键改进】增加模板多样性，防止模型学习简单文本特征
+        - 不使用显式错误标记，避免让模型轻易区分 chosen/rejected
+        - 仍保持严格 JSON 契约，避免训练/评测输出格式漂移
         
         Args:
             neg_json: 负样本 JSON 字符串
@@ -392,93 +259,13 @@ class ChinesePromptBuilder:
             original_types: 原始事件类型列表
         
         Returns:
-            模拟错误推理过程的响应
+            负样本 JSON 字符串
         """
-        import random as _random
-        
-        # 尝试解析负样本 JSON 获取错误的事件类型
-        try:
-            neg_data = json.loads(neg_json) if isinstance(neg_json, str) else neg_json
-            if isinstance(neg_data, list) and neg_data:
-                neg_event = neg_data[0]
-            else:
-                neg_event = neg_data
-            wrong_type = neg_event.get('event_type', '未知事件')
-            wrong_args = neg_event.get('arguments', [])
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            wrong_type = '未知事件'
-            wrong_args = []
-        
-        cot_parts = ["<thought>"]
-        
-        # 【关键改进】多样化的模板库
-        # 第一步模板变体
-        step1_templates = {
-            "EASY": [
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}"],
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}（待复核）"],
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}（可能）"],
-            ],
-            "MEDIUM": [
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}"],
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}（含歧义）"],
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}（需校验）"],
-            ],
-            "HARD": [
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}"],
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}（候选）"],
-                [f"- 检测到触发词：{wrong_type}", f"- 识别的事件类型：{wrong_type}（细粒度）"],
-            ]
-        }
-        
-        # 第三步模板变体
-        step3_templates = {
-            "EASY": [
-                ["- 事件类型与文本语境基本吻合", "- 约束检查完成"],
-                ["- 类型判定结果校验通过", "- 完成约束验证"],
-                ["- 事件类型符合文本语义", "- 校验结束"],
-            ],
-            "MEDIUM": [
-                ["- 论元角色分配符合 Schema 定义", "- 约束检查完成"],
-                ["- 角色分配验证通过", "- 完成校验"],
-                ["- 论元与角色映射正确", "- 校验结束"],
-            ],
-            "HARD": [
-                ["- 实体边界校验通过", "- 约束检查完成"],
-                ["- 数值精度验证完成", "- 校验通过"],
-                ["- 论元边界确认无误", "- 完成校验"],
-            ]
-        }
-        
-        # 随机选择模板
-        step1_choice = _random.choice(step1_templates.get(strategy, step1_templates["EASY"]))
-        step3_choice = _random.choice(step3_templates.get(strategy, step3_templates["EASY"]))
-        
-        # 第一步：Schema 分析
-        cot_parts.append("第一步：Schema 分析（模式识别）")
-        cot_parts.extend(step1_choice)
-        
-        # 第二步：实体扫描 - 展示错误的论元抽取
-        cot_parts.append("\n第二步：实体扫描（论元抽取）")
-        cot_parts.append(f"- {wrong_type}事件：")
-        
-        if wrong_args:
-            for arg in wrong_args[:3]:  # 最多展示3个
-                role = arg.get('role', '')
-                value = arg.get('argument', '')
-                if role and value:
-                    display_value = value if len(value) <= 25 else value[:22] + "..."
-                    cot_parts.append(f"  · {role} = \"{display_value}\"")
-        else:
-            cot_parts.append("  · 论元信息待确认")
-        
-        # 第三步：约束校验
-        cot_parts.append("\n第三步：约束校验（自我修正）")
-        cot_parts.extend(step3_choice)
-        
-        cot_parts.append("</thought>")
-        
-        return "\n".join(cot_parts) + f"\n\n```json\n{neg_json}\n```"
+        _ = strategy
+        _ = original_types
+        if isinstance(neg_json, str):
+            return neg_json
+        return json.dumps(neg_json, ensure_ascii=False, indent=2)
 
     @staticmethod
     def template_leakage_score(chosen_text: str, rejected_text: str) -> float:

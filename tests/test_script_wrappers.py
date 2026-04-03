@@ -30,7 +30,11 @@ def test_shell_wrappers_do_not_parse_config_with_yaml_safe_load():
     for name in targets:
         text = _read_script(name)
         assert "yaml.safe_load" not in text, name
-        assert "ConfigManager.load_config" in text or "scripts/resolve_config_context.py" in text, name
+        assert (
+            "ConfigManager.load_config" in text
+            or "load_effective_config_metadata" in text
+            or "scripts/resolve_config_context.py" in text
+        ), name
 
 
 def test_run_train_has_standard_help_surface():
@@ -51,10 +55,33 @@ def test_other_shell_entrypoints_have_help_surface():
         assert "--help" in text, name
 
 
+def test_run_eval_academic_disallows_weak_seed_and_continue_flags():
+    text = _read_script("run_eval_academic.sh")
+    assert "--allow-weak-seed-sweep" not in text
+    assert "--continue-on-error" not in text
+
+
 def test_python_script_entrypoints_do_not_parse_main_config_with_yaml_safe_load():
     ablation_text = _read_script("ablation_study.py")
     assert "yaml.safe_load" not in ablation_text
     assert "ConfigManager.load_config" in ablation_text
+
+
+def test_run_train_wrapper_uses_effective_config_helper_for_manifest_provenance():
+    text = _read_script("run_train.sh")
+    assert "load_effective_config_metadata" in text
+
+
+def test_run_train_wrapper_no_longer_hardcodes_gpu_banner():
+    text = _read_script("run_train.sh")
+    assert "Environment: A6000 (48GB) | CUDA 11.8 | torch 2.6.0" not in text
+    assert "torch.cuda.get_device_name" in text or "nvidia-smi" in text
+
+
+def test_ablation_script_no_longer_uses_heuristic_checkpoint_candidates():
+    text = _read_script("ablation_study.py")
+    assert "checkpoint_candidates" not in text
+    assert "resolve_checkpoint_dir" in text
 
 
 def test_removed_auxiliary_shell_scripts_are_absent():

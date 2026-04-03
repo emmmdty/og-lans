@@ -90,7 +90,7 @@ from oglans.utils.json_parser import (
     NORMALIZATION_VERSION,
     PARSER_VERSION,
     normalize_parsed_events,
-    parse_event_list_with_diagnostics,
+    parse_event_list_strict_with_diagnostics,
 )
 from oglans.data.prompt_builder import (
     ChinesePromptBuilder,
@@ -99,8 +99,14 @@ from oglans.data.prompt_builder import (
 )
 from oglans.inference.cat_lite import apply_cat_lite_pipeline, perturb_text_for_counterfactual
 from oglans.utils.academic_eval import bootstrap_confidence_intervals
-from oglans.utils.run_manifest import build_run_manifest, save_json
+from oglans.utils.run_manifest import (
+    build_contract_record,
+    build_run_manifest,
+    save_json,
+)
 from oglans.utils.eval_protocol import (
+    validate_primary_metric,
+    resolve_primary_metric_value,
     compute_file_hash as shared_compute_file_hash,
     load_eval_protocol as shared_load_eval_protocol,
     load_role_alias_map as shared_load_role_alias_map,
@@ -415,7 +421,6 @@ def process_single_sample(
     sample,
     use_fewshot: bool = False,
     fewshot_num_examples: int = 3,
-    prompt_style: str = "qwen",
     json_mode: str = "auto",
     schema: Optional[Dict[str, List[str]]] = None,
     pipeline_mode: str = "e2e",
@@ -426,20 +431,13 @@ def process_single_sample(
     text = sample.text
     gold_events = sample.events
 
-    # 根据参数选择 Prompt 构建策略
-    if prompt_style == "simple":
-        messages = [
-            {"role": "system", "content": "你是中文金融事件抽取助手。请仅输出 JSON 事件列表。"},
-            {"role": "user", "content": text}
-        ]
-    else:
-        prompt_payload = build_inference_prompt_payload(
-            text=text,
-            schema=schema,
-            use_oneshot=use_fewshot,
-            num_examples=fewshot_num_examples,
-        )
-        messages = prompt_payload["messages"]
+    prompt_payload = build_inference_prompt_payload(
+        text=text,
+        schema=schema,
+        use_oneshot=use_fewshot,
+        num_examples=fewshot_num_examples,
+    )
+    messages = prompt_payload["messages"]
 
     # Inference
     response_text, usage, api_success, api_error, response_meta = perform_api_inference(
@@ -451,7 +449,7 @@ def process_single_sample(
     )
 
     # Parse: 使用带诊断的解析器，区分 "[] 成功" 和 "解析失败"
-    pred_events, parse_diagnostics = parse_event_list_with_diagnostics(response_text)
+    pred_events, parse_diagnostics = parse_event_list_strict_with_diagnostics(response_text)
     parse_success = bool(parse_diagnostics.get("success", False))
     cat_stats = {}
     if pipeline_mode == "cat_lite":
@@ -559,12 +557,14 @@ def main():
     config = ConfigManager().load_config(args.config)
     protocol = load_eval_protocol(args.protocol)
     comparison_cfg = config.get("comparison", {})
+    model_profile = str(config.get("model", {}).get("profile"))
 
     api_cfg = config.get('api_evaluation', {})
     protocol_eval = protocol.get("evaluation", {}) if isinstance(protocol, dict) else {}
     protocol_primary_metric = str(protocol.get("primary_metric", "strict_f1"))
     if args.report_primary_metric is None:
         args.report_primary_metric = protocol_primary_metric
+    args.report_primary_metric = validate_primary_metric(args.report_primary_metric)
     if args.canonical_metric_mode is None:
         args.canonical_metric_mode = str(protocol.get("canonical_metric_mode", "analysis_only"))
     if args.canonical_metric_mode not in {"off", "analysis_only", "apply_for_aux_metric"}:
@@ -673,11 +673,23 @@ def main():
     logger.info(f"🧩 Pipeline Mode: {args.pipeline_mode}")
     logger.info(f"🌐 API Base URL: {base_url}")
 
+    evaluation_mode = str(config.get("evaluation", {}).get("mode", "")).strip().lower()
+    if evaluation_mode not in {"scored", "prediction_only"}:
+        raise ValueError(
+            f"Unsupported evaluation.mode: {evaluation_mode}. "
+            "Expected one of scored, prediction_only."
+        )
+
     # Load Data
     data_dir = f"./data/raw/{dataset_name}"
     schema_path = os.path.join(data_dir, f"{dataset_name_lower}_event_schema.json")
     adapter = DuEEFinAdapter(data_path=data_dir, schema_path=schema_path)
-    samples = adapter.load_data(args.split)
+    try:
+        samples = adapter.load_data(args.split)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"无法加载 split={args.split} 的数据文件，请检查路径: {data_dir}"
+        ) from exc
     valid_event_types = set(adapter.get_event_types())
     valid_roles_by_event = {
         etype: set(roles or [])
@@ -691,8 +703,9 @@ def main():
     role_alias_map = load_role_alias_map(args.role_alias_map)
     canonical_enabled = bool(args.canonical_metric_mode != "off" and role_alias_map)
     if args.canonical_metric_mode != "off" and not role_alias_map:
-        logger.warning(
-            "⚠️ canonical_metric_mode 已启用，但 alias map 未加载成功。将跳过 canonical 指标。"
+        raise ValueError(
+            "canonical_metric_mode requires a valid role alias map; no semantic fallback is allowed. "
+            f"path={args.role_alias_map}"
         )
 
     if not samples:
@@ -702,21 +715,20 @@ def main():
         samples = samples[:args.num_samples]
 
     has_gold_labels = any(bool(getattr(s, "events", [])) for s in samples)
-    if not has_gold_labels:
-        logger.warning(
-            "⚠️ 当前 split 不包含 gold event_list，进入 prediction-only 模式。"
-            "将导出预测并统计解析成功率，不计算 F1。"
+    if evaluation_mode == "scored" and not has_gold_labels:
+        raise ValueError(
+            f"evaluation.mode=scored requires gold labels, but split={args.split} has no gold event_list."
         )
 	
     # Evaluator
     evaluator = AcademicEventEvaluator(metric_settings=metric_settings)
     canonical_evaluator = (
         AcademicEventEvaluator(metric_settings=metric_settings)
-        if canonical_enabled and has_gold_labels else None
+        if canonical_enabled and evaluation_mode == "scored" else None
     )
     canonical_row_evaluator = (
         AcademicEventEvaluator(metric_settings=metric_settings)
-        if canonical_enabled and has_gold_labels else None
+        if canonical_enabled and evaluation_mode == "scored" else None
     )
     canonical_sample_rows: List[Dict[str, int]] = []
     canonical_rewrites_total = 0
@@ -731,8 +743,6 @@ def main():
     # ThreadPool Execution
     max_retries = api_cfg.get('max_retries', 3)
     fewshot_num_examples = int(api_cfg.get('fewshot_num_examples', 3))
-    prompt_style = api_cfg.get('system_prompt_style', 'qwen')
-
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_sample = {
             executor.submit(
@@ -744,7 +754,6 @@ def main():
                 sample,
                 args.use_fewshot,
                 fewshot_num_examples,
-                prompt_style,
                 args.json_mode,
                 prompt_schema,
                 args.pipeline_mode,
@@ -762,7 +771,7 @@ def main():
                 else:
                     parse_stats["failure"] += 1
 
-                if has_gold_labels:
+                if evaluation_mode == "scored":
                     evaluator.update_with_extended_metrics(
                         pred_events=res['pred_events'],
                         gold_events=res['gold_events'],
@@ -810,19 +819,13 @@ def main():
                         )
                         if not perturbation.get("changed", False):
                             continue
-                        if prompt_style == "simple":
-                            cf_messages = [
-                                {"role": "system", "content": "你是中文金融事件抽取助手。请仅输出 JSON 事件列表。"},
-                                {"role": "user", "content": perturbed_text},
-                            ]
-                        else:
-                            cf_payload = build_inference_prompt_payload(
-                                text=perturbed_text,
-                                schema=prompt_schema,
-                                use_oneshot=args.use_fewshot,
-                                num_examples=fewshot_num_examples,
-                            )
-                            cf_messages = cf_payload["messages"]
+                        cf_payload = build_inference_prompt_payload(
+                            text=perturbed_text,
+                            schema=prompt_schema,
+                            use_oneshot=args.use_fewshot,
+                            num_examples=fewshot_num_examples,
+                        )
+                        cf_messages = cf_payload["messages"]
                         cf_text, cf_usage, _, _, _ = perform_api_inference(
                             client,
                             model_name,
@@ -834,7 +837,7 @@ def main():
                         token_stats_counterfactual["prompt_tokens"] += cf_usage.get("prompt_tokens", 0)
                         token_stats_counterfactual["completion_tokens"] += cf_usage.get("completion_tokens", 0)
                         token_stats_counterfactual["total_tokens"] += cf_usage.get("total_tokens", 0)
-                        cf_events, _ = parse_event_list_with_diagnostics(cf_text)
+                        cf_events, _ = parse_event_list_strict_with_diagnostics(cf_text)
                         if args.pipeline_mode == "cat_lite":
                             cf_cat_result = apply_cat_lite_pipeline(
                                 pred_events=cf_events,
@@ -880,7 +883,10 @@ def main():
                 token_stats["total_tokens"] += res['usage'].get("total_tokens", 0)
                 
             except Exception as exc:
-                print(f"Exception: {exc}")
+                failed_idx = future_to_sample.get(future)
+                raise RuntimeError(
+                    f"API evaluation sample failed: sample_idx={failed_idx}, error={exc}"
+                ) from exc
 
     # Save Results
     results.sort(key=lambda x: (str(x.get("id", "")), int(x.get("sample_idx", 0))))
@@ -891,7 +897,7 @@ def main():
     # Report
     metrics_report_file: Optional[str] = None
     canonical_metrics_block: Optional[Dict[str, Any]] = None
-    if has_gold_labels:
+    if evaluation_mode == "scored":
         report = evaluator.compute_metrics()
         metrics_report_file = os.path.join(run_dir, "eval_report.txt")
         log_and_save_metrics_report(
@@ -909,13 +915,10 @@ def main():
             4,
         )
         metrics_dict["primary_metric"] = args.report_primary_metric
-        metrics_dict["primary_metric_value"] = metrics_dict.get(args.report_primary_metric)
-        if metrics_dict["primary_metric_value"] is None:
-            logger.warning(
-                f"⚠️ primary_metric={args.report_primary_metric} 不在 metrics 中，回退到 strict_f1"
-            )
-            metrics_dict["primary_metric"] = "strict_f1"
-            metrics_dict["primary_metric_value"] = metrics_dict.get("strict_f1")
+        metrics_dict["primary_metric_value"] = resolve_primary_metric_value(
+            metrics_dict,
+            args.report_primary_metric,
+        )
 
         if args.compute_ci:
             ci_evaluator = AcademicEventEvaluator(metric_settings=metric_settings)
@@ -961,7 +964,7 @@ def main():
         parse_error_rate = parse_stats["failure"] / len(samples) if samples else 0.0
         metrics_dict = {
             "evaluation_mode": "prediction_only",
-            "reason": f"split={args.split} does not include gold labels",
+            "reason": f"explicit evaluation.mode=prediction_only for split={args.split}",
             "total_samples": len(samples),
             "parse_errors": parse_stats["failure"],
             "parse_error_rate": round(parse_error_rate, 4),
@@ -989,26 +992,18 @@ def main():
     api_call_failures = sum(1 for item in results if not item.get("api_success", False))
     manifest = collect_runtime_manifest(Path(__file__).parent.resolve())
     cmdline = " ".join(os.sys.argv)
-    prompt_schema_block = (
-        ChinesePromptBuilder.build_schema_constraints(prompt_schema)
-        if prompt_style != "simple"
-        else ""
-    )
+    prompt_schema_block = ChinesePromptBuilder.build_schema_constraints(prompt_schema)
     selected_fewshot_examples = (
         ChinesePromptBuilder.select_fewshot_examples(num_examples=fewshot_num_examples)
-        if (prompt_style != "simple" and args.use_fewshot)
+        if args.use_fewshot
         else []
     )
     prompt_hashes = {
-        "system_prompt_sha256": (
-            hash_text(ChinesePromptBuilder.build_system_prompt(schema=prompt_schema))
-            if prompt_style != "simple"
-            else None
-        ),
+        "system_prompt_sha256": hash_text(ChinesePromptBuilder.build_system_prompt(schema=prompt_schema)),
         "schema_constraints_sha256": hash_text(prompt_schema_block) if prompt_schema_block else None,
         "fewshot_example_indices": (
             list(range(min(fewshot_num_examples, len(ChinesePromptBuilder.FEW_SHOT_EXAMPLES))))
-            if (prompt_style != "simple" and args.use_fewshot) else []
+            if args.use_fewshot else []
         ),
         "fewshot_examples_sha256": (
             [
@@ -1018,7 +1013,7 @@ def main():
                 }
                 for ex in selected_fewshot_examples
             ]
-            if (prompt_style != "simple" and args.use_fewshot) else []
+            if args.use_fewshot else []
         ),
     }
     protocol_hash = compute_file_hash(args.protocol)
@@ -1038,11 +1033,12 @@ def main():
             "has_gold_labels": has_gold_labels,
             "use_fewshot": args.use_fewshot,
             "fewshot_num_examples": fewshot_num_examples if args.use_fewshot else 0,
-            "prompt_style": prompt_style,
+            "prompt_style": "profile_contract",
             "json_mode": args.json_mode,
             "cot_eval_mode": args.cot_eval_mode,
             "pipeline_mode": args.pipeline_mode,
             "seed": args.seed,
+            "model_profile": model_profile,
             "config_hash_sha256": compute_config_hash(config),
             "config_path": os.path.abspath(args.config),
             "command": cmdline,
@@ -1073,13 +1069,12 @@ def main():
             "decode_mode": "api_temperature_0",
             "seed_effective": False,
             "prompt_hashes": prompt_hashes,
-            "prompt_variant": (
-                "simple" if prompt_style == "simple" else ("fewshot" if args.use_fewshot else "zeroshot")
-            ),
+            "prompt_variant": "fewshot" if args.use_fewshot else "zeroshot",
             "prompt_builder_version": str(comparison_cfg.get("prompt_builder_version", PROMPT_BUILDER_VERSION)),
             "parser_version": str(comparison_cfg.get("parser_version", PARSER_VERSION)),
             "normalization_version": str(comparison_cfg.get("normalization_version", NORMALIZATION_VERSION)),
             "training_mode": "api_inference",
+            "evaluation_mode": evaluation_mode,
         },
         "metrics": metrics_dict,
         "token_usage": {
@@ -1093,7 +1088,7 @@ def main():
         },
         "api_stats": {
             "failed_calls": api_call_failures,
-            "failed_call_rate": (api_call_failures / len(results)) if results else 0.0,
+            "failed_call_rate": (api_call_failures / len(samples)) if samples else 0.0,
         },
         "runtime": {
             "wall_clock_seconds": time.time() - run_start_ts,
@@ -1122,6 +1117,11 @@ def main():
             "summary_file": os.path.abspath(summary_file),
             "metrics_report_file": os.path.abspath(metrics_report_file) if metrics_report_file else None,
         },
+        contract=build_contract_record(
+            model_profile=model_profile,
+            model_source="api",
+            effective_model_path=model_name,
+        ),
         runtime={
             "wall_clock_seconds": eval_summary["runtime"]["wall_clock_seconds"],
         },

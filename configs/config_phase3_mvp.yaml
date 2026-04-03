@@ -1,0 +1,26 @@
+extends: ./config.yaml
+
+comparison:
+  prompt_builder_version: "phase3_mvp_v1"
+  parser_version: "phase3_mvp_v1"
+  normalization_version: "phase3_mvp_v1"
+
+evaluation:
+  mode: "scored"
+
+inference:
+  pipeline_mode: "e2e"
+  postprocess:
+    enabled: true
+    role_whitelist: true
+    alias_map: true
+    duplicate_role_split: true
+    normalization_mode: "diagnostics_only"
+    grounding_mode: "exact+fuzzy+code_local"
+    sidecar_diagnostics: true
+    preserve_ungrounded_arguments: true
+  scv_lite:
+    mode: "trigger_only"
+    trigger_on_grounding_failure: true
+    trigger_on_mutual_exclusion: false
+    trigger_on_shared_role_conflict: false

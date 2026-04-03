@@ -65,9 +65,7 @@ COT_EVAL_MODE="self_consistency"
 PIPELINE_MODE="e2e"
 OUT_DIR=""
 TAG=""
-CONTINUE_ON_ERROR=0
 SEED_POLICY="train_seed"        # train_seed | eval_seed
-ALLOW_WEAK_SEED_SWEEP=0
 TAIL_ON_FAIL=120
 ORIGINAL_CMD="bash $0 $*"
 
@@ -97,10 +95,8 @@ Options:
   --do-sample                  Enable sampling decode (not recommended for papers)
   --cot-eval-mode <mode>       self_consistency|counterfactual
   --pipeline-mode <mode>       e2e|cat_lite
-  --allow-weak-seed-sweep      Allow eval_seed with deterministic decode on single checkpoint
   --out-dir <path>             Output directory (default auto-generated)
   --tag <str>                  Optional run tag appended to output directory
-  --continue-on-error          Continue remaining seeds when one seed fails
   -h, --help                   Show help
 
 Examples:
@@ -115,8 +111,7 @@ Examples:
   bash scripts/run_eval_academic.sh \
     --seed-policy eval_seed \
     --checkpoint logs/DuEE-Fin/checkpoints/exp1 \
-    --num-samples 200 --seeds 3407,3408,3409 \
-    --allow-weak-seed-sweep
+    --num-samples 200 --seeds 3407,3408,3409
 EOF
 }
 
@@ -139,10 +134,8 @@ while [[ $# -gt 0 ]]; do
     --do-sample) DO_SAMPLE=1; shift ;;
     --cot-eval-mode) COT_EVAL_MODE="${2:-}"; shift 2 ;;
     --pipeline-mode) PIPELINE_MODE="${2:-}"; shift 2 ;;
-    --allow-weak-seed-sweep) ALLOW_WEAK_SEED_SWEEP=1; shift ;;
     --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
     --tag) TAG="${2:-}"; shift 2 ;;
-    --continue-on-error) CONTINUE_ON_ERROR=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -234,9 +227,9 @@ else
     echo "ERROR: seed_policy=eval_seed supports exactly one checkpoint."
     exit 1
   fi
-  if [[ "$DO_SAMPLE" -eq 0 && ${#SEED_ARR[@]} -gt 1 && "$ALLOW_WEAK_SEED_SWEEP" -eq 0 ]]; then
+  if [[ "$DO_SAMPLE" -eq 0 && ${#SEED_ARR[@]} -gt 1 ]]; then
     echo "ERROR: eval_seed + deterministic decode on one checkpoint has weak statistical meaning."
-    echo "Use --allow-weak-seed-sweep to bypass, or switch to --seed-policy train_seed."
+    echo "Use --seed-policy train_seed with one checkpoint per seed."
     exit 1
   fi
 fi
@@ -320,7 +313,7 @@ echo "tail_on_fail: $TAIL_ON_FAIL lines"
 echo "============================================================"
 
 MANIFEST_JSON="${OUT_DIR}/run_manifest.json"
-"$PYTHON_BIN" - "$MANIFEST_JSON" "$RUN_TS" "$CHECKPOINT" "$SEED_POLICY" "$DATASET" "$DATASET_DIR" "$SCHEMA_FILE" "$SPLIT_FILE" "$CONFIG" "$PROTOCOL" "$ROLE_ALIAS_MAP" "$CANONICAL_MODE" "$PRIMARY_METRIC" "$SPLIT" "$EVAL_MODE" "$BATCH_SIZE" "$SEEDS" "${NUM_SAMPLES:-ALL}" "$USE_ONESHOT" "$DO_SAMPLE" "$COT_EVAL_MODE" "$PIPELINE_MODE" "$CONTINUE_ON_ERROR" "$OUT_DIR" "$ORIGINAL_CMD" <<'PY'
+"$PYTHON_BIN" - "$MANIFEST_JSON" "$RUN_TS" "$CHECKPOINT" "$SEED_POLICY" "$DATASET" "$DATASET_DIR" "$SCHEMA_FILE" "$SPLIT_FILE" "$CONFIG" "$PROTOCOL" "$ROLE_ALIAS_MAP" "$CANONICAL_MODE" "$PRIMARY_METRIC" "$SPLIT" "$EVAL_MODE" "$BATCH_SIZE" "$SEEDS" "${NUM_SAMPLES:-ALL}" "$USE_ONESHOT" "$DO_SAMPLE" "$COT_EVAL_MODE" "$PIPELINE_MODE" "$OUT_DIR" "$ORIGINAL_CMD" <<'PY'
 import hashlib
 import json
 import os
@@ -352,7 +345,6 @@ import sys
     do_sample,
     cot_eval_mode,
     pipeline_mode,
-    continue_on_error,
     out_dir,
     command,
 ) = sys.argv[1:]
@@ -400,7 +392,6 @@ manifest = {
     "do_sample": int(do_sample),
     "cot_eval_mode": cot_eval_mode,
     "pipeline_mode": pipeline_mode,
-    "continue_on_error": int(continue_on_error),
     "artifacts": {
         "output_dir": os.path.abspath(out_dir),
     },
@@ -489,20 +480,14 @@ for idx in "${!SEED_ARR[@]}"; do
       echo "Log file not found: $log_file"
     fi
     FAILED_SEEDS+=("$seed")
-    if [[ "$CONTINUE_ON_ERROR" -eq 0 ]]; then
-      echo "Stopping due to failure. Use --continue-on-error to keep going."
-      exit $rc
-    fi
-    continue
+    echo "Stopping due to failure."
+    exit $rc
   fi
 
   if [[ ! -f "$metrics_file" ]]; then
     echo "Seed ${seed} finished but metrics file missing: $metrics_file"
     FAILED_SEEDS+=("$seed")
-    if [[ "$CONTINUE_ON_ERROR" -eq 0 ]]; then
-      exit 2
-    fi
-    continue
+    exit 2
   fi
 
   SUCCESS_SEEDS+=("$seed")
@@ -545,11 +530,7 @@ seeds = sys.argv[3:]
 def read_metrics(seed: str):
     p = out_dir / f"eval_results_dev_seed{seed}_metrics.json"
     if not p.exists():
-        # split may not be dev in script, fallback search
-        cand = sorted(out_dir.glob(f"eval_results_*_seed{seed}_metrics.json"))
-        if not cand:
-            raise FileNotFoundError(f"metrics missing for seed={seed}")
-        p = cand[0]
+        raise FileNotFoundError(f"metrics missing for seed={seed}: {p}")
     with p.open("r", encoding="utf-8") as f:
         return json.load(f), p.name
 

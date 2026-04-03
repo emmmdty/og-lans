@@ -72,6 +72,67 @@ class TestSCVJsonConversion:
 
 class TestSCVMock:
     """SCV 功能测试（使用 Mock，不加载真实模型）"""
+
+    def test_detect_entailment_index_from_id2label(self):
+        verifier = SemanticConsistencyVerifier.__new__(SemanticConsistencyVerifier)
+        verifier.model = type(
+            "DummyModel",
+            (),
+            {
+                "config": type(
+                    "DummyConfig",
+                    (),
+                    {
+                        "label2id": None,
+                        "id2label": {"0": "CONTRADICTION", "1": "NEUTRAL", "2": "ENTAILMENT"},
+                        "num_labels": 3,
+                    },
+                )()
+            },
+        )()
+
+        assert verifier._detect_entailment_index() == 2
+
+    def test_detect_entailment_index_accepts_explicit_override(self):
+        verifier = SemanticConsistencyVerifier.__new__(SemanticConsistencyVerifier)
+        verifier.model = type(
+            "DummyModel",
+            (),
+            {
+                "config": type(
+                    "DummyConfig",
+                    (),
+                    {
+                        "label2id": None,
+                        "id2label": None,
+                        "num_labels": 3,
+                    },
+                )()
+            },
+        )()
+
+        assert verifier._detect_entailment_index(explicit_idx=2) == 2
+
+    def test_detect_entailment_index_fails_fast_when_mapping_missing(self):
+        verifier = SemanticConsistencyVerifier.__new__(SemanticConsistencyVerifier)
+        verifier.model = type(
+            "DummyModel",
+            (),
+            {
+                "config": type(
+                    "DummyConfig",
+                    (),
+                    {
+                        "label2id": None,
+                        "id2label": None,
+                        "num_labels": 3,
+                    },
+                )()
+            },
+        )()
+
+        with pytest.raises(ValueError, match="entailment"):
+            verifier._detect_entailment_index()
     
     def test_entailment_logic_true_positive(self):
         """测试蕴含判断逻辑 - 真正例"""

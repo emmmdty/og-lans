@@ -34,6 +34,7 @@ import os
 import time
 from oglans.utils import (
     setup_logger,
+    build_contract_record,
     collect_runtime_manifest,
     compute_file_sha256,
     compute_json_sha256,
@@ -49,6 +50,7 @@ from oglans.config import ConfigManager
 from oglans.utils.pathing import normalize_dataset_name, resolve_schema_path
 from oglans.data.prompt_builder import PROMPT_BUILDER_VERSION, build_inference_prompt_payload
 from oglans.utils.json_parser import NORMALIZATION_VERSION, PARSER_VERSION
+from oglans.utils.model_profile import load_local_model_profile
 import yaml
 import torch
 
@@ -99,19 +101,12 @@ def main():
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_train_seed{seed}_p{os.getpid()}"
     config['project']['run_id'] = run_id
-    
-    # 【修复】检测是否为 debug 配置，保留配置文件中的路径设置
-    is_debug_config = "debug" in args.config.lower()
-    
-    if is_debug_config:
-        # Debug 模式：使用配置文件中的路径，仅动态替换 schema 路径
-        print("🔧 检测到 Debug 配置，使用配置文件中的路径设置")
-    else:
-        # 正式训练：动态生成路径
-        config['project']['output_dir'] = f"./logs/{dataset_name}/checkpoints"
-        config['project']['logging_dir'] = f"./logs/{dataset_name}/tensorboard"
-        config['project']['debug_data_dir'] = f"./logs/{dataset_name}/samples"
-        config['project']['dataset_cache_dir'] = f"./data/processed/{dataset_name}"
+
+    project_cfg = config["project"]
+    project_cfg.setdefault("output_dir", f"./logs/{dataset_name}/checkpoints")
+    project_cfg.setdefault("logging_dir", f"./logs/{dataset_name}/tensorboard")
+    project_cfg.setdefault("debug_data_dir", f"./logs/{dataset_name}/samples")
+    project_cfg.setdefault("dataset_cache_dir", f"./data/processed/{dataset_name}")
     
     # Schema 路径：优先 CLI 显式指定，其次 data_dir 内推断，再回退到配置路径
     configured_schema_path = config['algorithms']['ds_cns'].get('taxonomy_path')
@@ -192,6 +187,12 @@ def main():
     runtime_manifest["model_runtime"] = get_model_download_runtime_snapshot(source=model_source)
     config_hash_sha256 = compute_json_sha256(config)
     run_manifest_path = os.path.join(config['project']['output_dir'], "run_manifest.json")
+    effective_model_path = str(config.get("model", {}).get("base_model"))
+    contract = build_contract_record(
+        model_profile=load_local_model_profile(config["model"]["profile"]).name,
+        model_source=model_source,
+        effective_model_path=effective_model_path,
+    )
 
     manifest_status = "failed"
     error_message = None
@@ -218,6 +219,7 @@ def main():
             text=samples[0].text if samples else "",
             tokenizer=getattr(trainer, "tokenizer", None),
             use_oneshot=(prompt_variant == "fewshot"),
+            schema=getattr(trainer, "prompt_schema", None),
             num_examples=int(comparison_cfg.get("fewshot_num_examples", 3)),
         )
         trainer.train()
@@ -266,6 +268,7 @@ def main():
                 "dataset_cache_dir": os.path.abspath(config['project']['dataset_cache_dir']),
                 "resolved_config": os.path.abspath(resolved_config_path),
             },
+            contract=contract,
             runtime={
                 "wall_clock_seconds": round(time.time() - run_start_ts, 4),
                 "phase_timings_seconds": trainer_runtime_stats.get("phase_timings_seconds", {}),

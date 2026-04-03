@@ -24,6 +24,7 @@ project:
 # ==============================================================================
 model:
   base_model: "Qwen/Qwen3-4B-Instruct-2507"
+  profile: "qwen3_instruct"
   source: "modelscope"  # 国内环境使用 modelscope，海外改为 huggingface
   
   # 4-bit 量化配置 (QLoRA)
@@ -170,7 +171,9 @@ algorithms:
   # SCV: Semantic Consistency Verification
   scv:
     enabled: true
+    source: "modelscope"
     nli_model: "Fengshenbang/Erlangshen-MegatronBert-1.3B-NLI"
+    entailment_idx: null               # 可显式指定 entailment 标签索引；官方 HF config 为 2
     nli_threshold: 0.85                 # Entailment 阈值
     progress_log_interval: 20           # Debug 模式更频繁输出 SCV 心跳
     progress_log_seconds: 10            # Debug 模式至少每 10 秒输出一次 SCV 心跳
@@ -196,6 +199,18 @@ inference:
   # 【新增】推理时思考控制
   enable_thinking: true                 # 是否生成 CoT
   thinking_budget: null                 # null = 不限制思考长度
+
+evaluation:
+  mode: "scored"
+
+comparison:
+  eval_protocol_path: "./configs/eval_protocol.yaml"
+  role_alias_map_path: "./configs/role_aliases_duee_fin.yaml"
+  prompt_variant: "zeroshot"
+  fewshot_num_examples: 3
+  prompt_builder_version: "phase3_mvp_v1"
+  parser_version: "phase3_mvp_v1"
+  normalization_version: "phase3_mvp_v1"
 
 # ==============================================================================
 # 学术实验控制 (消融实验用)

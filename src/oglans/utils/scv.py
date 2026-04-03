@@ -21,7 +21,8 @@ import re
 import time
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import logging
-from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
 
 from .hub_runtime import (
@@ -31,6 +32,86 @@ from .hub_runtime import (
 )
 
 logger = logging.getLogger("OGLANS")
+
+
+@dataclass
+class SCVLiteDecision:
+    mode: str
+    triggered: bool
+    reasons: List[str]
+    call_count: int
+    wall_clock_seconds: float
+    verification_attempted: bool = False
+    verification_result: Optional[bool] = None
+
+
+def evaluate_scv_lite(
+    postprocess_diagnostics: Optional[Dict[str, Any]],
+    *,
+    mode: str = "off",
+    verifier: Optional["SemanticConsistencyVerifier"] = None,
+    source_text: str = "",
+    pred_events: Optional[List[Dict[str, Any]]] = None,
+) -> SCVLiteDecision:
+    """
+    Lightweight SCV gate for Phase 3.
+
+    off:
+        Ignore diagnostics entirely.
+    trigger_only:
+        Record trigger reasons without invoking the heavy verifier.
+    verify_triggered:
+        Attempt verifier only when triggers exist and a verifier instance is provided.
+    """
+    normalized_mode = str(mode or "off")
+    reasons = list((postprocess_diagnostics or {}).get("scv_lite_reasons", []) or [])
+    triggered = bool((postprocess_diagnostics or {}).get("scv_lite_triggered", False) or reasons)
+
+    if normalized_mode == "off":
+        return SCVLiteDecision(
+            mode="off",
+            triggered=False,
+            reasons=[],
+            call_count=0,
+            wall_clock_seconds=0.0,
+        )
+
+    if normalized_mode == "trigger_only":
+        return SCVLiteDecision(
+            mode="trigger_only",
+            triggered=triggered,
+            reasons=reasons,
+            call_count=0,
+            wall_clock_seconds=0.0,
+        )
+
+    if normalized_mode != "verify_triggered":
+        raise ValueError(f"Unsupported SCV-Lite mode: {normalized_mode}")
+
+    if not triggered or verifier is None:
+        return SCVLiteDecision(
+            mode="verify_triggered",
+            triggered=triggered,
+            reasons=reasons,
+            call_count=0,
+            wall_clock_seconds=0.0,
+            verification_attempted=False,
+            verification_result=None,
+        )
+
+    hypothesis = json.dumps(pred_events or [], ensure_ascii=False)
+    started = time.perf_counter()
+    verification_result = verifier.is_false_negative(source_text, hypothesis)
+    elapsed = time.perf_counter() - started
+    return SCVLiteDecision(
+        mode="verify_triggered",
+        triggered=triggered,
+        reasons=reasons,
+        call_count=1,
+        wall_clock_seconds=elapsed,
+        verification_attempted=True,
+        verification_result=bool(verification_result),
+    )
 
 class SemanticConsistencyVerifier:
     """
@@ -43,10 +124,13 @@ class SemanticConsistencyVerifier:
         self,
         model_name: str,
         threshold: float = 0.8,
+        source: str = "modelscope",
+        entailment_idx: Optional[int] = None,
         progress_log_interval: int = 200,
         progress_log_seconds: float = 30.0,
     ):
         self.threshold = threshold
+        self.source = str(source or "modelscope").lower()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.progress_log_interval = max(1, int(progress_log_interval))
         self.progress_log_seconds = max(5.0, float(progress_log_seconds))
@@ -57,10 +141,10 @@ class SemanticConsistencyVerifier:
         
         logger.info(f"Loading SCV model: {model_name}...")
         project_root = Path(__file__).resolve().parents[3]
-        configure_model_download_runtime(project_root, source="modelscope")
+        configure_model_download_runtime(project_root, source=self.source)
         model_path = resolve_model_name_or_path(
             model_name,
-            source="modelscope",
+            source=self.source,
             logger=logger,
             project_root=project_root,
         )
@@ -71,17 +155,17 @@ class SemanticConsistencyVerifier:
             self.model = AutoModelForSequenceClassification.from_pretrained(model_path).to(self.device)
             self.model.eval() # 开启评估模式
         except Exception as e:
-            model_runtime = get_model_download_runtime_snapshot(source="modelscope")
+            model_runtime = get_model_download_runtime_snapshot(source=self.source)
             logger.error(
                 "Failed to load SCV model: "
                 f"model_name={model_name}, resolved_path={model_path}, "
-                f"modelscope_cache={model_runtime.get('MODELSCOPE_CACHE')}, "
+                f"runtime={model_runtime}, "
                 f"error={e}"
             )
             raise e
         
         # 3. 验证并确定 entailment 标签索引
-        self.entailment_idx = self._detect_entailment_index()
+        self.entailment_idx = self._detect_entailment_index(explicit_idx=entailment_idx)
         
         # 4. 【关键修复】断言测试 - 用简单样本验证标签检测是否正确
         self._validate_entailment_detection()
@@ -141,7 +225,7 @@ class SemanticConsistencyVerifier:
                 raise  # 重新抛出验证失败的异常
             logger.warning(f"⚠️ SCV 断言测试执行异常: {e}，跳过验证")
 
-    def _detect_entailment_index(self) -> int:
+    def _detect_entailment_index(self, explicit_idx: Optional[int] = None) -> int:
         """
         检测 NLI 模型的 entailment 标签索引
         不同模型可能使用不同的标签顺序：
@@ -155,14 +239,22 @@ class SemanticConsistencyVerifier:
         logger.info(f"📋 NLI 模型标签配置:")
         logger.info(f"   label2id: {labels}")
         logger.info(f"   id2label: {id2label}")
-        
-        entailment_idx = 0  # 默认值
-        
+
+        num_labels = getattr(self.model.config, "num_labels", None)
+        if explicit_idx is not None:
+            entailment_idx = int(explicit_idx)
+            if entailment_idx < 0 or (num_labels is not None and entailment_idx >= int(num_labels)):
+                raise ValueError(
+                    f"Explicit SCV entailment_idx out of range: {entailment_idx} (num_labels={num_labels})"
+                )
+            logger.info(f"✅ 使用显式配置的 entailment_idx={entailment_idx}")
+            return entailment_idx
+
         if labels is not None:
             # 尝试多种可能的 entailment 标签名称
             for key in ['entailment', 'ENTAILMENT', 'Entailment', '蕴含']:
                 if key in labels:
-                    entailment_idx = labels[key]
+                    entailment_idx = int(labels[key])
                     logger.info(f"✅ 检测到 entailment 标签: '{key}' -> index={entailment_idx}")
                     return entailment_idx
         
@@ -174,10 +266,10 @@ class SemanticConsistencyVerifier:
                     logger.info(f"✅ 从 id2label 推断 entailment 标签: '{label_name}' -> index={entailment_idx}")
                     return entailment_idx
         
-        # 无法确定时发出警告
-        logger.warning(f"⚠️ 无法自动检测 entailment 标签索引，使用默认值 {entailment_idx}")
-        logger.warning(f"   请验证模型的标签顺序是否正确！")
-        return entailment_idx
+        raise ValueError(
+            "Could not detect SCV entailment label index from model config. "
+            "Set algorithms.scv.entailment_idx explicitly."
+        )
     
     def _json_to_natural_language(self, json_str: str) -> str:
         """

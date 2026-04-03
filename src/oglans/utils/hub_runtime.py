@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import importlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -92,6 +93,8 @@ def configure_model_download_runtime(
     Configure the default download runtime for the requested source.
     """
     source_name = str(source or "modelscope").lower()
+    if source_name == "local":
+        return {}
     if source_name == "modelscope":
         return configure_modelscope_runtime(project_root, force=force)
     if source_name == "huggingface":
@@ -141,6 +144,8 @@ def get_model_download_runtime_snapshot(
     Return active runtime settings for the requested source.
     """
     source_name = str(source or "modelscope").lower()
+    if source_name == "local":
+        return {}
     if source_name == "modelscope":
         return get_modelscope_runtime_snapshot(project_root)
     if source_name == "huggingface":
@@ -174,6 +179,11 @@ def resolve_model_name_or_path(
         return resolved
 
     source_name = str(source or "modelscope").lower()
+    if source_name == "local":
+        raise RuntimeError(
+            "model.source=local requires an existing local filesystem path. "
+            f"Got: {model_name_or_path}"
+        )
     if source_name == "modelscope":
         runtime = configure_modelscope_runtime(project_root or Path.cwd())
         cache_dir = modelscope_cache_dir or runtime["MODELSCOPE_CACHE"]
@@ -204,3 +214,56 @@ def resolve_model_name_or_path(
         return model_name_or_path
 
     raise ValueError(f"Unsupported model source: {source}")
+
+
+def validate_attention_implementation(attn_implementation: Optional[str]) -> Optional[str]:
+    normalized = str(attn_implementation or "").strip()
+    if not normalized:
+        return None
+    if normalized not in {"eager", "sdpa", "flash_attention_2"}:
+        raise ValueError(f"Unsupported attention implementation: {normalized}")
+    if normalized != "flash_attention_2":
+        return normalized
+
+    try:
+        import_utils = importlib.import_module("transformers.utils.import_utils")
+    except ModuleNotFoundError as exc:  # pragma: no cover - transformers missing is a runtime env issue
+        raise RuntimeError(
+            "flash_attention_2 requested, but transformers is not installed."
+        ) from exc
+
+    is_available = getattr(import_utils, "is_flash_attn_2_available", None)
+    if callable(is_available) and not bool(is_available()):
+        raise RuntimeError(
+            "flash_attention_2 requested, but the current runtime does not support it."
+        )
+    return normalized
+
+
+def build_unsloth_from_pretrained_kwargs(
+    *,
+    model_name: str,
+    max_seq_length: int,
+    load_in_4bit: bool,
+    source: str,
+    dtype: Any = None,
+    attn_implementation: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Build a strict Unsloth loading contract.
+
+    Local model sources must stay fully offline so Unsloth does not attempt
+    remote Hugging Face statistics checks or hub lookups.
+    """
+    source_name = str(source or "modelscope").lower()
+    kwargs = {
+        "model_name": model_name,
+        "max_seq_length": max_seq_length,
+        "dtype": dtype,
+        "load_in_4bit": load_in_4bit,
+        "local_files_only": source_name == "local",
+    }
+    validated_attn = validate_attention_implementation(attn_implementation)
+    if validated_attn is not None:
+        kwargs["attn_implementation"] = validated_attn
+    return kwargs

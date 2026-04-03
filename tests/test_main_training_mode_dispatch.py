@@ -17,6 +17,7 @@ def _install_main_import_stubs(monkeypatch):
     utils_mod = types.ModuleType("oglans.utils")
     utils_mod.setup_logger = lambda *args, **kwargs: None
     utils_mod.collect_runtime_manifest = lambda *args, **kwargs: {}
+    utils_mod.build_contract_record = lambda *args, **kwargs: {}
     utils_mod.compute_file_sha256 = lambda *args, **kwargs: None
     utils_mod.compute_json_sha256 = lambda *args, **kwargs: "x" * 64
     utils_mod.build_run_manifest = lambda *args, **kwargs: {}
@@ -70,6 +71,10 @@ def _install_main_import_stubs(monkeypatch):
     parser_mod.PARSER_VERSION = "route_a_compare_v1"
     parser_mod.NORMALIZATION_VERSION = "route_a_compare_v1"
     monkeypatch.setitem(sys.modules, "oglans.utils.json_parser", parser_mod)
+
+    model_profile_mod = types.ModuleType("oglans.utils.model_profile")
+    model_profile_mod.load_local_model_profile = lambda name: types.SimpleNamespace(name=name)
+    monkeypatch.setitem(sys.modules, "oglans.utils.model_profile", model_profile_mod)
 
     yaml_mod = types.ModuleType("yaml")
     yaml_mod.safe_load = lambda *args, **kwargs: {}

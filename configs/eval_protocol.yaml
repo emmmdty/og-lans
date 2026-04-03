@@ -24,9 +24,9 @@ metrics:
   version: "2.0"
   report_level: "core_plus_diagnostics"   # core_only | core_plus_diagnostics
   cot:
-    enabled: true
+    enabled: false
     mode: "strict_span"                   # strict_span | weak_mention
-    require_thought_block: true
+    require_thought_block: false
     eval_mode: "self_consistency"         # self_consistency | counterfactual
     counterfactual:
       enabled: false

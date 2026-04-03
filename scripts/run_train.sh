@@ -50,6 +50,66 @@ resolve_python_bin() {
   fi
   echo ""
 }
+resolve_gpu_banner() {
+  local gpu_info=""
+  if [[ -n "${PYTHON_BIN:-}" ]]; then
+    gpu_info="$("$PYTHON_BIN" - <<'PY' 2>/dev/null
+import json
+try:
+    import torch
+except Exception:
+    print(json.dumps({"gpu_summary": "GPU unknown", "cuda": "unknown", "torch": "unknown"}))
+    raise SystemExit(0)
+
+summary = []
+if torch.cuda.is_available():
+    for idx in range(torch.cuda.device_count()):
+        props = torch.cuda.get_device_properties(idx)
+        total_gb = props.total_memory / (1024 ** 3)
+        summary.append(f"GPU{idx}:{torch.cuda.get_device_name(idx)} ({total_gb:.1f}GB)")
+
+payload = {
+    "gpu_summary": " | ".join(summary) if summary else "GPU unknown",
+    "cuda": str(getattr(torch.version, "cuda", None) or "unknown"),
+    "torch": str(getattr(torch, "__version__", "unknown")),
+}
+print(json.dumps(payload, ensure_ascii=False))
+PY
+)"
+  fi
+
+  if [[ -n "$gpu_info" ]]; then
+    local parsed
+    parsed="$("$PYTHON_BIN" - <<'PY' "$gpu_info"
+import json
+import sys
+payload = json.loads(sys.argv[1])
+print(payload["gpu_summary"])
+print(payload["cuda"])
+print(payload["torch"])
+PY
+)"
+    if [[ -n "$parsed" ]]; then
+      printf '%s\n' "$parsed"
+      return
+    fi
+  fi
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -n 1
+    echo "unknown"
+    "$PYTHON_BIN" - <<'PY' 2>/dev/null || echo "unknown"
+try:
+    import torch
+    print(torch.__version__)
+except Exception:
+    raise SystemExit(1)
+PY
+    return
+  fi
+
+  printf 'GPU unknown\nunknown\nunknown\n'
+}
 PYTHON_BIN="$(resolve_python_bin)"
 if [[ -z "$PYTHON_BIN" ]]; then
   echo "ERROR: neither python nor python3 found in PATH."
@@ -100,10 +160,14 @@ fi
 
 # 更新显示用的数据集名称
 DATASET_NAME=$(basename "$DATA_DIR")
+mapfile -t GPU_BANNER_LINES < <(resolve_gpu_banner)
+GPU_SUMMARY="${GPU_BANNER_LINES[0]:-GPU unknown}"
+CUDA_VERSION="${GPU_BANNER_LINES[1]:-unknown}"
+TORCH_VERSION="${GPU_BANNER_LINES[2]:-unknown}"
 
 echo "=========================================================="
 echo "   OG-LANS                                                  "
-echo "   Environment: A6000 (48GB) | CUDA 11.8 | torch 2.6.0    "
+echo "   Environment: ${GPU_SUMMARY} | CUDA ${CUDA_VERSION} | torch ${TORCH_VERSION}"
 echo "   CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "   MODELSCOPE_CACHE=${MODELSCOPE_CACHE}"
 echo "=========================================================="
@@ -132,32 +196,29 @@ RUN_MANIFEST="${RUN_DIR}/run_manifest.json"
 echo "📝 Terminal output will be saved to: $LOG_FILE"
 echo "🧾 Run manifest: $RUN_MANIFEST"
 
-"$PYTHON_BIN" - "$RUN_MANIFEST" "$TIMESTAMP" "$ORIGINAL_CMD" "$CONFIG_PATH" "$DATA_DIR" "$EXP_NAME" "$RUN_DIR" "$USER_SCHEMA_PATH" <<'PY'
-import hashlib
+"$PYTHON_BIN" - "$RUN_MANIFEST" "$TIMESTAMP" "$ORIGINAL_CMD" "$CONFIG_PATH" "$DATA_DIR" "$EXP_NAME" "$RUN_DIR" "$USER_SCHEMA_PATH" -- "$@" <<'PY'
 import json
 import os
-import platform
-import socket
-import subprocess
 import sys
 
-manifest_path, ts, cmd, config_path, data_dir, exp_name, run_dir, schema_path = sys.argv[1:]
+from oglans.utils.run_manifest import collect_runtime_manifest, load_effective_config_metadata
 
-def safe_git(cmdline):
-    try:
-        return subprocess.check_output(cmdline, stderr=subprocess.DEVNULL, text=True).strip()
-    except Exception:
-        return None
+argv = sys.argv[1:]
+manifest_path, ts, cmd, config_path, data_dir, exp_name, run_dir, schema_path = argv[:8]
+forwarded_args = argv[9:] if len(argv) > 8 and argv[8] == "--" else []
 
 config_hash = None
 seed = None
+training_mode = None
+lans_enabled = None
+scv_enabled = None
 try:
-    from oglans.config import ConfigManager
-    with open(config_path, "rb") as f:
-        raw = f.read()
-        config_hash = hashlib.sha256(raw).hexdigest()
-    cfg = ConfigManager.load_config(config_path)
-    seed = cfg.get("project", {}).get("seed")
+    config_meta = load_effective_config_metadata(config_path, cli_args=forwarded_args)
+    config_hash = config_meta["config_hash_sha256"]
+    seed = config_meta["seed"]
+    training_mode = config_meta["training_mode"]
+    lans_enabled = config_meta["lans_enabled"]
+    scv_enabled = config_meta["scv_enabled"]
 except Exception:
     pass
 
@@ -173,24 +234,17 @@ manifest = {
     "schema_path": os.path.abspath(schema_path) if schema_path else None,
     "experiment": exp_name,
     "seed": seed,
+    "training_mode": training_mode,
+    "lans_enabled": lans_enabled,
+    "scv_enabled": scv_enabled,
     "artifacts": {
         "run_dir": os.path.abspath(run_dir),
         "log_file": os.path.abspath(os.path.join(run_dir, "run.log")),
     },
-    "runtime_manifest": {
-        "python": {
-            "version": platform.python_version(),
-            "executable": os.path.abspath(sys.executable),
-        },
-        "system": {
-            "platform": platform.platform(),
-            "hostname": socket.gethostname(),
-        },
-        "git": {
-            "commit": safe_git(["git", "rev-parse", "HEAD"]),
-            "dirty": bool(safe_git(["git", "status", "--porcelain"]) or ""),
-        },
-    },
+    "runtime_manifest": collect_runtime_manifest(
+        os.getcwd(),
+        package_names=["torch", "transformers", "trl", "unsloth", "datasets", "PyYAML"],
+    ),
 }
 
 with open(manifest_path, "w", encoding="utf-8") as f:
@@ -201,13 +255,16 @@ PY
 exec > >(tee -a "$LOG_FILE") 2>&1
 # ==============================
 
-"$PYTHON_BIN" - "$CONFIG_PATH" <<'PY'
+"$PYTHON_BIN" - "$CONFIG_PATH" -- "$@" <<'PY'
 import sys
 
-config_path = sys.argv[1]
+from oglans.utils.run_manifest import load_effective_config_metadata
+
+argv = sys.argv[1:]
+config_path = argv[0]
+forwarded_args = argv[2:] if len(argv) > 1 and argv[1] == "--" else []
 try:
-    from oglans.config import ConfigManager
-    cfg = ConfigManager.load_config(config_path)
+    cfg = load_effective_config_metadata(config_path, cli_args=forwarded_args)["config"]
 except Exception as exc:
     print(f"[WARN] Failed to parse config summary: {exc}")
     sys.exit(0)

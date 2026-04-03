@@ -9,10 +9,17 @@ def test_runtime_defaults_are_applied(tmp_path):
         yaml.safe_dump(
             {
                 "project": {"seed": 3407},
+                "model": {"profile": "qwen3_instruct", "source": "modelscope"},
                 "algorithms": {
                     "lans": {"enabled": True},
                     "scv": {"enabled": True},
                 },
+                "comparison": {
+                    "prompt_builder_version": "phase3_mvp_v1",
+                    "parser_version": "phase3_mvp_v1",
+                    "normalization_version": "phase3_mvp_v1",
+                },
+                "evaluation": {"mode": "scored"},
             },
             allow_unicode=True,
             sort_keys=False,
@@ -36,6 +43,8 @@ def test_runtime_defaults_are_applied(tmp_path):
     assert loaded["algorithms"]["scv"]["cache_enabled"] is True
     assert loaded["algorithms"]["scv"]["cache_max_entries"] == 50000
     assert loaded["algorithms"]["scv"]["max_retries"] == 1
+    assert loaded["algorithms"]["scv"]["source"] == "modelscope"
+    assert loaded["algorithms"]["scv"]["entailment_idx"] is None
     assert loaded["training"]["fast_io"] is False
     assert loaded["training"]["dataloader_num_workers"] == 0
     assert loaded["training"]["dataloader_pin_memory"] is False
@@ -49,3 +58,15 @@ def test_runtime_defaults_are_applied(tmp_path):
     assert loaded["training"]["preference"]["offset_clip_min"] == 0.0
     assert loaded["training"]["preference"]["offset_clip_max"] == 1.0
     assert loaded["inference"]["pipeline_mode"] == "e2e"
+    assert loaded["inference"]["postprocess"]["enabled"] is False
+    assert loaded["inference"]["postprocess"]["role_whitelist"] is True
+    assert loaded["inference"]["postprocess"]["alias_map"] is True
+    assert loaded["inference"]["postprocess"]["duplicate_role_split"] is True
+    assert loaded["inference"]["postprocess"]["normalization_mode"] == "diagnostics_only"
+    assert loaded["inference"]["postprocess"]["grounding_mode"] == "exact+fuzzy+code_local"
+    assert loaded["inference"]["postprocess"]["sidecar_diagnostics"] is True
+    assert loaded["inference"]["postprocess"]["preserve_ungrounded_arguments"] is True
+    assert loaded["inference"]["scv_lite"]["mode"] == "off"
+    assert loaded["inference"]["scv_lite"]["trigger_on_grounding_failure"] is True
+    assert loaded["inference"]["scv_lite"]["trigger_on_mutual_exclusion"] is False
+    assert loaded["inference"]["scv_lite"]["trigger_on_shared_role_conflict"] is False

@@ -13,7 +13,7 @@ import platform
 import socket
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 try:
     from importlib.metadata import PackageNotFoundError, version as pkg_version
@@ -76,6 +76,142 @@ def compute_json_sha256(payload: Any) -> str:
     return hashlib.sha256(normalized).hexdigest()
 
 
+def build_contract_record(
+    *,
+    model_profile: Optional[str],
+    model_source: Optional[str],
+    effective_model_path: Optional[str],
+    validation_errors: Optional[Sequence[str]] = None,
+    compatibility_contract_version: str = "strict_v1",
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    errors = [str(item) for item in (validation_errors or []) if str(item).strip()]
+    payload: Dict[str, Any] = {
+        "contract_version": str(compatibility_contract_version),
+        "model_profile": model_profile,
+        "model_source": model_source,
+        "effective_model_path": effective_model_path,
+        "validation_status": "passed" if not errors else "failed",
+        "validation_errors": errors,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def make_validation_error(
+    code: str,
+    message: str,
+    *,
+    stage: Optional[str] = None,
+    severity: str = "error",
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    record: Dict[str, Any] = {
+        "code": str(code),
+        "message": str(message),
+        "severity": str(severity),
+    }
+    if stage:
+        record["stage"] = str(stage)
+    if details:
+        record["details"] = details
+    return record
+
+
+def append_validation_error(
+    records: List[Dict[str, Any]],
+    *,
+    code: str,
+    message: str,
+    stage: Optional[str] = None,
+    severity: str = "error",
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    record = make_validation_error(
+        code,
+        message,
+        stage=stage,
+        severity=severity,
+        details=details,
+    )
+    dedupe_key = (
+        record.get("code"),
+        record.get("stage"),
+    )
+    for existing in records:
+        existing_key = (
+            existing.get("code"),
+            existing.get("stage"),
+        )
+        if existing_key == dedupe_key:
+            return existing
+    records.append(record)
+    return record
+
+TRAIN_WRAPPER_VALUE_OPTIONS = {
+    "--config",
+    "--data_dir",
+    "--data-dir",
+    "--schema_path",
+    "--schema-path",
+    "--exp_name",
+    "--exp-name",
+}
+
+
+def filter_wrapper_cli_args(
+    cli_args: Optional[Sequence[str]],
+    *,
+    ignored_options: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """
+    Drop wrapper-only CLI args so ConfigManager sees the same overrides as main.py.
+    """
+    args = [str(item) for item in (cli_args or [])]
+    ignored = set(ignored_options or TRAIN_WRAPPER_VALUE_OPTIONS)
+    filtered: List[str] = []
+    idx = 0
+    while idx < len(args):
+        token = args[idx]
+        if token == "--":
+            filtered.extend(args[idx + 1 :])
+            break
+        if token in {"-h", "--help"}:
+            idx += 1
+            continue
+        if token in ignored:
+            idx += 2
+            continue
+        filtered.append(token)
+        idx += 1
+    return filtered
+
+
+def load_effective_config_metadata(
+    config_path: str | Path,
+    *,
+    cli_args: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Load the final config seen by main.py, including CLI overrides forwarded by wrapper scripts.
+    """
+    from oglans.config import ConfigManager
+
+    overrides = filter_wrapper_cli_args(cli_args)
+    config = ConfigManager.load_config(str(config_path), overrides)
+    training_cfg = config.get("training", {}) or {}
+    algorithms = config.get("algorithms", {}) or {}
+    return {
+        "config": config,
+        "config_hash_sha256": compute_json_sha256(config),
+        "seed": config.get("project", {}).get("seed"),
+        "training_mode": str(training_cfg.get("mode", "preference")),
+        "lans_enabled": bool(algorithms.get("lans", {}).get("enabled", False)),
+        "scv_enabled": bool(algorithms.get("scv", {}).get("enabled", False)),
+    }
+
+
 def collect_runtime_manifest(
     repo_dir: str | Path,
     package_names: Optional[Iterable[str]] = None,
@@ -108,6 +244,7 @@ def build_run_manifest(
     *,
     meta: Optional[Dict[str, Any]] = None,
     artifacts: Optional[Dict[str, Any]] = None,
+    contract: Optional[Dict[str, Any]] = None,
     runtime: Optional[Dict[str, Any]] = None,
     runtime_manifest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -119,6 +256,8 @@ def build_run_manifest(
         payload["meta"] = meta
     if artifacts:
         payload["artifacts"] = artifacts
+    if contract:
+        payload["contract"] = contract
     if runtime:
         payload["runtime"] = runtime
     if runtime_manifest:

@@ -118,7 +118,16 @@ except ImportError:
 
 from ..utils.ds_cns import DSCNSampler, LANSScheduler
 from ..utils.scv import SemanticConsistencyVerifier
-from ..utils.hub_runtime import configure_model_download_runtime, resolve_model_name_or_path
+from ..utils.hub_runtime import (
+    build_unsloth_from_pretrained_kwargs,
+    configure_model_download_runtime,
+    resolve_model_name_or_path,
+)
+from ..utils.model_profile import (
+    load_local_model_profile,
+    prepare_tokenizer_for_profile,
+    resolve_profile_terminator_token_ids,
+)
 from ..data.prompt_builder import (
     ChinesePromptBuilder,
     build_inference_prompt_payload,
@@ -130,6 +139,19 @@ from torch.utils.data import IterableDataset
 from torch.utils.tensorboard import SummaryWriter
 
 logger = logging.getLogger("OGLANS")
+
+
+def normalize_preference_training_config(
+    preference_mode: str,
+    odpo_offset_source: str,
+) -> Tuple[str, str]:
+    normalized_mode = str(preference_mode or "ipo").lower()
+    if normalized_mode not in {"ipo", "odpo"}:
+        raise ValueError(f"Unsupported preference_mode: {normalized_mode}")
+    normalized_offset_source = str(odpo_offset_source or "margin_bucket").lower()
+    if normalized_offset_source not in {"static", "margin_bucket"}:
+        raise ValueError(f"Unsupported odpo_offset_source: {normalized_offset_source}")
+    return normalized_mode, normalized_offset_source
 
 
 def build_explicit_dpo_record(
@@ -271,14 +293,10 @@ class CGADPOTrainer(DPOTrainer):
         self.rpo_alpha = max(0.0, float(rpo_alpha))
         self.rpo_warmup_steps = max(0, int(rpo_warmup_steps))
         self.rpo_require_valid_labels = bool(rpo_require_valid_labels)
-        self.preference_mode = str(preference_mode or "ipo").lower()
-        if self.preference_mode not in {"ipo", "odpo"}:
-            logger.warning(f"未知 preference_mode={self.preference_mode}，回退到 ipo")
-            self.preference_mode = "ipo"
-        self.odpo_offset_source = str(odpo_offset_source or "margin_bucket").lower()
-        if self.odpo_offset_source not in {"static", "margin_bucket"}:
-            logger.warning(f"未知 odpo_offset_source={self.odpo_offset_source}，回退到 margin_bucket")
-            self.odpo_offset_source = "margin_bucket"
+        self.preference_mode, self.odpo_offset_source = normalize_preference_training_config(
+            preference_mode,
+            odpo_offset_source,
+        )
         self.odpo_offset_static = max(0.0, float(odpo_offset_static))
         self.odpo_offset_clip = (
             float(min(odpo_offset_clip)),
@@ -286,8 +304,6 @@ class CGADPOTrainer(DPOTrainer):
         )
         self.aux_log_interval = max(1, int(aux_log_interval))
         self._cga_applied_count = 0
-        self._rpo_warning_emitted = False
-        self._rpo_label_warning_emitted = False
         self._rpo_steps = 0
         self._rpo_nonzero_steps = 0
         self._rpo_missing_label_steps = 0
@@ -478,9 +494,10 @@ class CGADPOTrainer(DPOTrainer):
             try:
                 sft_loss = self._compute_chosen_sft_loss(model, inputs)
             except Exception as exc:
-                if not self._rpo_warning_emitted:
-                    logger.warning(f"RPO 计算失败，已退化为纯 DPO/IPO: {exc}")
-                    self._rpo_warning_emitted = True
+                raise RuntimeError(
+                    "RPO auxiliary SFT loss computation failed. "
+                    "Official training does not allow runtime degradation."
+                ) from exc
             if sft_loss is not None and float(sft_loss.detach().float().item()) > 0.0:
                 self._rpo_nonzero_steps += 1
 
@@ -492,16 +509,12 @@ class CGADPOTrainer(DPOTrainer):
             float(self._rpo_missing_label_steps) / float(self._rpo_steps)
             if self._rpo_steps > 0 else 0.0
         )
-        if (
-            rpo_weight > 0.0
-            and rpo_missing_label_ratio > 0.30
-            and not self._rpo_label_warning_emitted
-        ):
-            logger.warning(
-                "⚠️ RPO 观测到 chosen_labels 全 -100 比例较高: "
-                f"{rpo_missing_label_ratio:.2%}。请检查截断长度与 collator 标签构造。"
+        if rpo_weight > 0.0 and rpo_missing_label_ratio > 0.30:
+            raise RuntimeError(
+                "RPO observed an invalid chosen_labels ratio above 30%. "
+                f"missing_label_ratio={rpo_missing_label_ratio:.4f}. "
+                "Please fix prompt/completion truncation or collator label construction."
             )
-            self._rpo_label_warning_emitted = True
 
         final_loss = pref_loss_raw
         if sft_loss is not None and rpo_weight > 0.0:
@@ -949,7 +962,7 @@ class LANSNegativeSampler:
         original_strategy = strategy
         self._original_strategy_counts[original_strategy] = self._original_strategy_counts.get(original_strategy, 0) + 1
 
-        strategy_fallback = {"HARD": "MEDIUM", "MEDIUM": "EASY", "EASY": "EASY"}
+        strategy_retry_chain = {"HARD": "MEDIUM", "MEDIUM": "EASY", "EASY": "EASY"}
         scv_filtered = False
         scv_retry_count = 0
         neg_json = ""
@@ -965,10 +978,7 @@ class LANSNegativeSampler:
             if self.scv is None:
                 break
 
-            try:
-                is_false_neg = self._is_false_negative(text, neg_json)
-            except Exception:
-                is_false_neg = False
+            is_false_neg = self._is_false_negative(text, neg_json)
 
             if not is_false_neg:
                 break
@@ -990,7 +1000,7 @@ class LANSNegativeSampler:
                 retry_exhausted = True
                 break
 
-            current_strategy = strategy_fallback.get(current_strategy, "EASY")
+            current_strategy = strategy_retry_chain.get(current_strategy, "EASY")
 
         strategy = current_strategy
         self._post_scv_strategy_counts[strategy] = self._post_scv_strategy_counts.get(strategy, 0) + 1
@@ -1408,6 +1418,10 @@ class UnslothDPOTrainerWrapper:
             c0=static_c0,
             use_ontology_distance=use_ontology_distance
         )
+        self.prompt_schema = {
+            event_type: list(roles)
+            for event_type, roles in sorted(self.ds_cns.event_roles.items())
+        }
         self.runtime_stats["phase_timings_seconds"]["ds_cns_init"] = round(
             time.perf_counter() - ds_cns_start_ts, 4
         )
@@ -1419,6 +1433,8 @@ class UnslothDPOTrainerWrapper:
             self.scv = SemanticConsistencyVerifier(
                 self.scv_cfg['nli_model'],
                 self.scv_cfg['nli_threshold'],
+                source=self.scv_cfg.get('source', 'modelscope'),
+                entailment_idx=self.scv_cfg.get('entailment_idx'),
                 progress_log_interval=self.scv_cfg.get('progress_log_interval', 200),
                 progress_log_seconds=self.scv_cfg.get('progress_log_seconds', 30),
             )
@@ -1441,6 +1457,7 @@ class UnslothDPOTrainerWrapper:
         load_start_ts = time.perf_counter()
         m_cfg = self.config['model']
         l_cfg = self.config['lora']
+        profile = load_local_model_profile(m_cfg["profile"])
         project_root = Path(__file__).resolve().parents[3]
         model_source = m_cfg.get("source", "modelscope")
         configure_model_download_runtime(project_root, source=model_source)
@@ -1452,10 +1469,14 @@ class UnslothDPOTrainerWrapper:
         )
         
         self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-            model_name = model_name_or_path,
-            max_seq_length = m_cfg['max_seq_length'],
-            dtype = None,
-            load_in_4bit = m_cfg['load_in_4bit'],
+            **build_unsloth_from_pretrained_kwargs(
+                model_name=model_name_or_path,
+                max_seq_length=m_cfg['max_seq_length'],
+                dtype=None,
+                load_in_4bit=m_cfg['load_in_4bit'],
+                source=model_source,
+                attn_implementation=m_cfg.get("attn_implementation"),
+            )
         )
         self.model.gradient_checkpointing_enable()
         
@@ -1467,21 +1488,15 @@ class UnslothDPOTrainerWrapper:
             lora_dropout = l_cfg['lora_dropout'],
             bias = l_cfg['bias'],
             use_gradient_checkpointing = "unsloth",
-            random_state = 3407,
+            random_state = int(self.config['project']['seed']),
         )
-        self.tokenizer.padding_side = "left"
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        # [修复] 显式检查 EOS token（Qwen3 通常使用 <|im_end|>）
-        expected_eos = "<|im_end|>"
-        if self.tokenizer.eos_token is None or self.tokenizer.eos_token == "":
-            self.tokenizer.eos_token = expected_eos
-        elif self.tokenizer.eos_token != expected_eos:
-            logger.warning(
-                f"EOS token 为 {self.tokenizer.eos_token}，期望 {expected_eos}。将保留当前设置。"
-            )
+        prepare_tokenizer_for_profile(self.tokenizer, profile, mode="train")
         logger.info(
             f"EOS Token: {self.tokenizer.eos_token} | EOS Token ID: {self.tokenizer.eos_token_id}"
+        )
+        logger.info(
+            "🧩 Local model profile loaded: "
+            f"profile={profile.name}, source={model_source}, supports_unsloth={profile.supports_unsloth}"
         )
         load_elapsed = time.perf_counter() - load_start_ts
         self.runtime_stats["phase_timings_seconds"]["model_load"] = round(load_elapsed, 4)
@@ -1512,6 +1527,7 @@ class UnslothDPOTrainerWrapper:
             text=raw_text,
             tokenizer=self.tokenizer,
             use_oneshot=use_oneshot,
+            schema=self.prompt_schema,
         )
 
     def _apply_chat_template(self, raw_text: str) -> str:
@@ -1685,8 +1701,10 @@ class UnslothDPOTrainerWrapper:
             signal_temperature = float(lans_cfg.get("signal_temperature", 0.25))
             runtime_mode = str(lans_cfg.get("runtime_mode", "online_iterable")).lower()
             if runtime_mode not in {"online_iterable", "materialized_epoch_refresh"}:
-                logger.warning(f"未知 algorithms.lans.runtime_mode={runtime_mode}，回退到 online_iterable")
-                runtime_mode = "online_iterable"
+                raise ValueError(
+                    "Unsupported algorithms.lans.runtime_mode: "
+                    f"{runtime_mode}. Expected one of online_iterable, materialized_epoch_refresh."
+                )
             self.lans_runtime_mode = runtime_mode
 
             self.lans_scheduler = self.ds_cns.enable_lans(
@@ -1842,10 +1860,10 @@ class UnslothDPOTrainerWrapper:
         if fast_io:
             dataloader_pin_memory = True
         if use_online_lans and dataloader_num_workers != 0:
-            logger.warning(
-                "LANS 动态采样模式下强制 dataloader_num_workers=0，避免多进程状态不同步。"
+            raise ValueError(
+                "Online LANS requires dataloader_num_workers=0. "
+                f"Configured value: {dataloader_num_workers}."
             )
-            dataloader_num_workers = 0
 
         dpo_config = DPOConfig(
             output_dir = self.config['project']['output_dir'],

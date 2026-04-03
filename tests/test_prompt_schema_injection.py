@@ -23,6 +23,9 @@ def test_system_prompt_includes_schema_constraints():
     assert "事件类型与合法论元角色" in prompt
     assert "中标公司" in prompt
     assert "净亏损" in prompt
+    assert "使用 schema 中的标准角色名" in prompt
+    assert "拆成多个独立的 arguments 项" in prompt
+    assert "严格输出 JSON 数组" in prompt
 
 
 def test_inference_messages_use_schema_prompt():
@@ -57,4 +60,4 @@ def test_inference_prompt_payload_keeps_materializations_in_sync():
     assert payload["schema_enabled"] is True
     assert payload["formatted_text"].startswith("system::")
     assert "assistant::" in payload["formatted_text"]
-    assert PROMPT_BUILDER_VERSION == "route_a_compare_v1"
+    assert PROMPT_BUILDER_VERSION == "phase3_mvp_v1"

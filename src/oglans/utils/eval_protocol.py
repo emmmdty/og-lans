@@ -31,9 +31,9 @@ DEFAULT_EVAL_PROTOCOL: Dict[str, Any] = {
         "version": "2.0",
         "report_level": "core_plus_diagnostics",
         "cot": {
-            "enabled": True,
+            "enabled": False,
             "mode": "strict_span",
-            "require_thought_block": True,
+            "require_thought_block": False,
         },
         "relaxed": {
             "match_mode": "include_or_char_overlap",
@@ -48,6 +48,8 @@ DEFAULT_EVAL_PROTOCOL: Dict[str, Any] = {
         },
     },
 }
+
+SUPPORTED_PRIMARY_METRICS = ("strict_f1", "relaxed_f1", "type_f1")
 
 
 def deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -70,6 +72,24 @@ def load_eval_protocol(path: Optional[str]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"Protocol must be a dict: {path}")
     return deep_merge_dict(DEFAULT_EVAL_PROTOCOL, payload)
+
+
+def validate_primary_metric(metric_name: Optional[str]) -> str:
+    normalized = str(metric_name or "strict_f1").strip()
+    if normalized not in SUPPORTED_PRIMARY_METRICS:
+        raise ValueError(
+            f"Unsupported primary metric: {normalized}. "
+            f"Expected one of {', '.join(SUPPORTED_PRIMARY_METRICS)}."
+        )
+    return normalized
+
+
+def resolve_primary_metric_value(metrics: Dict[str, Any], metric_name: Optional[str]) -> float:
+    normalized = validate_primary_metric(metric_name)
+    value = (metrics or {}).get(normalized)
+    if value is None:
+        raise ValueError(f"Primary metric missing from metrics payload: {normalized}")
+    return float(value)
 
 
 def compute_file_hash(path: Optional[str]) -> Optional[str]:

@@ -85,6 +85,9 @@ class TestConfig:
                 """
                 project:
                   name: "parent"
+                model:
+                  profile: "qwen3_instruct"
+                  source: "modelscope"
                 training:
                   mode: "preference"
                   max_steps: 10
@@ -92,6 +95,12 @@ class TestConfig:
                   lans:
                     enabled: true
                     refresh_log_interval: 123
+                comparison:
+                  prompt_builder_version: "phase3_mvp_v1"
+                  parser_version: "phase3_mvp_v1"
+                  normalization_version: "phase3_mvp_v1"
+                evaluation:
+                  mode: "scored"
                 """
             ).strip(),
             encoding="utf-8",
@@ -127,4 +136,4 @@ class TestConfig:
         assert config["algorithms"]["lans"]["enabled"] is False
         assert config["algorithms"]["scv"]["enabled"] is False
         assert config["comparison"]["eval_protocol_path"] == "./configs/eval_protocol.yaml"
-        assert config["comparison"]["prompt_builder_version"] == "route_a_compare_v1"
+        assert config["comparison"]["prompt_builder_version"] == "phase3_mvp_v1"
