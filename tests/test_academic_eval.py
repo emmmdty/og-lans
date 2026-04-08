@@ -50,6 +50,31 @@ def test_metrics_from_sample_counts_basic():
     assert 0.0 <= metrics["type_f1"] <= 1.0
 
 
+def test_metrics_from_sample_counts_supports_doc_level_primary_metrics():
+    rows = [
+        {
+            "doc_role_tp": 2,
+            "doc_role_pred_total": 2,
+            "doc_role_gold_total": 4,
+            "doc_event_type_tp": 1,
+            "doc_event_type_pred_total": 1,
+            "doc_event_type_gold_total": 1,
+            "doc_instance_tp": 1,
+            "doc_instance_pred_total": 1,
+            "doc_instance_gold_total": 2,
+            "doc_combination_tp": 1,
+            "doc_combination_pred_total": 1,
+            "doc_combination_gold_total": 2,
+        }
+    ]
+
+    metrics = metrics_from_sample_counts(rows)
+    assert metrics["doc_role_micro_f1"] == 2.0 / 3.0
+    assert metrics["doc_event_type_micro_f1"] == 1.0
+    assert metrics["doc_instance_micro_f1"] == 2.0 / 3.0
+    assert metrics["doc_combination_micro_f1"] == 2.0 / 3.0
+
+
 def test_bootstrap_confidence_intervals_shape():
     rows = [
         {
@@ -70,6 +95,31 @@ def test_bootstrap_confidence_intervals_shape():
     assert "ci" in out["strict_f1"]
     assert len(out["strict_f1"]["ci"]) == 2
     assert out["strict_f1"]["n_bootstrap"] == 100
+
+
+def test_bootstrap_confidence_intervals_include_doc_level_primary_metrics():
+    rows = [
+        {
+            "doc_role_tp": 2,
+            "doc_role_pred_total": 2,
+            "doc_role_gold_total": 4,
+            "doc_event_type_tp": 1,
+            "doc_event_type_pred_total": 1,
+            "doc_event_type_gold_total": 1,
+            "doc_instance_tp": 1,
+            "doc_instance_pred_total": 1,
+            "doc_instance_gold_total": 2,
+            "doc_combination_tp": 1,
+            "doc_combination_pred_total": 1,
+            "doc_combination_gold_total": 2,
+        }
+        for _ in range(3)
+    ]
+
+    out = bootstrap_confidence_intervals(rows, n_bootstrap=50, seed=1, confidence=0.95)
+    assert "doc_role_micro_f1" in out
+    assert "doc_instance_micro_f1" in out
+    assert "doc_combination_micro_f1" in out
 
 
 def test_paired_permutation_pvalue_exact_output():

@@ -8,7 +8,15 @@ Unsloth DPO Trainer Wrapper (v4.0 OG-LANS Final)
 3. 多粒度扰动策略集成
 """
 
-import unsloth
+import warnings
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"WARNING: Unsloth should be imported before \[transformers\].*",
+        category=UserWarning,
+    )
+    import unsloth
 from unsloth import FastLanguageModel, PatchDPOTrainer
 
 # Patch DPOTrainer globally before importing TRL to ensure patching works for subclasses
@@ -131,6 +139,7 @@ from ..utils.model_profile import (
 from ..data.prompt_builder import (
     ChinesePromptBuilder,
     build_inference_prompt_payload,
+    resolve_prompt_settings,
 )
 import random
 import numpy as np
@@ -1404,6 +1413,11 @@ class UnslothDPOTrainerWrapper:
         init_start_ts = time.perf_counter()
         self.config = config
         self.samples = data_samples
+        comparison_cfg = self.config.get("comparison", {})
+        self.prompt_settings = resolve_prompt_settings(
+            default_prompt_variant=str(comparison_cfg.get("prompt_variant", "zeroshot")),
+            default_num_examples=int(comparison_cfg.get("fewshot_num_examples", 3)),
+        )
         self.runtime_stats: Dict[str, Any] = {
             "phase_timings_seconds": {},
         }
@@ -1522,17 +1536,19 @@ class UnslothDPOTrainerWrapper:
             time.perf_counter() - save_start_ts, 4
         )
 
-    def _build_prompt_payload(self, raw_text: str, use_oneshot: bool = False) -> Dict[str, Any]:
+    def _build_prompt_payload(self, raw_text: str) -> Dict[str, Any]:
         return build_inference_prompt_payload(
             text=raw_text,
             tokenizer=self.tokenizer,
-            use_oneshot=use_oneshot,
+            prompt_variant=self.prompt_settings["prompt_variant"],
+            use_oneshot=self.prompt_settings["use_oneshot"],
             schema=self.prompt_schema,
+            num_examples=self.prompt_settings["fewshot_num_examples"],
         )
 
     def _apply_chat_template(self, raw_text: str) -> str:
         """[关键] 应用 Chat Template，统一训练与评估的 prompt 构建"""
-        payload = self._build_prompt_payload(raw_text, use_oneshot=False)
+        payload = self._build_prompt_payload(raw_text)
         return payload["formatted_text"]
 
     def _get_preference_sequence_limits(self) -> Tuple[int, int]:
@@ -2124,7 +2140,7 @@ class UnslothSFTTrainerWrapper(UnslothDPOTrainerWrapper):
         max_seq_length = int(self.config['model']['max_seq_length'])
         samples_data: List[Dict[str, Any]] = []
         for sample in self.samples:
-            payload = self._build_prompt_payload(sample.text, use_oneshot=False)
+            payload = self._build_prompt_payload(sample.text)
             prompt_text = payload["formatted_text"] or self._apply_chat_template(sample.text)
             full_text = self._build_sft_training_text(payload["messages"], sample.chosen)
 

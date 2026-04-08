@@ -33,7 +33,7 @@ paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
 
 DEFAULT_PROTOCOL = {
     "version": "1.0",
-    "primary_metric": "strict_f1",
+    "primary_metric": "doc_role_micro_f1",
     "canonical_metric_mode": "analysis_only",
     "evaluation": {
         "split": "dev",
@@ -143,6 +143,7 @@ def build_cmd(
     role_alias_map: str,
     canonical_metric_mode: str,
     report_primary_metric: str,
+    fewshot_num_examples: Optional[int],
 ) -> List[str]:
     cmd = [
         sys.executable,
@@ -167,6 +168,8 @@ def build_cmd(
         cmd.extend(["--bootstrap_samples", str(bootstrap_samples)])
     if mode == "fewshot":
         cmd.append("--use_fewshot")
+        if fewshot_num_examples is not None:
+            cmd.extend(["--fewshot_num_examples", str(fewshot_num_examples)])
     return cmd
 
 
@@ -237,6 +240,7 @@ def main():
     parser.add_argument("--concurrency", type=int, default=None)
     parser.add_argument("--json_mode", type=str, default="auto", choices=["auto", "on", "off"])
     parser.add_argument("--bootstrap_samples", type=int, default=None)
+    parser.add_argument("--fewshot_num_examples", type=int, default=None)
     parser.add_argument("--role_alias_map", type=str, default="configs/role_aliases_duee_fin.yaml")
     parser.add_argument(
         "--canonical_metric_mode",
@@ -252,7 +256,7 @@ def main():
     protocol_eval = protocol.get("evaluation", {}) if isinstance(protocol, dict) else {}
     protocol_split = str(protocol_eval.get("split", "dev"))
     protocol_seeds = [int(x) for x in protocol_eval.get("seeds", [3407, 3408, 3409])]
-    protocol_primary = str(protocol.get("primary_metric", "strict_f1"))
+    protocol_primary = str(protocol.get("primary_metric", "doc_role_micro_f1"))
     protocol_canonical_mode = str(protocol.get("canonical_metric_mode", "analysis_only"))
 
     if args.split != protocol_split:
@@ -313,6 +317,7 @@ def main():
                 role_alias_map=args.role_alias_map,
                 canonical_metric_mode=args.canonical_metric_mode,
                 report_primary_metric=args.report_primary_metric,
+                fewshot_num_examples=args.fewshot_num_examples,
             )
 
             print(f"[RUN] mode={mode} seed={seed}")
@@ -340,7 +345,15 @@ def main():
     for rec in successful:
         by_mode_seed.setdefault(rec.mode, {})[rec.seed] = load_json(Path(rec.summary_file))
 
-    target_metrics = ["strict_f1", "relaxed_f1", "type_f1", "strict_precision", "strict_recall"]
+    target_metrics = [
+        "doc_role_micro_f1",
+        "doc_instance_micro_f1",
+        "doc_combination_micro_f1",
+        "doc_event_type_micro_f1",
+        "strict_f1",
+        "relaxed_f1",
+        "type_f1",
+    ]
 
     aggregated: Dict[str, Dict] = {}
     for mode, seed_map in by_mode_seed.items():
@@ -360,7 +373,16 @@ def main():
     if "zeroshot" in by_mode_seed and "fewshot" in by_mode_seed:
         common_seeds = sorted(set(by_mode_seed["zeroshot"].keys()) & set(by_mode_seed["fewshot"].keys()))
         sig_metrics = [args.report_primary_metric] + [
-            m for m in ["strict_f1", "relaxed_f1", "type_f1"] if m != args.report_primary_metric
+            m
+            for m in [
+                "doc_instance_micro_f1",
+                "doc_combination_micro_f1",
+                "doc_event_type_micro_f1",
+                "strict_f1",
+                "relaxed_f1",
+                "type_f1",
+            ]
+            if m != args.report_primary_metric
         ]
         for metric in sig_metrics:
             baseline_scores = []
@@ -391,6 +413,7 @@ def main():
         "concurrency": args.concurrency,
         "json_mode": args.json_mode,
         "bootstrap_samples": args.bootstrap_samples,
+        "fewshot_num_examples": args.fewshot_num_examples,
         "protocol_path": str((PROJECT_ROOT / args.protocol).resolve()) if not Path(args.protocol).is_absolute() else args.protocol,
         "protocol": protocol,
         "primary_metric": args.report_primary_metric,

@@ -50,7 +50,10 @@ MODEL_NAME=""
 DATASET_NAME=""
 EXP_NAME=""
 SPLIT="dev"
+NUM_SAMPLES=""
 BATCH_SIZE="16"
+PROMPT_VARIANT=""
+FEWSHOT_NUM_EXAMPLES=""
 EXTRA_ARGS=()
 
 usage() {
@@ -68,7 +71,11 @@ Options:
   --primary-metric <name>  Primary metric key (optional, overrides protocol)
   --exp-name <name>        Experiment name used for log/result filenames.
   --split <name>           Dataset split. Default: dev
+  --num-samples <int>      Optional. Limit evaluation to the first N samples.
   --batch-size <int>       Inference batch size. Default: 16
+  --prompt-variant <mode>  zeroshot|fewshot (optional)
+  --fewshot-num-examples <int>
+                           Few-shot example count (optional)
   -h, --help               Show help.
 
 Other evaluate.py args are forwarded transparently.
@@ -95,8 +102,14 @@ while [[ $# -gt 0 ]]; do
       EXP_NAME="${2:-}"; shift 2 ;;
     --split)
       SPLIT="${2:-}"; shift 2 ;;
+    --num-samples|--num_samples)
+      NUM_SAMPLES="${2:-}"; shift 2 ;;
     --batch-size|--batch_size)
       BATCH_SIZE="${2:-}"; shift 2 ;;
+    --prompt-variant|--prompt_variant)
+      PROMPT_VARIANT="${2:-}"; shift 2 ;;
+    --fewshot-num-examples|--fewshot_num_examples)
+      FEWSHOT_NUM_EXAMPLES="${2:-}"; shift 2 ;;
     -h|--help)
       usage
       exit 0 ;;
@@ -150,6 +163,7 @@ echo "config:     $CONFIG"
 echo "protocol:   $PROTOCOL"
 echo "model_name: ${MODEL_NAME:-<from config>}"
 echo "split:      $SPLIT"
+echo "num_samples:${NUM_SAMPLES:-<all>}"
 echo "batch_size: $BATCH_SIZE"
 echo "output:     $OUTPUT_JSONL"
 echo "run_dir:    $RUN_DIR"
@@ -166,11 +180,20 @@ cmd=(
   --canonical_metric_mode "$CANONICAL_MODE"
   --output_file "$OUTPUT_JSONL"
 )
+if [[ -n "$NUM_SAMPLES" ]]; then
+  cmd+=(--num_samples "$NUM_SAMPLES")
+fi
 if [[ -n "$MODEL_NAME" ]]; then
   cmd+=(--model_name_or_path "$MODEL_NAME")
 fi
 if [[ -n "$PRIMARY_METRIC" ]]; then
   cmd+=(--report_primary_metric "$PRIMARY_METRIC")
+fi
+if [[ -n "$PROMPT_VARIANT" ]]; then
+  cmd+=(--prompt_variant "$PROMPT_VARIANT")
+fi
+if [[ -n "$FEWSHOT_NUM_EXAMPLES" ]]; then
+  cmd+=(--fewshot_num_examples "$FEWSHOT_NUM_EXAMPLES")
 fi
 cmd+=("${EXTRA_ARGS[@]}")
 "${cmd[@]}"

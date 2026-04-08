@@ -60,6 +60,8 @@ EVAL_MODE="both"                # strict | relaxed | both
 SEEDS="3407,3408,3409"
 NUM_SAMPLES=""
 USE_ONESHOT=0
+PROMPT_VARIANT=""
+FEWSHOT_NUM_EXAMPLES=""
 DO_SAMPLE=0                     # keep 0 for academic deterministic eval
 COT_EVAL_MODE="self_consistency"
 PIPELINE_MODE="e2e"
@@ -92,6 +94,8 @@ Options:
   --seed-policy <mode>         train_seed|eval_seed (default: train_seed)
   --num-samples <int>          Evaluate first N samples
   --use-oneshot                Enable one-shot prompt
+  --prompt-variant <mode>      zeroshot|fewshot (optional)
+  --fewshot-num-examples <int> Few-shot example count (optional)
   --do-sample                  Enable sampling decode (not recommended for papers)
   --cot-eval-mode <mode>       self_consistency|counterfactual
   --pipeline-mode <mode>       e2e|cat_lite
@@ -131,6 +135,8 @@ while [[ $# -gt 0 ]]; do
     --seed-policy) SEED_POLICY="${2:-}"; shift 2 ;;
     --num-samples) NUM_SAMPLES="${2:-}"; shift 2 ;;
     --use-oneshot) USE_ONESHOT=1; shift ;;
+    --prompt-variant|--prompt_variant) PROMPT_VARIANT="${2:-}"; shift 2 ;;
+    --fewshot-num-examples|--fewshot_num_examples) FEWSHOT_NUM_EXAMPLES="${2:-}"; shift 2 ;;
     --do-sample) DO_SAMPLE=1; shift ;;
     --cot-eval-mode) COT_EVAL_MODE="${2:-}"; shift 2 ;;
     --pipeline-mode) PIPELINE_MODE="${2:-}"; shift 2 ;;
@@ -305,6 +311,8 @@ echo "seed_policy:$SEED_POLICY"
 echo "checkpoints:${CHECKPOINT_ARR[*]}"
 echo "num_samples:${NUM_SAMPLES:-ALL}"
 echo "oneshot:    $USE_ONESHOT"
+echo "prompt_variant:${PROMPT_VARIANT:-<from config>}"
+echo "fewshot_num_examples:${FEWSHOT_NUM_EXAMPLES:-<from config>}"
 echo "do_sample:  $DO_SAMPLE"
 echo "cot_eval_mode: $COT_EVAL_MODE"
 echo "pipeline_mode: $PIPELINE_MODE"
@@ -313,7 +321,7 @@ echo "tail_on_fail: $TAIL_ON_FAIL lines"
 echo "============================================================"
 
 MANIFEST_JSON="${OUT_DIR}/run_manifest.json"
-"$PYTHON_BIN" - "$MANIFEST_JSON" "$RUN_TS" "$CHECKPOINT" "$SEED_POLICY" "$DATASET" "$DATASET_DIR" "$SCHEMA_FILE" "$SPLIT_FILE" "$CONFIG" "$PROTOCOL" "$ROLE_ALIAS_MAP" "$CANONICAL_MODE" "$PRIMARY_METRIC" "$SPLIT" "$EVAL_MODE" "$BATCH_SIZE" "$SEEDS" "${NUM_SAMPLES:-ALL}" "$USE_ONESHOT" "$DO_SAMPLE" "$COT_EVAL_MODE" "$PIPELINE_MODE" "$OUT_DIR" "$ORIGINAL_CMD" <<'PY'
+"$PYTHON_BIN" - "$MANIFEST_JSON" "$RUN_TS" "$CHECKPOINT" "$SEED_POLICY" "$DATASET" "$DATASET_DIR" "$SCHEMA_FILE" "$SPLIT_FILE" "$CONFIG" "$PROTOCOL" "$ROLE_ALIAS_MAP" "$CANONICAL_MODE" "$PRIMARY_METRIC" "$SPLIT" "$EVAL_MODE" "$BATCH_SIZE" "$SEEDS" "${NUM_SAMPLES:-ALL}" "$USE_ONESHOT" "$DO_SAMPLE" "$COT_EVAL_MODE" "$PIPELINE_MODE" "$OUT_DIR" "${PROMPT_VARIANT:-}" "${FEWSHOT_NUM_EXAMPLES:-}" "$ORIGINAL_CMD" <<'PY'
 import hashlib
 import json
 import os
@@ -346,6 +354,8 @@ import sys
     cot_eval_mode,
     pipeline_mode,
     out_dir,
+    prompt_variant,
+    fewshot_num_examples,
     command,
 ) = sys.argv[1:]
 
@@ -389,6 +399,8 @@ manifest = {
     "seeds": [s.strip() for s in seeds.split(",") if s.strip()],
     "num_samples": num_samples,
     "use_oneshot": int(use_oneshot),
+    "prompt_variant": prompt_variant or ("fewshot" if int(use_oneshot) else "zeroshot"),
+    "fewshot_num_examples": int(fewshot_num_examples) if fewshot_num_examples else (3 if int(use_oneshot) else 0),
     "do_sample": int(do_sample),
     "cot_eval_mode": cot_eval_mode,
     "pipeline_mode": pipeline_mode,
@@ -454,6 +466,12 @@ for idx in "${!SEED_ARR[@]}"; do
   fi
   if [[ "$USE_ONESHOT" -eq 1 ]]; then
     cmd+=(--use_oneshot)
+  fi
+  if [[ -n "$PROMPT_VARIANT" ]]; then
+    cmd+=(--prompt_variant "$PROMPT_VARIANT")
+  fi
+  if [[ -n "$FEWSHOT_NUM_EXAMPLES" ]]; then
+    cmd+=(--fewshot_num_examples "$FEWSHOT_NUM_EXAMPLES")
   fi
   if [[ "$DO_SAMPLE" -eq 1 ]]; then
     cmd+=(--do_sample)
@@ -541,6 +559,10 @@ for s in seeds:
     files.append(fn)
     rows.append({
         "seed": int(s),
+        "doc_role_micro_f1": float(m.get("doc_role_micro_f1", m.get("academic_metrics", {}).get("doc_ee", {}).get("overall", {}).get("MicroF1", 0.0))),
+        "doc_instance_micro_f1": float(m.get("doc_instance_micro_f1", m.get("academic_metrics", {}).get("doc_ee", {}).get("instance", {}).get("MicroF1", 0.0))),
+        "doc_combination_micro_f1": float(m.get("doc_combination_micro_f1", m.get("academic_metrics", {}).get("doc_ee", {}).get("combination", {}).get("MicroF1", 0.0))),
+        "doc_event_type_micro_f1": float(m.get("doc_event_type_micro_f1", m.get("academic_metrics", {}).get("doc_ee", {}).get("classification", {}).get("MicroF1", 0.0))),
         "strict_f1": float(m["strict"]["f1"]),
         "relaxed_f1": float(m["relaxed"]["f1"]),
         "type_f1": float(m["type_identification"]["f1"]),
@@ -554,7 +576,18 @@ def mean_std(vals):
         return vals[0], 0.0
     return statistics.mean(vals), statistics.stdev(vals)
 
-keys = ["strict_f1", "relaxed_f1", "type_f1", "parse_error_rate", "hallucination_rate", "schema_compliance_rate"]
+keys = [
+    "doc_role_micro_f1",
+    "doc_instance_micro_f1",
+    "doc_combination_micro_f1",
+    "doc_event_type_micro_f1",
+    "strict_f1",
+    "relaxed_f1",
+    "type_f1",
+    "parse_error_rate",
+    "hallucination_rate",
+    "schema_compliance_rate",
+]
 agg = {}
 for k in keys:
     vals = [r[k] for r in rows]
@@ -596,11 +629,13 @@ for k in keys:
 lines.append("")
 lines.append("## Per-seed")
 lines.append("")
-lines.append("| Seed | strict_f1 | relaxed_f1 | type_f1 | parse_error_rate | hallucination_rate | schema_compliance_rate |")
-lines.append("|---:|---:|---:|---:|---:|---:|---:|")
+lines.append("| Seed | doc_role_micro_f1 | doc_instance_micro_f1 | doc_combination_micro_f1 | doc_event_type_micro_f1 | strict_f1 | relaxed_f1 | type_f1 | parse_error_rate | hallucination_rate | schema_compliance_rate |")
+lines.append("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 for r in sorted(rows, key=lambda x: x["seed"]):
     lines.append(
-        f"| {r['seed']} | {r['strict_f1']:.4f} | {r['relaxed_f1']:.4f} | {r['type_f1']:.4f} | "
+        f"| {r['seed']} | {r['doc_role_micro_f1']:.4f} | {r['doc_instance_micro_f1']:.4f} | "
+        f"{r['doc_combination_micro_f1']:.4f} | {r['doc_event_type_micro_f1']:.4f} | "
+        f"{r['strict_f1']:.4f} | {r['relaxed_f1']:.4f} | {r['type_f1']:.4f} | "
         f"{r['parse_error_rate']:.4f} | {r['hallucination_rate']:.4f} | {r['schema_compliance_rate']:.4f} |"
     )
 

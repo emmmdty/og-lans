@@ -17,7 +17,8 @@ import yaml
 
 DEFAULT_EVAL_PROTOCOL: Dict[str, Any] = {
     "version": "1.0",
-    "primary_metric": "strict_f1",
+    "primary_metric": "doc_role_micro_f1",
+    "academic_profile": "dual",
     "canonical_metric_mode": "analysis_only",
     "evaluation": {
         "split": "dev",
@@ -49,7 +50,17 @@ DEFAULT_EVAL_PROTOCOL: Dict[str, Any] = {
     },
 }
 
-SUPPORTED_PRIMARY_METRICS = ("strict_f1", "relaxed_f1", "type_f1")
+SUPPORTED_PRIMARY_METRICS = (
+    "doc_role_micro_f1",
+    "doc_role_macro_f1",
+    "doc_event_type_micro_f1",
+    "doc_event_type_macro_f1",
+    "doc_instance_micro_f1",
+    "doc_combination_micro_f1",
+    "strict_f1",
+    "relaxed_f1",
+    "type_f1",
+)
 
 
 def deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -75,7 +86,7 @@ def load_eval_protocol(path: Optional[str]) -> Dict[str, Any]:
 
 
 def validate_primary_metric(metric_name: Optional[str]) -> str:
-    normalized = str(metric_name or "strict_f1").strip()
+    normalized = str(metric_name or "doc_role_micro_f1").strip()
     if normalized not in SUPPORTED_PRIMARY_METRICS:
         raise ValueError(
             f"Unsupported primary metric: {normalized}. "

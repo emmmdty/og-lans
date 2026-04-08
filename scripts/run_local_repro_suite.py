@@ -36,7 +36,7 @@ paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
 
 DEFAULT_PROTOCOL = {
     "version": "1.0",
-    "primary_metric": "strict_f1",
+    "primary_metric": "doc_role_micro_f1",
     "canonical_metric_mode": "analysis_only",
     "evaluation": {
         "split": "dev",
@@ -52,6 +52,10 @@ REQUIRED_SHARED_META = (
 )
 REQUIRED_ADAPTER_META = REQUIRED_SHARED_META + ("checkpoint",)
 TARGET_METRICS = (
+    "doc_role_micro_f1",
+    "doc_instance_micro_f1",
+    "doc_combination_micro_f1",
+    "doc_event_type_micro_f1",
     "strict_f1",
     "relaxed_f1",
     "type_f1",
@@ -152,6 +156,8 @@ def build_eval_command(
     report_primary_metric: str,
     model_name_or_path: Optional[str],
     checkpoint_path: Optional[str],
+    prompt_variant: Optional[str] = None,
+    fewshot_num_examples: Optional[int] = None,
 ) -> List[str]:
     cmd = [
         sys.executable,
@@ -177,6 +183,10 @@ def build_eval_command(
     ]
     if model_name_or_path:
         cmd.extend(["--model_name_or_path", model_name_or_path])
+    if prompt_variant:
+        cmd.extend(["--prompt_variant", prompt_variant])
+    if fewshot_num_examples is not None and str(prompt_variant).lower() == "fewshot":
+        cmd.extend(["--fewshot_num_examples", str(fewshot_num_examples)])
     if run_key == "base":
         cmd.append("--base_only")
     else:
@@ -318,7 +328,16 @@ def _compute_significance(
     if a2_alias is not None:
         comparison_pairs.append(("full", a2_alias))
     metric_order = [report_primary_metric] + [
-        m for m in ("strict_f1", "type_f1", "schema_compliance_rate") if m != report_primary_metric
+        m
+        for m in (
+            "doc_instance_micro_f1",
+            "doc_combination_micro_f1",
+            "doc_event_type_micro_f1",
+            "strict_f1",
+            "type_f1",
+            "schema_compliance_rate",
+        )
+        if m != report_primary_metric
     ]
 
     for baseline_key, improved_key in comparison_pairs:
@@ -361,6 +380,8 @@ def main() -> None:
     parser.add_argument("--split", type=str, default=None, choices=["train", "dev", "test"])
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--role_alias_map", type=str, default="configs/role_aliases_duee_fin.yaml")
+    parser.add_argument("--prompt_variant", type=str, default=None, choices=["zeroshot", "fewshot"])
+    parser.add_argument("--fewshot_num_examples", type=int, default=3)
     parser.add_argument(
         "--canonical_metric_mode",
         type=str,
@@ -375,7 +396,7 @@ def main() -> None:
     protocol_eval = protocol.get("evaluation", {}) if isinstance(protocol, dict) else {}
     protocol_split = str(protocol_eval.get("split", "dev"))
     protocol_seeds = [int(x) for x in protocol_eval.get("seeds", [3407, 3408, 3409])]
-    primary_metric = str(args.report_primary_metric or protocol.get("primary_metric", "strict_f1"))
+    primary_metric = str(args.report_primary_metric or protocol.get("primary_metric", "doc_role_micro_f1"))
     canonical_metric_mode = str(args.canonical_metric_mode or protocol.get("canonical_metric_mode", "analysis_only"))
     split = str(args.split or protocol_split)
     seeds = parse_seeds(args.seeds)
@@ -422,6 +443,8 @@ def main() -> None:
                 report_primary_metric=primary_metric,
                 model_name_or_path=args.base_model,
                 checkpoint_path=checkpoint_path,
+                prompt_variant=args.prompt_variant,
+                fewshot_num_examples=args.fewshot_num_examples,
             )
 
             print(f"[RUN] run={run_key} seed={seed}")
@@ -494,6 +517,8 @@ def main() -> None:
         "checkpoints": checkpoint_map,
         "primary_metric": primary_metric,
         "canonical_metric_mode": canonical_metric_mode,
+        "prompt_variant": args.prompt_variant or "zeroshot",
+        "fewshot_num_examples": args.fewshot_num_examples if args.prompt_variant == "fewshot" else 0,
         "runs": [record._asdict() for record in records],
         "aggregated": aggregated,
         "significance": significance,

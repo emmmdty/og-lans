@@ -14,6 +14,56 @@ import json
 import re
 
 PROMPT_BUILDER_VERSION = "phase3_mvp_v1"
+SUPPORTED_PROMPT_VARIANTS = ("zeroshot", "fewshot")
+
+
+def validate_prompt_variant(prompt_variant: Optional[str]) -> str:
+    normalized = str(prompt_variant or "zeroshot").strip().lower()
+    if normalized not in SUPPORTED_PROMPT_VARIANTS:
+        raise ValueError(
+            f"Unsupported prompt_variant: {normalized}. "
+            f"Expected one of {', '.join(SUPPORTED_PROMPT_VARIANTS)}."
+        )
+    return normalized
+
+
+def resolve_prompt_settings(
+    *,
+    prompt_variant: Optional[str] = None,
+    fewshot_num_examples: Optional[int] = None,
+    use_oneshot: Optional[bool] = None,
+    default_prompt_variant: str = "zeroshot",
+    default_num_examples: int = 3,
+) -> Dict[str, Any]:
+    default_variant = validate_prompt_variant(default_prompt_variant)
+    resolved_variant = (
+        validate_prompt_variant(prompt_variant)
+        if prompt_variant is not None else default_variant
+    )
+
+    if use_oneshot is True:
+        if prompt_variant is not None and resolved_variant != "fewshot":
+            raise ValueError("use_oneshot=True conflicts with prompt_variant=zeroshot")
+        resolved_variant = "fewshot"
+    elif use_oneshot is False:
+        if prompt_variant is not None and resolved_variant != "zeroshot":
+            raise ValueError("use_oneshot=False conflicts with prompt_variant=fewshot")
+        resolved_variant = "zeroshot"
+
+    raw_num_examples = (
+        fewshot_num_examples if fewshot_num_examples is not None else default_num_examples
+    )
+    resolved_examples = int(raw_num_examples)
+    if resolved_variant == "fewshot":
+        resolved_examples = max(1, resolved_examples)
+    else:
+        resolved_examples = 0
+
+    return {
+        "prompt_variant": resolved_variant,
+        "use_oneshot": resolved_variant == "fewshot",
+        "fewshot_num_examples": resolved_examples,
+    }
 
 
 class ChinesePromptBuilder:
@@ -345,7 +395,8 @@ class ChinesePromptBuilder:
         text: str,
         schema: Optional[Dict] = None,
         *,
-        use_oneshot: bool = False,
+        prompt_variant: Optional[str] = None,
+        use_oneshot: Optional[bool] = None,
         num_examples: int = 3,
         tokenizer: Optional[Any] = None,
     ) -> Dict[str, Any]:
@@ -357,13 +408,21 @@ class ChinesePromptBuilder:
         - 可选的 formatted_text（当提供 tokenizer 时）
         - prompt_variant 元信息
         """
-        prompt_variant = "fewshot" if use_oneshot else "zeroshot"
+        prompt_settings = resolve_prompt_settings(
+            prompt_variant=prompt_variant,
+            use_oneshot=use_oneshot,
+            fewshot_num_examples=num_examples,
+            default_prompt_variant="zeroshot",
+            default_num_examples=num_examples,
+        )
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": cls.build_system_prompt(schema=schema)},
         ]
         fewshot_count = 0
-        if use_oneshot:
-            selected_examples = cls.select_fewshot_examples(num_examples=num_examples)
+        if prompt_settings["use_oneshot"]:
+            selected_examples = cls.select_fewshot_examples(
+                num_examples=prompt_settings["fewshot_num_examples"]
+            )
             fewshot_count = len(selected_examples)
             for ex in selected_examples:
                 messages.append({"role": "user", "content": ex["user"]})
@@ -381,7 +440,7 @@ class ChinesePromptBuilder:
         return {
             "messages": messages,
             "formatted_text": formatted_text,
-            "prompt_variant": prompt_variant,
+            "prompt_variant": prompt_settings["prompt_variant"],
             "fewshot_count": fewshot_count,
             "schema_enabled": bool(schema),
         }
@@ -408,9 +467,10 @@ def build_training_response(event_list: List[Dict]) -> str:
 def build_inference_prompt(
     text: str,
     tokenizer,
-    use_oneshot: bool = False,
+    use_oneshot: Optional[bool] = None,
     schema: Optional[Dict] = None,
     num_examples: int = 3,
+    prompt_variant: Optional[str] = None,
 ) -> str:
     """
     构建用于推理的完整 prompt（便捷函数）
@@ -428,6 +488,7 @@ def build_inference_prompt(
     payload = ChinesePromptBuilder.build_inference_payload(
         text=text,
         schema=schema,
+        prompt_variant=prompt_variant,
         use_oneshot=use_oneshot,
         num_examples=num_examples,
         tokenizer=tokenizer,
@@ -439,7 +500,8 @@ def build_inference_prompt_payload(
     text: str,
     *,
     tokenizer: Optional[Any] = None,
-    use_oneshot: bool = False,
+    prompt_variant: Optional[str] = None,
+    use_oneshot: Optional[bool] = None,
     schema: Optional[Dict] = None,
     num_examples: int = 3,
 ) -> Dict[str, Any]:
@@ -447,6 +509,7 @@ def build_inference_prompt_payload(
     return ChinesePromptBuilder.build_inference_payload(
         text=text,
         schema=schema,
+        prompt_variant=prompt_variant,
         use_oneshot=use_oneshot,
         num_examples=num_examples,
         tokenizer=tokenizer,

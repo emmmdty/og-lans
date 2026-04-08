@@ -8,11 +8,44 @@ from __future__ import annotations
 
 import copy
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .utils.json_parser import RobustJSONParser
+
+
+def _safe_div(num: float, den: float) -> float:
+    return num / den if den else 0.0
+
+
+def _compute_prf(tp: int, fp: int, fn: int) -> Tuple[float, float, float]:
+    precision = _safe_div(tp, tp + fp)
+    recall = _safe_div(tp, tp + fn)
+    f1 = _safe_div(2 * precision * recall, precision + recall) if (precision + recall) else 0.0
+    return precision, recall, f1
+
+
+def _metric_block(tp: int, fp: int, fn: int) -> Dict[str, float | int]:
+    precision, recall, f1 = _compute_prf(tp, fp, fn)
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "TP": tp,
+        "FP": fp,
+        "FN": fn,
+    }
+
+
+def _counter_overlap_count(pred_items: List[Tuple[Any, ...]], gold_items: List[Tuple[Any, ...]]) -> int:
+    pred_counter = Counter(pred_items)
+    gold_counter = Counter(gold_items)
+    return sum((pred_counter & gold_counter).values())
+
+
+def _non_empty_slot_count(record: Tuple[Optional[Tuple[str, ...]], ...]) -> int:
+    return sum(1 for value in record if value is not None)
 
 
 @dataclass
@@ -72,6 +105,8 @@ class MetricsReport:
     error_breakdown: Dict = field(default_factory=dict)
     hallucination_breakdown: Dict = field(default_factory=dict)
     schema_violation_breakdown: Dict = field(default_factory=dict)
+    doc_ee: Dict[str, Any] = field(default_factory=dict)
+    ee_text_proxy: Dict[str, Any] = field(default_factory=dict)
 
 
 class AcademicEventEvaluator:
@@ -165,6 +200,29 @@ class AcademicEventEvaluator:
             "cot_counterfactual_pass": 0,
             "schema_compliant": 0,
             "schema_violations": defaultdict(int),
+            "doc_role_tp": 0,
+            "doc_role_fp": 0,
+            "doc_role_fn": 0,
+            "doc_event_type_tp": 0,
+            "doc_event_type_fp": 0,
+            "doc_event_type_fn": 0,
+            "doc_instance_tp": 0,
+            "doc_instance_fp": 0,
+            "doc_instance_fn": 0,
+            "doc_combination_tp": 0,
+            "doc_combination_fp": 0,
+            "doc_combination_fn": 0,
+            "doc_role_stats": defaultdict(lambda: defaultdict(lambda: [0, 0, 0])),
+            "doc_event_type_stats": defaultdict(lambda: [0, 0, 0]),
+            "doc_role_orders": defaultdict(list),
+            "text_proxy_trigger_text_id": [0, 0, 0],
+            "text_proxy_trigger_text_cls": [0, 0, 0],
+            "text_proxy_argument_text_id": [0, 0, 0],
+            "text_proxy_argument_text_cls": [0, 0, 0],
+            "text_proxy_argument_attached_text_id": [0, 0, 0],
+            "text_proxy_argument_attached_text_cls": [0, 0, 0],
+            "text_proxy_grounded_total": 0,
+            "text_proxy_grounding_total": 0,
         }
 
     @staticmethod
@@ -294,6 +352,292 @@ class AcademicEventEvaluator:
                     types.add(etype)
         return types
 
+    def _collect_role_order_map(
+        self,
+        pred_events: List[Dict[str, Any]],
+        gold_events: List[Dict[str, Any]],
+        role_order_by_event: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict[str, List[str]]:
+        role_map: Dict[str, List[str]] = {
+            str(event_type): list(roles or [])
+            for event_type, roles in (role_order_by_event or {}).items()
+        }
+        for events in (gold_events or [], pred_events or []):
+            if not isinstance(events, list):
+                continue
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                event_type = str(event.get("event_type", "")).strip()
+                if not event_type:
+                    continue
+                role_map.setdefault(event_type, [])
+                for arg in event.get("arguments", []) or []:
+                    if not isinstance(arg, dict):
+                        continue
+                    role = str(arg.get("role", "")).strip()
+                    if role and role not in role_map[event_type]:
+                        role_map[event_type].append(role)
+        for event_type, roles in role_map.items():
+            if not roles:
+                role_map[event_type] = []
+        return role_map
+
+    def _build_doc_record(
+        self,
+        event: Dict[str, Any],
+        role_order: List[str],
+    ) -> Tuple[Optional[Tuple[str, ...]], ...]:
+        grouped: Dict[str, Set[str]] = {role: set() for role in role_order}
+        for arg in event.get("arguments", []) or []:
+            if not isinstance(arg, dict):
+                continue
+            role = str(arg.get("role", "")).strip()
+            if role not in grouped:
+                continue
+            value = self.normalize_text(arg.get("argument", ""))
+            if value:
+                grouped[role].add(value)
+        record: List[Optional[Tuple[str, ...]]] = []
+        for role in role_order:
+            values = tuple(sorted(grouped.get(role, set())))
+            record.append(values if values else None)
+        return tuple(record)
+
+    def _extract_doc_records(
+        self,
+        events: List[Dict[str, Any]],
+        role_order_map: Dict[str, List[str]],
+    ) -> Dict[str, List[Tuple[Optional[Tuple[str, ...]], ...]]]:
+        records_by_type: Dict[str, List[Tuple[Optional[Tuple[str, ...]], ...]]] = defaultdict(list)
+        if not isinstance(events, list):
+            return {}
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("event_type", "")).strip()
+            if not event_type:
+                continue
+            role_order = role_order_map.get(event_type, [])
+            records_by_type[event_type].append(self._build_doc_record(event, role_order))
+        return dict(records_by_type)
+
+    def _match_doc_records(
+        self,
+        pred_records: List[Tuple[Optional[Tuple[str, ...]], ...]],
+        gold_records: List[Tuple[Optional[Tuple[str, ...]], ...]],
+        role_order: List[str],
+    ) -> Dict[str, List[int]]:
+        role_stats: Dict[str, List[int]] = {role: [0, 0, 0] for role in role_order}
+        remaining_pred = sorted(pred_records, key=_non_empty_slot_count, reverse=True)
+        remaining_gold = list(gold_records)
+
+        while remaining_pred and remaining_gold:
+            pred_record = remaining_pred.pop(0)
+
+            def _score(gold_record: Tuple[Optional[Tuple[str, ...]], ...]) -> int:
+                return sum(1 for pred_slot, gold_slot in zip(pred_record, gold_record) if pred_slot == gold_slot)
+
+            best_idx = max(range(len(remaining_gold)), key=lambda idx: _score(remaining_gold[idx]))
+            gold_record = remaining_gold.pop(best_idx)
+
+            for role, pred_slot, gold_slot in zip(role_order, pred_record, gold_record):
+                if gold_slot is None:
+                    if pred_slot is not None:
+                        role_stats[role][1] += 1
+                    continue
+                if pred_slot is None:
+                    role_stats[role][2] += 1
+                    continue
+                if pred_slot == gold_slot:
+                    role_stats[role][0] += 1
+                else:
+                    role_stats[role][1] += 1
+                    role_stats[role][2] += 1
+
+        for pred_record in remaining_pred:
+            for role, pred_slot in zip(role_order, pred_record):
+                if pred_slot is not None:
+                    role_stats[role][1] += 1
+
+        for gold_record in remaining_gold:
+            for role, gold_slot in zip(role_order, gold_record):
+                if gold_slot is not None:
+                    role_stats[role][2] += 1
+
+        return role_stats
+
+    def _record_signature(
+        self,
+        event_type: str,
+        role_order: List[str],
+        record: Tuple[Optional[Tuple[str, ...]], ...],
+        include_event_type: bool,
+    ) -> Tuple[Any, ...]:
+        role_pairs = tuple(
+            (role, slot)
+            for role, slot in zip(role_order, record)
+            if slot is not None
+        )
+        if include_event_type:
+            return (event_type, role_pairs)
+        return role_pairs
+
+    def _compute_doc_ee_sample_stats(
+        self,
+        pred_events: List[Dict[str, Any]],
+        gold_events: List[Dict[str, Any]],
+        role_order_by_event: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        role_order_map = self._collect_role_order_map(pred_events, gold_events, role_order_by_event)
+        pred_records = self._extract_doc_records(pred_events, role_order_map)
+        gold_records = self._extract_doc_records(gold_events, role_order_map)
+
+        sample_stats = {
+            "role_order_map": role_order_map,
+            "event_role_stats": {},
+            "event_type_stats": {},
+            "overall": [0, 0, 0],
+            "classification": [0, 0, 0],
+            "instance": [0, 0, 0],
+            "combination": [0, 0, 0],
+        }
+
+        all_event_types = sorted(set(role_order_map) | set(pred_records) | set(gold_records))
+        pred_instances: List[Tuple[Any, ...]] = []
+        gold_instances: List[Tuple[Any, ...]] = []
+        pred_combinations: List[Tuple[Any, ...]] = []
+        gold_combinations: List[Tuple[Any, ...]] = []
+
+        for event_type in all_event_types:
+            role_order = role_order_map.get(event_type, [])
+            event_pred_records = pred_records.get(event_type, [])
+            event_gold_records = gold_records.get(event_type, [])
+            role_stats = self._match_doc_records(event_pred_records, event_gold_records, role_order)
+            sample_stats["event_role_stats"][event_type] = role_stats
+
+            event_type_counts = [0, 0, 0]
+            pred_present = bool(event_pred_records)
+            gold_present = bool(event_gold_records)
+            if pred_present and gold_present:
+                event_type_counts[0] += 1
+            elif pred_present:
+                event_type_counts[1] += 1
+            elif gold_present:
+                event_type_counts[2] += 1
+            sample_stats["event_type_stats"][event_type] = event_type_counts
+
+            for role in role_order:
+                tp, fp, fn = role_stats[role]
+                sample_stats["overall"][0] += tp
+                sample_stats["overall"][1] += fp
+                sample_stats["overall"][2] += fn
+            for idx, value in enumerate(event_type_counts):
+                sample_stats["classification"][idx] += value
+
+            for record in event_pred_records:
+                pred_instances.append(self._record_signature(event_type, role_order, record, include_event_type=True))
+                pred_combinations.append(self._record_signature(event_type, role_order, record, include_event_type=False))
+            for record in event_gold_records:
+                gold_instances.append(self._record_signature(event_type, role_order, record, include_event_type=True))
+                gold_combinations.append(self._record_signature(event_type, role_order, record, include_event_type=False))
+
+        instance_tp = _counter_overlap_count(pred_instances, gold_instances)
+        combination_tp = _counter_overlap_count(pred_combinations, gold_combinations)
+        sample_stats["instance"] = [
+            instance_tp,
+            max(0, len(pred_instances) - instance_tp),
+            max(0, len(gold_instances) - instance_tp),
+        ]
+        sample_stats["combination"] = [
+            combination_tp,
+            max(0, len(pred_combinations) - combination_tp),
+            max(0, len(gold_combinations) - combination_tp),
+        ]
+        return sample_stats
+
+    def _extract_text_proxy_sets(self, events: List[Dict[str, Any]]) -> Dict[str, Set[Tuple[Any, ...]]]:
+        metrics = {
+            "trigger_text_id": set(),
+            "trigger_text_cls": set(),
+            "argument_text_id": set(),
+            "argument_text_cls": set(),
+            "argument_attached_text_id": set(),
+            "argument_attached_text_cls": set(),
+        }
+        if not isinstance(events, list):
+            return metrics
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("event_type", "")).strip()
+            if not event_type:
+                continue
+            trigger = self.normalize_text(event.get("trigger", ""))
+            if trigger:
+                metrics["trigger_text_id"].add((trigger,))
+                metrics["trigger_text_cls"].add((event_type, trigger))
+            for arg in event.get("arguments", []) or []:
+                if not isinstance(arg, dict):
+                    continue
+                role = str(arg.get("role", "")).strip()
+                value = self.normalize_text(arg.get("argument", ""))
+                if not value:
+                    continue
+                metrics["argument_text_id"].add((event_type, value))
+                metrics["argument_text_cls"].add((event_type, role, value))
+                if trigger:
+                    metrics["argument_attached_text_id"].add((event_type, trigger, value))
+                    metrics["argument_attached_text_cls"].add((event_type, trigger, role, value))
+        return metrics
+
+    def _update_text_proxy_stats(
+        self,
+        pred_events: List[Dict[str, Any]],
+        gold_events: List[Dict[str, Any]],
+    ) -> None:
+        pred_sets = self._extract_text_proxy_sets(pred_events)
+        gold_sets = self._extract_text_proxy_sets(gold_events)
+        for metric_name, pred_values in pred_sets.items():
+            gold_values = gold_sets[metric_name]
+            tp = len(pred_values & gold_values)
+            fp = len(pred_values - gold_values)
+            fn = len(gold_values - pred_values)
+            bucket = self.stats[f"text_proxy_{metric_name}"]
+            bucket[0] += tp
+            bucket[1] += fp
+            bucket[2] += fn
+
+    def _update_text_proxy_grounding(
+        self,
+        source_text: str,
+        pred_events: List[Dict[str, Any]],
+    ) -> None:
+        clean_source = self.normalize_text(source_text)
+        if not clean_source or not isinstance(pred_events, list):
+            return
+        grounded = 0
+        total = 0
+        for event in pred_events:
+            if not isinstance(event, dict):
+                continue
+            trigger = self.normalize_text(event.get("trigger", ""))
+            if trigger:
+                total += 1
+                if trigger in clean_source:
+                    grounded += 1
+            for arg in event.get("arguments", []) or []:
+                if not isinstance(arg, dict):
+                    continue
+                value = self.normalize_text(arg.get("argument", ""))
+                if not value:
+                    continue
+                total += 1
+                if value in clean_source:
+                    grounded += 1
+        self.stats["text_proxy_grounded_total"] += grounded
+        self.stats["text_proxy_grounding_total"] += total
+
     def relaxed_match(self, pred_arg: str, gold_arg: str) -> bool:
         pred_norm = self.normalize_text(pred_arg)
         gold_norm = self.normalize_text(gold_arg)
@@ -346,6 +690,7 @@ class AcademicEventEvaluator:
         gold_events: List[Dict],
         parse_success: bool = True,
         parse_diagnostics: Optional[Dict[str, Any]] = None,
+        role_order_by_event: Optional[Dict[str, List[str]]] = None,
     ):
         self.stats["total_samples"] += 1
 
@@ -382,6 +727,42 @@ class AcademicEventEvaluator:
         self.stats["type_tp"] += type_tp
         self.stats["type_pred_total"] += len(pred_types)
         self.stats["type_gold_total"] += len(gold_types)
+
+        doc_sample = self._compute_doc_ee_sample_stats(
+            pred_events,
+            gold_events,
+            role_order_by_event=role_order_by_event,
+        )
+        self.stats["doc_role_tp"] += doc_sample["overall"][0]
+        self.stats["doc_role_fp"] += doc_sample["overall"][1]
+        self.stats["doc_role_fn"] += doc_sample["overall"][2]
+        self.stats["doc_event_type_tp"] += doc_sample["classification"][0]
+        self.stats["doc_event_type_fp"] += doc_sample["classification"][1]
+        self.stats["doc_event_type_fn"] += doc_sample["classification"][2]
+        self.stats["doc_instance_tp"] += doc_sample["instance"][0]
+        self.stats["doc_instance_fp"] += doc_sample["instance"][1]
+        self.stats["doc_instance_fn"] += doc_sample["instance"][2]
+        self.stats["doc_combination_tp"] += doc_sample["combination"][0]
+        self.stats["doc_combination_fp"] += doc_sample["combination"][1]
+        self.stats["doc_combination_fn"] += doc_sample["combination"][2]
+        for event_type, role_order in doc_sample["role_order_map"].items():
+            existing = self.stats["doc_role_orders"][event_type]
+            for role in role_order:
+                if role not in existing:
+                    existing.append(role)
+        for event_type, role_stats in doc_sample["event_role_stats"].items():
+            for role, values in role_stats.items():
+                bucket = self.stats["doc_role_stats"][event_type][role]
+                bucket[0] += values[0]
+                bucket[1] += values[1]
+                bucket[2] += values[2]
+        for event_type, values in doc_sample["event_type_stats"].items():
+            bucket = self.stats["doc_event_type_stats"][event_type]
+            bucket[0] += values[0]
+            bucket[1] += values[1]
+            bucket[2] += values[2]
+
+        self._update_text_proxy_stats(pred_events, gold_events)
 
         if pred_strict != gold_strict:
             missed = gold_strict - pred_strict
@@ -467,6 +848,171 @@ class AcademicEventEvaluator:
         report.schema_violation_breakdown = dict(
             sorted(self.stats["schema_violations"].items(), key=lambda x: x[1], reverse=True)[:10]
         )
+
+        doc_event_types = sorted(
+            set(self.stats["doc_role_orders"].keys()) | set(self.stats["doc_event_type_stats"].keys())
+        )
+        doc_events_payload: List[Dict[str, Any]] = []
+        macro_precision_sum = 0.0
+        macro_recall_sum = 0.0
+        macro_f1_sum = 0.0
+
+        for event_type in doc_event_types:
+            role_order = list(self.stats["doc_role_orders"].get(event_type, []))
+            role_stats = self.stats["doc_role_stats"].get(event_type, {})
+            if not role_order:
+                role_order = sorted(role_stats.keys())
+
+            role_payloads: List[Dict[str, Any]] = []
+            event_tp = event_fp = event_fn = 0
+            event_macro_precision = 0.0
+            event_macro_recall = 0.0
+            event_macro_f1 = 0.0
+
+            for role in role_order:
+                tp, fp, fn = role_stats.get(role, [0, 0, 0])
+                role_precision, role_recall, role_f1 = _compute_prf(tp, fp, fn)
+                event_tp += tp
+                event_fp += fp
+                event_fn += fn
+                event_macro_precision += role_precision
+                event_macro_recall += role_recall
+                event_macro_f1 += role_f1
+                role_payloads.append(
+                    {
+                        "RoleType": role,
+                        "Precision": role_precision,
+                        "Recall": role_recall,
+                        "F1": role_f1,
+                        "TP": tp,
+                        "FP": fp,
+                        "FN": fn,
+                    }
+                )
+
+            role_den = len(role_payloads) if role_payloads else 1
+            macro_precision = event_macro_precision / role_den
+            macro_recall = event_macro_recall / role_den
+            macro_f1 = event_macro_f1 / role_den
+            micro_precision, micro_recall, micro_f1 = _compute_prf(event_tp, event_fp, event_fn)
+            macro_precision_sum += macro_precision
+            macro_recall_sum += macro_recall
+            macro_f1_sum += macro_f1
+
+            event_payload = {
+                "EventType": event_type,
+                "MacroPrecision": macro_precision,
+                "MacroRecall": macro_recall,
+                "MacroF1": macro_f1,
+                "MicroPrecision": micro_precision,
+                "MicroRecall": micro_recall,
+                "MicroF1": micro_f1,
+                "TP": event_tp,
+                "FP": event_fp,
+                "FN": event_fn,
+                "Roles": role_payloads,
+            }
+            doc_events_payload.append(event_payload)
+
+        n_doc_events = len(doc_events_payload) if doc_events_payload else 1
+        overall_micro_precision, overall_micro_recall, overall_micro_f1 = _compute_prf(
+            self.stats["doc_role_tp"],
+            self.stats["doc_role_fp"],
+            self.stats["doc_role_fn"],
+        )
+
+        classification_events: List[Dict[str, Any]] = []
+        classification_macro_precision = 0.0
+        classification_macro_recall = 0.0
+        classification_macro_f1 = 0.0
+        for event_type in doc_event_types:
+            tp, fp, fn = self.stats["doc_event_type_stats"].get(event_type, [0, 0, 0])
+            precision, recall, f1 = _compute_prf(tp, fp, fn)
+            classification_macro_precision += precision
+            classification_macro_recall += recall
+            classification_macro_f1 += f1
+            classification_events.append(
+                {
+                    "EventType": event_type,
+                    "Precision": precision,
+                    "Recall": recall,
+                    "F1": f1,
+                    "TP": tp,
+                    "FP": fp,
+                    "FN": fn,
+                }
+            )
+        cls_den = len(classification_events) if classification_events else 1
+        cls_micro_precision, cls_micro_recall, cls_micro_f1 = _compute_prf(
+            self.stats["doc_event_type_tp"],
+            self.stats["doc_event_type_fp"],
+            self.stats["doc_event_type_fn"],
+        )
+        inst_precision, inst_recall, inst_f1 = _compute_prf(
+            self.stats["doc_instance_tp"],
+            self.stats["doc_instance_fp"],
+            self.stats["doc_instance_fn"],
+        )
+        comb_precision, comb_recall, comb_f1 = _compute_prf(
+            self.stats["doc_combination_tp"],
+            self.stats["doc_combination_fp"],
+            self.stats["doc_combination_fn"],
+        )
+        report.doc_ee = {
+            "overall": {
+                "MacroPrecision": macro_precision_sum / n_doc_events,
+                "MacroRecall": macro_recall_sum / n_doc_events,
+                "MacroF1": macro_f1_sum / n_doc_events,
+                "MicroPrecision": overall_micro_precision,
+                "MicroRecall": overall_micro_recall,
+                "MicroF1": overall_micro_f1,
+                "TP": self.stats["doc_role_tp"],
+                "FP": self.stats["doc_role_fp"],
+                "FN": self.stats["doc_role_fn"],
+                "Events": doc_events_payload,
+            },
+            "classification": {
+                "MacroPrecision": classification_macro_precision / cls_den,
+                "MacroRecall": classification_macro_recall / cls_den,
+                "MacroF1": classification_macro_f1 / cls_den,
+                "MicroPrecision": cls_micro_precision,
+                "MicroRecall": cls_micro_recall,
+                "MicroF1": cls_micro_f1,
+                "TP": self.stats["doc_event_type_tp"],
+                "FP": self.stats["doc_event_type_fp"],
+                "FN": self.stats["doc_event_type_fn"],
+                "Events": classification_events,
+            },
+            "instance": {
+                "MicroPrecision": inst_precision,
+                "MicroRecall": inst_recall,
+                "MicroF1": inst_f1,
+                "TP": self.stats["doc_instance_tp"],
+                "FP": self.stats["doc_instance_fp"],
+                "FN": self.stats["doc_instance_fn"],
+            },
+            "combination": {
+                "MicroPrecision": comb_precision,
+                "MicroRecall": comb_recall,
+                "MicroF1": comb_f1,
+                "TP": self.stats["doc_combination_tp"],
+                "FP": self.stats["doc_combination_fp"],
+                "FN": self.stats["doc_combination_fn"],
+            },
+        }
+
+        report.ee_text_proxy = {
+            "trigger_text_id": _metric_block(*self.stats["text_proxy_trigger_text_id"]),
+            "trigger_text_cls": _metric_block(*self.stats["text_proxy_trigger_text_cls"]),
+            "argument_text_id": _metric_block(*self.stats["text_proxy_argument_text_id"]),
+            "argument_text_cls": _metric_block(*self.stats["text_proxy_argument_text_cls"]),
+            "argument_attached_text_id": _metric_block(*self.stats["text_proxy_argument_attached_text_id"]),
+            "argument_attached_text_cls": _metric_block(*self.stats["text_proxy_argument_attached_text_cls"]),
+            "grounding_coverage": _safe_div(
+                self.stats["text_proxy_grounded_total"],
+                self.stats["text_proxy_grounding_total"],
+            ),
+        }
         return report
 
     def check_hallucination(
@@ -562,12 +1108,14 @@ class AcademicEventEvaluator:
         parse_diagnostics: Optional[Dict[str, Any]] = None,
         valid_event_types: Set[str] = None,
         valid_roles_by_event: Optional[Dict[str, Set[str]]] = None,
+        role_order_by_event: Optional[Dict[str, List[str]]] = None,
     ):
         self.update(
             pred_events,
             gold_events,
             parse_success=parse_success,
             parse_diagnostics=parse_diagnostics,
+            role_order_by_event=role_order_by_event,
         )
 
         if source_text:
@@ -575,6 +1123,7 @@ class AcademicEventEvaluator:
                 source_text,
                 pred_events,
             )
+            self._update_text_proxy_grounding(source_text, pred_events)
             if has_halluc:
                 self.stats["hallucination_samples"] += 1
             self.stats["hallucinated_entities"] += halluc_count
@@ -738,6 +1287,13 @@ def print_metrics_report(report: MetricsReport, eval_mode: str = "both"):
     print(f"   Type Precision: {report.type_precision:.4f}")
     print(f"   Type Recall:    {report.type_recall:.4f}")
     print(f"   Type F1 Score:  {report.type_f1:.4f}")
+    if report.doc_ee:
+        print("\n🧾 DocEE 主表指标")
+        print(f"   Role Micro-F1:  {report.doc_ee['overall']['MicroF1']:.4f}")
+        print(f"   Role Macro-F1:  {report.doc_ee['overall']['MacroF1']:.4f}")
+        print(f"   Type Micro-F1:  {report.doc_ee['classification']['MicroF1']:.4f}")
+        print(f"   Instance F1:    {report.doc_ee['instance']['MicroF1']:.4f}")
+        print(f"   Combination F1: {report.doc_ee['combination']['MicroF1']:.4f}")
 
     if report.error_breakdown:
         print("\n❌ 主要错误类型 (Top 10)")
@@ -766,9 +1322,29 @@ def print_metrics_report(report: MetricsReport, eval_mode: str = "both"):
     print("\n" + "=" * 60)
 
 
+def build_primary_metric_map(report: MetricsReport) -> Dict[str, float]:
+    doc_ee = report.doc_ee or {}
+    overall = doc_ee.get("overall", {})
+    classification = doc_ee.get("classification", {})
+    instance = doc_ee.get("instance", {})
+    combination = doc_ee.get("combination", {})
+    return {
+        "strict_f1": float(report.strict_f1),
+        "relaxed_f1": float(report.relaxed_f1),
+        "type_f1": float(report.type_f1),
+        "doc_role_micro_f1": float(overall.get("MicroF1", 0.0)),
+        "doc_role_macro_f1": float(overall.get("MacroF1", 0.0)),
+        "doc_event_type_micro_f1": float(classification.get("MicroF1", 0.0)),
+        "doc_event_type_macro_f1": float(classification.get("MacroF1", 0.0)),
+        "doc_instance_micro_f1": float(instance.get("MicroF1", 0.0)),
+        "doc_combination_micro_f1": float(combination.get("MicroF1", 0.0)),
+    }
+
+
 __all__ = [
     "AcademicEventEvaluator",
     "EvaluationResult",
     "MetricsReport",
+    "build_primary_metric_map",
     "print_metrics_report",
 ]

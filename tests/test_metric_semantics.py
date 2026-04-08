@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -84,3 +86,65 @@ def test_schema_and_hallucination_breakdown_populated():
     assert report.schema_compliance_rate == 0.0
     assert any(k.startswith("invalid_role:") for k in report.schema_violation_breakdown)
     assert len(report.hallucination_breakdown) >= 1
+
+
+def test_doc_role_micro_f1_preserves_duplicate_event_records():
+    evaluator = AcademicEventEvaluator()
+    pred = [
+        {
+            "event_type": "股东减持",
+            "trigger": "减持",
+            "arguments": [
+                {"role": "减持方", "argument": "张三"},
+                {"role": "股票简称", "argument": "远航股份"},
+            ],
+        }
+    ]
+    gold = pred + [
+        {
+            "event_type": "股东减持",
+            "trigger": "减持",
+            "arguments": [
+                {"role": "减持方", "argument": "张三"},
+                {"role": "股票简称", "argument": "远航股份"},
+            ],
+        }
+    ]
+
+    evaluator.update(pred, gold)
+    report = evaluator.compute_metrics()
+
+    assert report.strict_f1 == pytest.approx(1.0)
+    assert report.doc_ee["overall"]["MicroF1"] == pytest.approx(2.0 / 3.0, rel=1e-6)
+    assert report.doc_ee["overall"]["TP"] == 2
+    assert report.doc_ee["overall"]["FN"] == 2
+
+
+def test_text_proxy_metrics_and_grounding_coverage_are_reported():
+    evaluator = AcademicEventEvaluator()
+    pred = [
+        {
+            "event_type": "企业收购",
+            "trigger": "收购",
+            "arguments": [
+                {"role": "收购方", "argument": "沙特阿美"},
+                {"role": "被收购方", "argument": "SABIC"},
+            ],
+        }
+    ]
+
+    evaluator.update_with_extended_metrics(
+        pred_events=pred,
+        gold_events=pred,
+        source_text="沙特阿美正在收购SABIC。",
+        full_response="",
+        parse_success=True,
+        parse_diagnostics={"success": True, "repair_steps": []},
+        valid_event_types={"企业收购"},
+        valid_roles_by_event={"企业收购": {"收购方", "被收购方"}},
+    )
+    report = evaluator.compute_metrics()
+
+    assert report.ee_text_proxy["trigger_text_cls"]["f1"] == pytest.approx(1.0)
+    assert report.ee_text_proxy["argument_attached_text_cls"]["f1"] == pytest.approx(1.0)
+    assert report.ee_text_proxy["grounding_coverage"] == pytest.approx(1.0)

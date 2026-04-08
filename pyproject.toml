@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Ontology-Graph Loss-Aware Adaptive Negative Sampling for Direct Preference Optimization"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Zimmmtly", email = "zimmmtly@example.com"}
 ]

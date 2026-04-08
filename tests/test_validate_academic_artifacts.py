@@ -30,7 +30,7 @@ def build_valid_summary():
             "parser_version": "route_a_compare_v1",
             "normalization_version": "route_a_compare_v1",
             "training_mode": "preference",
-            "primary_metric": "strict_f1",
+            "primary_metric": "doc_role_micro_f1",
             "canonical_metric_mode": "analysis_only",
             "generation": {
                 "temperature": 0.0,
@@ -40,14 +40,27 @@ def build_valid_summary():
             "has_gold_labels": True,
         },
         "metrics": {
+            "doc_role_micro_f1": 0.61,
+            "doc_instance_micro_f1": 0.55,
+            "doc_combination_micro_f1": 0.57,
+            "doc_event_type_micro_f1": 0.72,
             "strict_f1": 0.5,
             "relaxed_f1": 0.6,
             "type_f1": 0.7,
             "parse_error_rate": 0.0,
             "parse_success_rate": 1.0,
-            "primary_metric": "strict_f1",
-            "primary_metric_value": 0.5,
-            "bootstrap_ci": {"strict_f1": [0.48, 0.52]},
+            "primary_metric": "doc_role_micro_f1",
+            "primary_metric_value": 0.61,
+            "bootstrap_ci": {"doc_role_micro_f1": [0.58, 0.64]},
+            "academic_metrics": {
+                "doc_ee": {
+                    "overall": {"MicroF1": 0.61},
+                    "instance": {"MicroF1": 0.55},
+                    "combination": {"MicroF1": 0.57},
+                    "classification": {"MicroF1": 0.72},
+                },
+                "ee_text_proxy": {},
+            },
         },
         "token_usage": {
             "total_tokens": 10,
@@ -64,7 +77,7 @@ def build_valid_summary():
             "system": {"platform": "Windows"},
         },
         "analysis": {
-            "primary_metric": "strict_f1",
+            "primary_metric": "doc_role_micro_f1",
             "protocol": {"version": "1.0"},
         },
     }

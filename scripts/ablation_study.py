@@ -34,9 +34,10 @@ import statistics
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from oglans.config import ConfigManager
+from oglans.data.prompt_builder import validate_prompt_variant
 from oglans.utils.pathing import infer_dataset_name_from_config as infer_dataset_name_from_loaded_config
 
 # 添加项目根目录到路径
@@ -154,6 +155,18 @@ def require_explicit_seeds(text: Optional[str]) -> List[int]:
     return parse_seeds(str(text))
 
 
+def parse_prompt_modes(text: Optional[str]) -> List[str]:
+    raw_modes = [token.strip() for token in str(text or "zeroshot").split(",") if token.strip()]
+    if not raw_modes:
+        raise ValueError("Ablation study requires at least one prompt mode.")
+    modes: List[str] = []
+    for mode in raw_modes:
+        normalized = validate_prompt_variant(mode)
+        if normalized not in modes:
+            modes.append(normalized)
+    return modes
+
+
 def validate_eval_split(split: str) -> str:
     normalized = str(split or "").strip().lower()
     if normalized != "dev":
@@ -194,6 +207,26 @@ def aggregate_seed_metrics(seed_results: Dict[int, Dict[str, Any]]) -> Dict[str,
             "std": round(statistics.pstdev(values), 6) if len(values) > 1 else 0.0,
             "n_runs": len(values),
         }
+    return aggregated
+
+
+def aggregate_seed_metrics_by_prompt_mode(
+    seed_results: Dict[int, Dict[str, Any]],
+    prompt_modes: Sequence[str],
+) -> Dict[str, Any]:
+    aggregated: Dict[str, Any] = {}
+    for prompt_mode in prompt_modes:
+        per_mode_results: Dict[int, Dict[str, Any]] = {}
+        for seed, result in seed_results.items():
+            if result.get("status") != "success":
+                continue
+            mode_result = result.get("eval_by_prompt_mode", {}).get(prompt_mode)
+            if mode_result:
+                per_mode_results[int(seed)] = {
+                    "status": "success",
+                    "metrics": mode_result.get("metrics", {}),
+                }
+        aggregated[prompt_mode] = aggregate_seed_metrics(per_mode_results)
     return aggregated
 
 
@@ -238,6 +271,10 @@ def _flatten_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
         cot_faith = cot_faith.get("overall", 0.0)
 
     return {
+        "doc_role_micro_f1": float(metrics.get("doc_role_micro_f1", metrics.get("academic_metrics", {}).get("doc_ee", {}).get("overall", {}).get("MicroF1", 0.0))),
+        "doc_instance_micro_f1": float(metrics.get("doc_instance_micro_f1", metrics.get("academic_metrics", {}).get("doc_ee", {}).get("instance", {}).get("MicroF1", 0.0))),
+        "doc_combination_micro_f1": float(metrics.get("doc_combination_micro_f1", metrics.get("academic_metrics", {}).get("doc_ee", {}).get("combination", {}).get("MicroF1", 0.0))),
+        "doc_event_type_micro_f1": float(metrics.get("doc_event_type_micro_f1", metrics.get("academic_metrics", {}).get("doc_ee", {}).get("classification", {}).get("MicroF1", 0.0))),
         "strict_precision": float(metrics.get("strict_precision", metrics.get("strict", {}).get("precision", 0.0))),
         "strict_recall": float(metrics.get("strict_recall", metrics.get("strict", {}).get("recall", 0.0))),
         "strict_f1": float(metrics.get("strict_f1", metrics.get("strict", {}).get("f1", 0.0))),
@@ -257,7 +294,9 @@ def run_experiment(
     protocol_path: str = "configs/eval_protocol.yaml",
     role_alias_map: str = "configs/role_aliases_duee_fin.yaml",
     canonical_metric_mode: str = "analysis_only",
-    report_primary_metric: str = "strict_f1",
+    report_primary_metric: str = "doc_role_micro_f1",
+    prompt_modes: Optional[Sequence[str]] = None,
+    fewshot_num_examples: int = 3,
     dry_run: bool = False
 ) -> Optional[Dict]:
     """
@@ -305,6 +344,7 @@ def run_experiment(
             "config_path": str(exp_config_path),
             "seed": int(seed),
             "experiment_name": experiment_name,
+            "prompt_modes": list(prompt_modes or ["zeroshot"]),
         }
 
     train_log_path = exp_output_dir / "train.log"
@@ -352,84 +392,114 @@ def run_experiment(
                 "expected_checkpoint_dir": str(checkpoint_path),
             }
 
-        eval_output_jsonl = exp_output_dir / "eval_results.jsonl"
-        eval_cmd = [
-            sys.executable,
-            str(PROJECT_ROOT / "evaluate.py"),
-            "--config",
-            str(exp_config_path),
-            "--checkpoint",
-            str(checkpoint_path),
-            "--protocol",
-            protocol_path,
-            "--split",
-            eval_split,
-            "--batch_size",
-            str(eval_batch_size),
-            "--output_file",
-            str(eval_output_jsonl),
-            "--role_alias_map",
-            role_alias_map,
-            "--canonical_metric_mode",
-            canonical_metric_mode,
-            "--report_primary_metric",
-            report_primary_metric,
-        ]
-        if eval_num_samples is not None:
-            eval_cmd.extend(["--num_samples", str(eval_num_samples)])
-
-        print(f"Evaluation command: {' '.join(eval_cmd)}")
-        print(f"Evaluation log: {eval_log_path}")
-
-        with open(eval_log_path, "w", encoding="utf-8") as eval_log:
-            eval_log.write(f"$ {' '.join(eval_cmd)}\n\n")
-            eval_result = subprocess.run(
-                eval_cmd,
-                cwd=str(PROJECT_ROOT),
-                stdout=eval_log,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=3600 * 6,  # 6 小时
+        prompt_modes = list(prompt_modes or ["zeroshot"])
+        eval_results_by_mode: Dict[str, Dict[str, Any]] = {}
+        for prompt_mode in prompt_modes:
+            mode_suffix = prompt_mode if len(prompt_modes) > 1 else "default"
+            eval_output_jsonl = exp_output_dir / (
+                f"eval_results_{prompt_mode}.jsonl" if len(prompt_modes) > 1 else "eval_results.jsonl"
             )
+            eval_log_path = exp_output_dir / (
+                f"eval_{mode_suffix}.log" if len(prompt_modes) > 1 else "eval.log"
+            )
+            eval_cmd = [
+                sys.executable,
+                str(PROJECT_ROOT / "evaluate.py"),
+                "--config",
+                str(exp_config_path),
+                "--checkpoint",
+                str(checkpoint_path),
+                "--protocol",
+                protocol_path,
+                "--split",
+                eval_split,
+                "--batch_size",
+                str(eval_batch_size),
+                "--output_file",
+                str(eval_output_jsonl),
+                "--role_alias_map",
+                role_alias_map,
+                "--canonical_metric_mode",
+                canonical_metric_mode,
+                "--report_primary_metric",
+                report_primary_metric,
+                "--prompt_variant",
+                prompt_mode,
+            ]
+            if prompt_mode == "fewshot":
+                eval_cmd.extend(["--fewshot_num_examples", str(fewshot_num_examples)])
+            if eval_num_samples is not None:
+                eval_cmd.extend(["--num_samples", str(eval_num_samples)])
 
-        if eval_result.returncode != 0:
-            return {
-                "status": "failed_eval",
-                "train_log": str(train_log_path),
+            print(f"Evaluation command [{prompt_mode}]: {' '.join(eval_cmd)}")
+            print(f"Evaluation log [{prompt_mode}]: {eval_log_path}")
+
+            with open(eval_log_path, "w", encoding="utf-8") as eval_log:
+                eval_log.write(f"$ {' '.join(eval_cmd)}\n\n")
+                eval_result = subprocess.run(
+                    eval_cmd,
+                    cwd=str(PROJECT_ROOT),
+                    stdout=eval_log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=3600 * 6,  # 6 小时
+                )
+
+            if eval_result.returncode != 0:
+                return {
+                    "status": "failed_eval",
+                    "train_log": str(train_log_path),
+                    "eval_log": str(eval_log_path),
+                    "checkpoint": str(checkpoint_path),
+                    "prompt_mode": prompt_mode,
+                    "returncode": eval_result.returncode,
+                }
+
+            metrics_path = Path(str(eval_output_jsonl).replace(".jsonl", "_metrics.json"))
+            summary_path = Path(str(eval_output_jsonl).replace(".jsonl", "_summary.json"))
+            if not metrics_path.exists():
+                return {
+                    "status": "failed_metrics_missing",
+                    "train_log": str(train_log_path),
+                    "eval_log": str(eval_log_path),
+                    "checkpoint": str(checkpoint_path),
+                    "prompt_mode": prompt_mode,
+                    "expected_metrics_file": str(metrics_path),
+                }
+
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                raw_metrics = json.load(f)
+            flat_metrics = _flatten_metrics(raw_metrics)
+            eval_results_by_mode[prompt_mode] = {
+                "metrics": flat_metrics,
+                "metrics_raw": raw_metrics,
                 "eval_log": str(eval_log_path),
-                "checkpoint": str(checkpoint_path),
-                "returncode": eval_result.returncode,
+                "result_file": str(eval_output_jsonl),
+                "metrics_file": str(metrics_path),
+                "summary_file": str(summary_path),
+                "prompt_variant": prompt_mode,
+                "fewshot_num_examples": fewshot_num_examples if prompt_mode == "fewshot" else 0,
             }
 
-        metrics_path = Path(str(eval_output_jsonl).replace(".jsonl", "_metrics.json"))
-        summary_path = Path(str(eval_output_jsonl).replace(".jsonl", "_summary.json"))
-        if not metrics_path.exists():
-            return {
-                "status": "failed_metrics_missing",
-                "train_log": str(train_log_path),
-                "eval_log": str(eval_log_path),
-                "checkpoint": str(checkpoint_path),
-                "expected_metrics_file": str(metrics_path),
-            }
-
-        with open(metrics_path, "r", encoding="utf-8") as f:
-            raw_metrics = json.load(f)
-        flat_metrics = _flatten_metrics(raw_metrics)
+        primary_mode = prompt_modes[0]
+        primary_eval = eval_results_by_mode[primary_mode]
 
         return {
             "status": "success",
-            "metrics": flat_metrics,
-            "metrics_raw": raw_metrics,
+            "metrics": primary_eval["metrics"],
+            "metrics_raw": primary_eval["metrics_raw"],
             "train_log": str(train_log_path),
-            "eval_log": str(eval_log_path),
+            "eval_log": primary_eval["eval_log"],
             "checkpoint": str(checkpoint_path),
-            "result_file": str(eval_output_jsonl),
-            "metrics_file": str(metrics_path),
-            "summary_file": str(summary_path),
+            "result_file": primary_eval["result_file"],
+            "metrics_file": primary_eval["metrics_file"],
+            "summary_file": primary_eval["summary_file"],
             "config_path": str(exp_config_path),
             "seed": int(seed),
             "experiment_name": experiment_name,
             "dataset_name": dataset_name,
+            "prompt_modes": list(prompt_modes),
+            "eval_by_prompt_mode": eval_results_by_mode,
         }
 
     except subprocess.TimeoutExpired:
@@ -526,8 +596,12 @@ def main():
     parser.add_argument("--canonical_metric_mode", type=str, default="analysis_only",
                         choices=["off", "analysis_only", "apply_for_aux_metric"],
                         help="辅助规范化评测模式")
-    parser.add_argument("--report_primary_metric", type=str, default="strict_f1",
+    parser.add_argument("--report_primary_metric", type=str, default="doc_role_micro_f1",
                         help="主汇报指标")
+    parser.add_argument("--prompt_modes", type=str, default="zeroshot",
+                        help="评测 prompt 模式，逗号分隔 (e.g., zeroshot,fewshot)")
+    parser.add_argument("--fewshot_num_examples", type=int, default=3,
+                        help="few-shot 示例数（默认: 3）")
     parser.add_argument("--dry_run", action="store_true",
                         help="仅生成配置，不执行训练")
     parser.add_argument("--generate_latex", action="store_true",
@@ -558,6 +632,7 @@ def main():
     base_config = load_config(args.config)
     _ = base_config
     seeds = require_explicit_seeds(args.seeds)
+    prompt_modes = parse_prompt_modes(args.prompt_modes)
 
     # 运行实验
     results = {}
@@ -579,20 +654,27 @@ def main():
                 args.role_alias_map,
                 args.canonical_metric_mode,
                 args.report_primary_metric,
+                prompt_modes,
+                args.fewshot_num_examples,
                 args.dry_run
             )
             per_seed_results[int(seed)] = result
 
         success_count = sum(1 for result in per_seed_results.values() if result.get("status") == "success")
-        if len(seeds) == 1:
+        if len(seeds) == 1 and len(prompt_modes) == 1:
             summary_result = dict(per_seed_results[seeds[0]])
         else:
             summary_result = {
                 "status": "success" if success_count == len(seeds) else "partial_failure",
                 "aggregated": aggregate_seed_metrics(per_seed_results),
+                "aggregated_by_prompt_mode": aggregate_seed_metrics_by_prompt_mode(
+                    per_seed_results,
+                    prompt_modes,
+                ),
             }
         summary_result["per_seed"] = per_seed_results
         summary_result["seeds"] = [int(seed) for seed in seeds]
+        summary_result["prompt_modes"] = list(prompt_modes)
         results[exp_id] = summary_result
     
     # 保存结果汇总
@@ -604,6 +686,7 @@ def main():
             "timestamp": timestamp,
             "experiments": experiments_to_run,
             "seeds": [int(seed) for seed in seeds],
+            "prompt_modes": list(prompt_modes),
             "results": results
         }, f, indent=2, ensure_ascii=False)
     

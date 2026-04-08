@@ -63,9 +63,23 @@ def validate_summary(summary: Dict[str, Any]) -> List[str]:
         return errors
 
     if has_gold:
-        for k in ["strict_f1", "relaxed_f1", "type_f1", "parse_error_rate", "parse_success_rate", "primary_metric", "primary_metric_value"]:
+        for k in [
+            "doc_role_micro_f1",
+            "doc_instance_micro_f1",
+            "doc_combination_micro_f1",
+            "doc_event_type_micro_f1",
+            "strict_f1",
+            "relaxed_f1",
+            "type_f1",
+            "parse_error_rate",
+            "parse_success_rate",
+            "primary_metric",
+            "primary_metric_value",
+        ]:
             if k not in metrics:
                 errors.append(f"Missing metric: {k}")
+        if "academic_metrics" not in metrics:
+            errors.append("Missing metric: academic_metrics")
         if "bootstrap_ci" not in metrics:
             errors.append("Missing metric: bootstrap_ci (enable --compute_ci)")
     else:

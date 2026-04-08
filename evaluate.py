@@ -24,8 +24,21 @@ import argparse
 import hashlib
 import random
 import time
+import warnings
 from tqdm import tqdm
 from typing import List, Dict, Set, Tuple, Optional, Any
+
+_UNSLOTH_IMPORT_ERROR: Optional[Exception] = None
+try:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"WARNING: Unsloth should be imported before \[transformers\].*",
+            category=UserWarning,
+        )
+        import unsloth  # noqa: F401
+except Exception as exc:  # pragma: no cover - 仅在缺少本地模型评估依赖时触发
+    _UNSLOTH_IMPORT_ERROR = exc
 
 # 导入项目模块
 from oglans.data.adapter import DuEEFinAdapter
@@ -33,6 +46,7 @@ from oglans.config import ConfigManager
 from oglans.evaluation import (
     AcademicEventEvaluator,
     MetricsReport,
+    build_primary_metric_map,
     print_metrics_report,
 )
 from oglans.utils.json_parser import (
@@ -48,6 +62,7 @@ from oglans.data.prompt_builder import (
     ChinesePromptBuilder,
     PROMPT_BUILDER_VERSION,
     build_inference_prompt_payload,
+    resolve_prompt_settings,
 )
 from oglans.inference.cat_lite import apply_cat_lite_pipeline, perturb_text_for_counterfactual
 from oglans.utils.eval_protocol import (
@@ -57,7 +72,6 @@ from oglans.utils.eval_protocol import (
     resolve_primary_metric_value,
     validate_primary_metric,
 )
-from oglans.utils.scv import evaluate_scv_lite
 from oglans.utils.run_manifest import (
     build_contract_record,
     build_run_manifest,
@@ -66,12 +80,6 @@ from oglans.utils.run_manifest import (
     save_json,
 )
 from oglans.utils.model_quantization import is_quantized_model
-from oglans.utils.hub_runtime import (
-    build_unsloth_from_pretrained_kwargs,
-    configure_model_download_runtime,
-    get_model_download_runtime_snapshot,
-    resolve_model_name_or_path,
-)
 from oglans.utils.model_profile import (
     load_local_model_profile,
     prepare_tokenizer_for_profile,
@@ -127,7 +135,25 @@ def _build_arg_parser():
     parser.add_argument("--output_file", type=str, default="eval_results.jsonl", help="结果输出文件")
     parser.add_argument("--eval_mode", type=str, default="both", choices=["strict", "relaxed", "both"], 
                         help="评估模式: strict/relaxed/both")
-    parser.add_argument("--use_oneshot", action="store_true", help="使用 One-Shot 示例进行推理")
+    parser.add_argument(
+        "--use_oneshot",
+        action="store_true",
+        default=None,
+        help="兼容旧参数名：等价于 --prompt_variant fewshot",
+    )
+    parser.add_argument(
+        "--prompt_variant",
+        type=str,
+        default=None,
+        choices=["zeroshot", "fewshot"],
+        help="推理 prompt 模式（默认读取 comparison.prompt_variant）",
+    )
+    parser.add_argument(
+        "--fewshot_num_examples",
+        type=int,
+        default=None,
+        help="few-shot 示例数（默认读取 comparison.fewshot_num_examples）",
+    )
     parser.add_argument("--verbose", action="store_true", help="输出详细日志")
     parser.add_argument("--do_sample", action="store_true", default=False,
                         help="使用采样解码（默认 False，使用 greedy 确定性解码）")
@@ -223,6 +249,21 @@ def optional_abspath(path: Optional[str]) -> Optional[str]:
     return os.path.abspath(path) if path else None
 
 
+def resolve_model_name_or_path(
+    model_name_or_path: str,
+    *,
+    source: str,
+    project_root: str,
+) -> str:
+    from oglans.utils.hub_runtime import resolve_model_name_or_path as shared_resolve_model_name_or_path
+
+    return shared_resolve_model_name_or_path(
+        model_name_or_path,
+        source=source,
+        project_root=project_root,
+    )
+
+
 def get_local_model_path(m_cfg: dict, *, project_root: str) -> str:
     """获取本地模型路径（本地路径优先，其次显式配置的模型源）"""
     return resolve_model_name_or_path(
@@ -262,7 +303,13 @@ def main(argv=None):
     except Exception as e:
         raise RuntimeError(
             "本地模型评估依赖 unsloth。若只需 API 评估，请使用 evaluate_api.py。"
-        ) from e
+        ) from (_UNSLOTH_IMPORT_ERROR or e)
+    from oglans.utils.hub_runtime import (
+        build_unsloth_from_pretrained_kwargs,
+        configure_model_download_runtime,
+        get_model_download_runtime_snapshot,
+    )
+    from oglans.utils.scv import evaluate_scv_lite
 
     args, unknown = parse_args_with_unknown(argv)
     validate_eval_args(args)
@@ -302,8 +349,18 @@ def main(argv=None):
     model_runtime = configure_model_download_runtime(repo_dir, source=model_source)
     protocol = load_eval_protocol(args.protocol)
     comparison_cfg = config.get("comparison", {})
+    prompt_settings = resolve_prompt_settings(
+        prompt_variant=args.prompt_variant,
+        fewshot_num_examples=args.fewshot_num_examples,
+        use_oneshot=args.use_oneshot,
+        default_prompt_variant=str(comparison_cfg.get("prompt_variant", "zeroshot")),
+        default_num_examples=int(comparison_cfg.get("fewshot_num_examples", 3)),
+    )
+    prompt_variant = prompt_settings["prompt_variant"]
+    use_fewshot = bool(prompt_settings["use_oneshot"])
+    fewshot_num_examples = int(prompt_settings["fewshot_num_examples"])
     if args.report_primary_metric is None:
-        args.report_primary_metric = str(protocol.get("primary_metric", "strict_f1"))
+        args.report_primary_metric = str(protocol.get("primary_metric", "doc_role_micro_f1"))
     args.report_primary_metric = validate_primary_metric(args.report_primary_metric)
     if args.canonical_metric_mode is None:
         args.canonical_metric_mode = str(protocol.get("canonical_metric_mode", "analysis_only"))
@@ -459,7 +516,12 @@ def main(argv=None):
         )
     valid_types = set(adapter.get_event_types()) if hasattr(adapter, 'get_event_types') else None
     valid_roles_by_event = None
+    role_order_by_event = None
     if hasattr(adapter, 'schema') and isinstance(adapter.schema, dict):
+        role_order_by_event = {
+            etype: list(roles or [])
+            for etype, roles in adapter.schema.items()
+        }
         valid_roles_by_event = {
             etype: set(roles or [])
             for etype, roles in adapter.schema.items()
@@ -501,9 +563,10 @@ def main(argv=None):
             prompt_payload = build_inference_prompt_payload(
                 text=sample.text,
                 tokenizer=tokenizer,
-                use_oneshot=args.use_oneshot,
+                prompt_variant=prompt_variant,
+                use_oneshot=use_fewshot,
                 schema=getattr(adapter, "schema", None),
-                num_examples=3,
+                num_examples=fewshot_num_examples,
             )
             batch_prompts.append(prompt_payload["formatted_text"])
 
@@ -618,7 +681,8 @@ def main(argv=None):
                     parse_success=parse_success,
                     parse_diagnostics=parse_diagnostics,
                     valid_event_types=valid_types,
-                    valid_roles_by_event=valid_roles_by_event
+                    valid_roles_by_event=valid_roles_by_event,
+                    role_order_by_event=role_order_by_event,
                 )
             canonical_pred_events = pred_events
             rewrite_count = 0
@@ -634,6 +698,7 @@ def main(argv=None):
                     parse_diagnostics=parse_diagnostics,
                     valid_event_types=valid_types,
                     valid_roles_by_event=valid_roles_by_event,
+                    role_order_by_event=role_order_by_event,
                 )
 
             if args.cot_eval_mode == "counterfactual" and bool(cf_cfg.get("enabled", True)):
@@ -647,9 +712,10 @@ def main(argv=None):
                     cf_payload = build_inference_prompt_payload(
                         text=perturbed_text,
                         tokenizer=tokenizer,
-                        use_oneshot=args.use_oneshot,
+                        prompt_variant=prompt_variant,
+                        use_oneshot=use_fewshot,
                         schema=getattr(adapter, "schema", None),
-                        num_examples=3,
+                        num_examples=fewshot_num_examples,
                     )
                     cf_prompt = cf_payload["formatted_text"]
                     cf_inputs = tokenizer(
@@ -757,6 +823,74 @@ def main(argv=None):
         scv_total_seconds=scv_lite_total_seconds,
         total_runtime_seconds=wall_clock_seconds,
     )
+    primary_metric_values = build_primary_metric_map(report)
+    rounded_primary_metric_values = {
+        key: round(value, 4)
+        for key, value in primary_metric_values.items()
+    }
+    legacy_metrics_block = {
+        "strict": {
+            "precision": round(report.strict_precision, 4),
+            "recall": round(report.strict_recall, 4),
+            "f1": round(report.strict_f1, 4),
+        },
+        "relaxed": {
+            "precision": round(report.relaxed_precision, 4),
+            "recall": round(report.relaxed_recall, 4),
+            "f1": round(report.relaxed_f1, 4),
+        },
+        "type_identification": {
+            "precision": round(report.type_precision, 4),
+            "recall": round(report.type_recall, 4),
+            "f1": round(report.type_f1, 4),
+        },
+        "parse_statistics": {
+            "total_samples": report.total_samples,
+            "parse_errors": report.parse_errors,
+            "parse_error_rate": round(report.parse_error_rate, 4),
+            "parse_success_rate": round(parse_success_rate, 4),
+            "raw_success": report.parse_raw_success,
+            "raw_success_rate": round(report.parse_raw_success_rate, 4),
+            "repair_success": report.parse_repair_success,
+            "repair_success_rate": round(report.parse_repair_success_rate, 4),
+            "extraction_failures": report.parse_extraction_failures,
+            "extraction_failure_rate": round(report.parse_extraction_failure_rate, 4),
+        },
+        "hallucination": {
+            "sample_rate": round(report.hallucination_rate, 4),
+            "entity_rate": round(report.hallucination_entity_rate, 4),
+        },
+        "cot_faithfulness": {
+            "overall": round(report.cot_faithfulness, 4),
+            "type_consistency": round(report.cot_type_consistency, 4),
+            "argument_consistency": round(report.cot_argument_consistency, 4),
+            "coverage_rate": round(report.cot_coverage_rate, 4),
+            "checked": report.cot_checked,
+            "skipped": report.cot_skipped,
+            "parse_fail": report.cot_parse_fail,
+            "counterfactual_checked": report.cot_counterfactual_checked,
+            "counterfactual_pass_rate": round(report.cot_counterfactual_pass_rate, 4),
+        },
+        "schema_compliance_rate": round(report.schema_compliance_rate, 4),
+        "grounding_rate": postprocess_metric_summary["grounding_rate"],
+        "ungrounded_argument_rate": postprocess_metric_summary["ungrounded_argument_rate"],
+        "scv_lite_trigger_count": postprocess_metric_summary["scv_lite_trigger_count"],
+        "scv_lite_triggered_samples": postprocess_metric_summary["scv_lite_triggered_samples"],
+        "scv_call_count": postprocess_metric_summary["scv_call_count"],
+        "scv_wall_clock_ratio": postprocess_metric_summary["scv_wall_clock_ratio"],
+        "error_breakdown": report.error_breakdown,
+        "hallucination_breakdown": report.hallucination_breakdown,
+        "schema_violation_breakdown": report.schema_violation_breakdown,
+    }
+    academic_metrics_block = {
+        "doc_ee": report.doc_ee,
+        "ee_text_proxy": report.ee_text_proxy,
+        "primary_metric": args.report_primary_metric,
+        "primary_metric_value": round(
+            resolve_primary_metric_value(primary_metric_values, args.report_primary_metric),
+            4,
+        ),
+    }
 
     # 兼容旧版指标文件结构（保留）
     metrics_file = final_output_path.replace(".jsonl", "_metrics.json")
@@ -793,68 +927,13 @@ def main(argv=None):
             "diagnostics_sidecar_file": os.path.abspath(diagnostics_sidecar_path) if diagnostics_sidecar_path else None,
             "runtime_manifest": runtime_manifest,
         },
-        "strict": {
-            "precision": round(report.strict_precision, 4),
-            "recall": round(report.strict_recall, 4),
-            "f1": round(report.strict_f1, 4)
-        },
-        "relaxed": {
-            "precision": round(report.relaxed_precision, 4),
-            "recall": round(report.relaxed_recall, 4),
-            "f1": round(report.relaxed_f1, 4)
-        },
-        "type_identification": {
-            "precision": round(report.type_precision, 4),
-            "recall": round(report.type_recall, 4),
-            "f1": round(report.type_f1, 4)
-        },
-        "parse_statistics": {
-            "total_samples": report.total_samples,
-            "parse_errors": report.parse_errors,
-            "parse_error_rate": round(report.parse_error_rate, 4),
-            "parse_success_rate": round(parse_success_rate, 4),
-            "raw_success": report.parse_raw_success,
-            "raw_success_rate": round(report.parse_raw_success_rate, 4),
-            "repair_success": report.parse_repair_success,
-            "repair_success_rate": round(report.parse_repair_success_rate, 4),
-            "extraction_failures": report.parse_extraction_failures,
-            "extraction_failure_rate": round(report.parse_extraction_failure_rate, 4),
-        },
-        "hallucination": {
-            "sample_rate": round(report.hallucination_rate, 4),
-            "entity_rate": round(report.hallucination_entity_rate, 4)
-        },
-        "cot_faithfulness": {
-            "overall": round(report.cot_faithfulness, 4),
-            "type_consistency": round(report.cot_type_consistency, 4),
-            "argument_consistency": round(report.cot_argument_consistency, 4),
-            "coverage_rate": round(report.cot_coverage_rate, 4),
-            "checked": report.cot_checked,
-            "skipped": report.cot_skipped,
-            "parse_fail": report.cot_parse_fail,
-            "counterfactual_checked": report.cot_counterfactual_checked,
-            "counterfactual_pass_rate": round(report.cot_counterfactual_pass_rate, 4),
-        },
-        "schema_compliance_rate": round(report.schema_compliance_rate, 4),
-        "grounding_rate": postprocess_metric_summary["grounding_rate"],
-        "ungrounded_argument_rate": postprocess_metric_summary["ungrounded_argument_rate"],
-        "scv_lite_trigger_count": postprocess_metric_summary["scv_lite_trigger_count"],
-        "scv_lite_triggered_samples": postprocess_metric_summary["scv_lite_triggered_samples"],
-        "scv_call_count": postprocess_metric_summary["scv_call_count"],
-        "scv_wall_clock_ratio": postprocess_metric_summary["scv_wall_clock_ratio"],
-        "error_breakdown": report.error_breakdown,
-        "hallucination_breakdown": report.hallucination_breakdown,
-        "schema_violation_breakdown": report.schema_violation_breakdown,
+        **rounded_primary_metric_values,
+        **legacy_metrics_block,
+        "legacy_metrics": legacy_metrics_block,
+        "academic_metrics": academic_metrics_block,
         "primary_metric": args.report_primary_metric,
         "primary_metric_value": round(
-            resolve_primary_metric_value(
-                {
-                    "strict_f1": report.strict_f1,
-                    "relaxed_f1": report.relaxed_f1,
-                    "type_f1": report.type_f1,
-                },
-                args.report_primary_metric,
-            ),
+            resolve_primary_metric_value(primary_metric_values, args.report_primary_metric),
             4,
         ),
     }
@@ -883,13 +962,15 @@ def main(argv=None):
     prompt_schema = getattr(adapter, "schema", None)
     prompt_schema_block = ChinesePromptBuilder.build_schema_constraints(prompt_schema)
     selected_fewshot_examples = (
-        ChinesePromptBuilder.select_fewshot_examples(num_examples=3) if args.use_oneshot else []
+        ChinesePromptBuilder.select_fewshot_examples(num_examples=fewshot_num_examples)
+        if use_fewshot else []
     )
     prompt_hashes = {
         "system_prompt_sha256": hash_text(ChinesePromptBuilder.build_system_prompt(schema=prompt_schema)),
         "schema_constraints_sha256": hash_text(prompt_schema_block) if prompt_schema_block else None,
         "fewshot_example_indices": (
-            list(range(min(3, len(ChinesePromptBuilder.FEW_SHOT_EXAMPLES)))) if args.use_oneshot else []
+            list(range(min(fewshot_num_examples, len(ChinesePromptBuilder.FEW_SHOT_EXAMPLES))))
+            if use_fewshot else []
         ),
         "fewshot_examples_sha256": (
             [
@@ -899,7 +980,7 @@ def main(argv=None):
                 }
                 for ex in selected_fewshot_examples
             ]
-            if args.use_oneshot else []
+            if use_fewshot else []
         ),
     }
 
@@ -917,8 +998,8 @@ def main(argv=None):
             "split": args.split,
             "concurrency": None,
             "has_gold_labels": True,
-            "use_fewshot": bool(args.use_oneshot),
-            "fewshot_num_examples": 1 if args.use_oneshot else 0,
+            "use_fewshot": use_fewshot,
+            "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
             "prompt_style": "profile_contract",
             "json_mode": "off",
             "seed": args.seed,
@@ -966,7 +1047,7 @@ def main(argv=None):
             "base_model_override": bool(args.model_name_or_path),
             "control_group_tag": f"{model_profile.name}_base_local" if args.base_only else None,
             "prompt_hashes": prompt_hashes,
-            "prompt_variant": "fewshot" if args.use_oneshot else "zeroshot",
+            "prompt_variant": prompt_variant,
             "prompt_builder_version": str(comparison_cfg.get("prompt_builder_version", PROMPT_BUILDER_VERSION)),
             "parser_version": str(comparison_cfg.get("parser_version", PARSER_VERSION)),
             "normalization_version": str(comparison_cfg.get("normalization_version", NORMALIZATION_VERSION)),
@@ -978,6 +1059,7 @@ def main(argv=None):
             "checkpoint": optional_abspath(args.checkpoint),
         },
         "metrics": {
+            **rounded_primary_metric_values,
             "strict_precision": round(report.strict_precision, 4),
             "strict_recall": round(report.strict_recall, 4),
             "strict_f1": round(report.strict_f1, 4),
@@ -1021,16 +1103,11 @@ def main(argv=None):
             "schema_violation_breakdown": report.schema_violation_breakdown,
             "error_breakdown": report.error_breakdown,
             "bootstrap_ci": None,
+            "legacy_metrics": legacy_metrics_block,
+            "academic_metrics": academic_metrics_block,
             "primary_metric": args.report_primary_metric,
             "primary_metric_value": round(
-                resolve_primary_metric_value(
-                    {
-                        "strict_f1": report.strict_f1,
-                        "relaxed_f1": report.relaxed_f1,
-                        "type_f1": report.type_f1,
-                    },
-                    args.report_primary_metric,
-                ),
+                resolve_primary_metric_value(primary_metric_values, args.report_primary_metric),
                 4,
             ),
         },

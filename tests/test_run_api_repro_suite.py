@@ -39,7 +39,7 @@ def test_load_protocol_merges_defaults(tmp_path):
     protocol = tmp_path / "eval_protocol.yaml"
     protocol.write_text(
         """
-primary_metric: strict_f1
+primary_metric: doc_role_micro_f1
 evaluation:
   split: dev
   seeds: [3407, 3408, 3409]
@@ -47,7 +47,7 @@ evaluation:
         encoding="utf-8",
     )
     loaded = mod.load_protocol(str(protocol))
-    assert loaded["primary_metric"] == "strict_f1"
+    assert loaded["primary_metric"] == "doc_role_micro_f1"
     assert loaded["evaluation"]["split"] == "dev"
     assert loaded["evaluation"]["concurrency"] == 8
 

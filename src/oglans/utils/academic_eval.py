@@ -32,6 +32,10 @@ def aggregate_sample_counts(sample_counts: Sequence[CountDict]) -> CountDict:
         "strict_tp", "strict_pred_total", "strict_gold_total",
         "relaxed_tp", "relaxed_pred_total", "relaxed_gold_total",
         "type_tp", "type_pred_total", "type_gold_total",
+        "doc_role_tp", "doc_role_pred_total", "doc_role_gold_total",
+        "doc_event_type_tp", "doc_event_type_pred_total", "doc_event_type_gold_total",
+        "doc_instance_tp", "doc_instance_pred_total", "doc_instance_gold_total",
+        "doc_combination_tp", "doc_combination_pred_total", "doc_combination_gold_total",
     ]
     aggregated = {k: 0 for k in keys}
     for row in sample_counts:
@@ -45,6 +49,22 @@ def metrics_from_sample_counts(sample_counts: Sequence[CountDict]) -> Dict[str, 
     strict = metric_from_counts(agg["strict_tp"], agg["strict_pred_total"], agg["strict_gold_total"])
     relaxed = metric_from_counts(agg["relaxed_tp"], agg["relaxed_pred_total"], agg["relaxed_gold_total"])
     type_m = metric_from_counts(agg["type_tp"], agg["type_pred_total"], agg["type_gold_total"])
+    doc_role = metric_from_counts(agg["doc_role_tp"], agg["doc_role_pred_total"], agg["doc_role_gold_total"])
+    doc_event_type = metric_from_counts(
+        agg["doc_event_type_tp"],
+        agg["doc_event_type_pred_total"],
+        agg["doc_event_type_gold_total"],
+    )
+    doc_instance = metric_from_counts(
+        agg["doc_instance_tp"],
+        agg["doc_instance_pred_total"],
+        agg["doc_instance_gold_total"],
+    )
+    doc_combination = metric_from_counts(
+        agg["doc_combination_tp"],
+        agg["doc_combination_pred_total"],
+        agg["doc_combination_gold_total"],
+    )
     return {
         "strict_precision": strict["precision"],
         "strict_recall": strict["recall"],
@@ -55,6 +75,18 @@ def metrics_from_sample_counts(sample_counts: Sequence[CountDict]) -> Dict[str, 
         "type_precision": type_m["precision"],
         "type_recall": type_m["recall"],
         "type_f1": type_m["f1"],
+        "doc_role_micro_precision": doc_role["precision"],
+        "doc_role_micro_recall": doc_role["recall"],
+        "doc_role_micro_f1": doc_role["f1"],
+        "doc_event_type_micro_precision": doc_event_type["precision"],
+        "doc_event_type_micro_recall": doc_event_type["recall"],
+        "doc_event_type_micro_f1": doc_event_type["f1"],
+        "doc_instance_micro_precision": doc_instance["precision"],
+        "doc_instance_micro_recall": doc_instance["recall"],
+        "doc_instance_micro_f1": doc_instance["f1"],
+        "doc_combination_micro_precision": doc_combination["precision"],
+        "doc_combination_micro_recall": doc_combination["recall"],
+        "doc_combination_micro_f1": doc_combination["f1"],
     }
 
 
@@ -87,6 +119,10 @@ def bootstrap_confidence_intervals(
         "strict_precision", "strict_recall", "strict_f1",
         "relaxed_precision", "relaxed_recall", "relaxed_f1",
         "type_precision", "type_recall", "type_f1",
+        "doc_role_micro_precision", "doc_role_micro_recall", "doc_role_micro_f1",
+        "doc_event_type_micro_precision", "doc_event_type_micro_recall", "doc_event_type_micro_f1",
+        "doc_instance_micro_precision", "doc_instance_micro_recall", "doc_instance_micro_f1",
+        "doc_combination_micro_precision", "doc_combination_micro_recall", "doc_combination_micro_f1",
     ]
     trajectories = {k: [] for k in metric_keys}
 

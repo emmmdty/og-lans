@@ -2,6 +2,8 @@ from oglans.data.prompt_builder import (
     ChinesePromptBuilder,
     PROMPT_BUILDER_VERSION,
     build_inference_prompt_payload,
+    resolve_prompt_settings,
+    validate_prompt_variant,
 )
 
 
@@ -61,3 +63,39 @@ def test_inference_prompt_payload_keeps_materializations_in_sync():
     assert payload["formatted_text"].startswith("system::")
     assert "assistant::" in payload["formatted_text"]
     assert PROMPT_BUILDER_VERSION == "phase3_mvp_v1"
+
+
+def test_resolve_prompt_settings_prefers_explicit_prompt_variant():
+    settings = resolve_prompt_settings(
+        prompt_variant="fewshot",
+        fewshot_num_examples=2,
+        use_oneshot=None,
+        default_prompt_variant="zeroshot",
+        default_num_examples=3,
+    )
+
+    assert settings["prompt_variant"] == "fewshot"
+    assert settings["use_oneshot"] is True
+    assert settings["fewshot_num_examples"] == 2
+
+
+def test_resolve_prompt_settings_supports_legacy_use_oneshot_alias():
+    settings = resolve_prompt_settings(
+        prompt_variant=None,
+        fewshot_num_examples=None,
+        use_oneshot=True,
+        default_prompt_variant="zeroshot",
+        default_num_examples=3,
+    )
+
+    assert settings["prompt_variant"] == "fewshot"
+    assert settings["fewshot_num_examples"] == 3
+
+
+def test_validate_prompt_variant_rejects_unknown_value():
+    try:
+        validate_prompt_variant("oneshot")
+    except ValueError as exc:
+        assert "Unsupported prompt_variant" in str(exc)
+    else:
+        raise AssertionError("validate_prompt_variant should reject unknown variants")

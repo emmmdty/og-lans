@@ -84,6 +84,18 @@ def test_ablation_script_no_longer_uses_heuristic_checkpoint_candidates():
     assert "resolve_checkpoint_dir" in text
 
 
+def test_eval_shell_wrappers_expose_prompt_variant_controls():
+    base_text = _read_script("run_eval_base.sh")
+    academic_text = _read_script("run_eval_academic.sh")
+
+    assert "--prompt-variant" in base_text
+    assert "--fewshot-num-examples" in base_text
+    assert "--num-samples" in base_text
+    assert "--num_samples" in base_text
+    assert "--prompt-variant" in academic_text
+    assert "--fewshot-num-examples" in academic_text
+
+
 def test_removed_auxiliary_shell_scripts_are_absent():
     removed = [
         ROOT / "scripts" / "run_debug.sh",

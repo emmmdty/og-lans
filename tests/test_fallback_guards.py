@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from oglans.data.adapter import DuEEFinAdapter
-from oglans.utils.eval_protocol import resolve_primary_metric_value, validate_primary_metric
+from oglans.utils.eval_protocol import load_eval_protocol, resolve_primary_metric_value, validate_primary_metric
 
 
 def test_adapter_load_data_missing_split_file_fails_fast(tmp_path):
@@ -23,6 +23,11 @@ def test_adapter_load_data_missing_split_file_fails_fast(tmp_path):
 def test_validate_primary_metric_rejects_unknown_metric():
     with pytest.raises(ValueError, match="Unsupported primary metric"):
         validate_primary_metric("parse_error_rate")
+
+
+def test_validate_primary_metric_accepts_doc_level_primary_metric():
+    assert validate_primary_metric("doc_role_micro_f1") == "doc_role_micro_f1"
+    assert resolve_primary_metric_value({"doc_role_micro_f1": 0.42}, "doc_role_micro_f1") == 0.42
 
 
 def test_resolve_primary_metric_value_requires_explicit_metric_presence():
@@ -65,3 +70,19 @@ def test_training_no_longer_overrides_online_lans_workers_or_runtime_mode():
     assert "falling back to online_iterable" not in trainer_text
     assert "dataloader_num_workers_forced_zero" not in trainer_text
     assert "requires dataloader_num_workers=0" in trainer_text
+
+
+def test_training_no_longer_hardcodes_zeroshot_prompt_payload():
+    repo_root = Path(__file__).resolve().parents[1]
+    trainer_text = (repo_root / "src" / "oglans" / "trainer" / "unsloth_trainer.py").read_text(encoding="utf-8")
+
+    assert "_build_prompt_payload(raw_text, use_oneshot=False)" not in trainer_text
+    assert "_build_prompt_payload(sample.text, use_oneshot=False)" not in trainer_text
+
+
+def test_repo_eval_protocol_defaults_to_doc_role_micro_f1():
+    repo_root = Path(__file__).resolve().parents[1]
+    protocol = load_eval_protocol(str(repo_root / "configs" / "eval_protocol.yaml"))
+
+    assert protocol["primary_metric"] == "doc_role_micro_f1"
+    assert protocol["academic_profile"] == "dual"

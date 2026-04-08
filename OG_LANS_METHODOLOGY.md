@@ -61,13 +61,20 @@ SCV 的职责不是生成答案，而是检查候选 rejected 样本是否真的
 
 OG-LANS 的方法论并不把评测视为训练之后的附属步骤，而是把评测定义为方法完整性的一部分。当前仓库已经在评测端实现：
 
-- strict / relaxed / type 三级指标；
+- 以 `doc_role_micro_f1` 为默认主指标的文档级 record-aware 评测；
+- `overall role / classification / instance / combination` 四类文档级学术指标；
+- 兼容 `strict / relaxed / type` 的旧口径指标；
+- 兼容 trigger / argument 文本代理指标（`ee_text_proxy`），用于与通用 EE 工具链做附表级对照；
 - schema compliance 与 hallucination 统计；
 - CoT 一致性与反事实一致性检查；
 - CAT-lite 这一轻量后处理过滤流程；
 - 本地模型与 API 模型两条可比评测路径。
 
 需要单独说明的是，CoT 相关检查当前属于评测侧分析能力，而不是训练输出契约本身。若模型没有显式 thought block，相关指标会按协议记为 skipped，而不是强行要求生成中间推理文本。
+
+当前仓库也已经把 `zeroshot / fewshot` 提示模式收敛为显式的 `prompt_variant + fewshot_num_examples` 契约；训练、本地评测与 API 评测都共享这组语义，而旧的 `use_oneshot / use_fewshot` 仅保留为兼容入口。
+
+还需要强调的是，当前仓库已经区分“论文主表指标”和“工程诊断指标”。对于 DuEE-Fin 这类篇章级事件抽取任务，主表更贴近 DocEE 系列工作中的角色级 Micro-F1、instance 与 combination 指标；而 `strict / relaxed / type`、schema compliance、hallucination、CoT 与 SCV-lite 统计更适合作为辅助分析或附录指标。
 
 这意味着项目的方法论并非“只训练一个模型然后看 F1”，而是试图从训练与评测两侧同时约束结构化输出的可靠性。
 

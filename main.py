@@ -48,7 +48,25 @@ from oglans.data import DuEEFinAdapter
 from oglans.trainer import UnslothDPOTrainerWrapper, UnslothSFTTrainerWrapper
 from oglans.config import ConfigManager
 from oglans.utils.pathing import normalize_dataset_name, resolve_schema_path
-from oglans.data.prompt_builder import PROMPT_BUILDER_VERSION, build_inference_prompt_payload
+from oglans.data.prompt_builder import (
+    PROMPT_BUILDER_VERSION,
+    build_inference_prompt_payload,
+)
+try:
+    from oglans.data.prompt_builder import resolve_prompt_settings
+except ImportError:  # pragma: no cover - compatibility for tests stubbing prompt_builder
+    def resolve_prompt_settings(
+        *,
+        default_prompt_variant: str = "zeroshot",
+        default_num_examples: int = 3,
+        **_: object,
+    ) -> dict:
+        prompt_variant = str(default_prompt_variant or "zeroshot")
+        return {
+            "prompt_variant": prompt_variant,
+            "use_oneshot": prompt_variant == "fewshot",
+            "fewshot_num_examples": int(default_num_examples) if prompt_variant == "fewshot" else 0,
+        }
 from oglans.utils.json_parser import NORMALIZATION_VERSION, PARSER_VERSION
 from oglans.utils.model_profile import load_local_model_profile
 import yaml
@@ -207,7 +225,10 @@ def main():
 
     protocol_path = comparison_cfg.get("eval_protocol_path")
     role_alias_path = comparison_cfg.get("role_alias_map_path")
-    prompt_variant = str(comparison_cfg.get("prompt_variant", "zeroshot"))
+    prompt_settings = resolve_prompt_settings(
+        default_prompt_variant=str(comparison_cfg.get("prompt_variant", "zeroshot")),
+        default_num_examples=int(comparison_cfg.get("fewshot_num_examples", 3)),
+    )
     prompt_payload = None
 
     # 训练
@@ -218,9 +239,10 @@ def main():
         prompt_payload = build_inference_prompt_payload(
             text=samples[0].text if samples else "",
             tokenizer=getattr(trainer, "tokenizer", None),
-            use_oneshot=(prompt_variant == "fewshot"),
+            prompt_variant=prompt_settings["prompt_variant"],
+            use_oneshot=prompt_settings["use_oneshot"],
             schema=getattr(trainer, "prompt_schema", None),
-            num_examples=int(comparison_cfg.get("fewshot_num_examples", 3)),
+            num_examples=int(prompt_settings["fewshot_num_examples"]),
         )
         trainer.train()
         manifest_status = "completed"

@@ -77,3 +77,17 @@ def test_require_explicit_seeds_rejects_missing_value():
 
 def test_require_explicit_seeds_parses_csv():
     assert mod.require_explicit_seeds("3047, 3048") == [3047, 3048]
+
+
+def test_ablation_script_defaults_to_doc_role_primary_metric():
+    script_text = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert 'default="strict_f1"' not in script_text
+    assert 'default="doc_role_micro_f1"' in script_text
+
+
+def test_ablation_script_exposes_prompt_mode_controls():
+    script_text = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "--prompt_modes" in script_text
+    assert "--fewshot_num_examples" in script_text

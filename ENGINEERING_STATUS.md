@@ -54,8 +54,11 @@
 
 虽然仓库已删除独立的 metrics / protocol / ethics 文档，但相关有效信息仍需要保留在工程说明中。就当前实现而言，较稳妥的论文汇报口径如下：
 
-- 主指标应以 `strict_f1` 为主，`relaxed_f1`、`type_f1`、`parse_error_rate`、`schema_compliance_rate`、`hallucination_rate` 作为辅助指标。
+- 默认论文主指标已经切换为 `doc_role_micro_f1`；`doc_instance_micro_f1`、`doc_combination_micro_f1`、`doc_event_type_micro_f1` 构成当前推荐的主表指标组。
+- `strict_f1`、`relaxed_f1`、`type_f1` 仍保留，用于兼容旧结果和工程侧诊断，但不再默认代表最接近 DuEE-Fin / DocEE 文献的主表口径。
 - `evaluate.py` 与 `evaluate_api.py` 都会输出结构化 `summary` / `run_manifest` 信息，适合记录 `config hash`、`prompt hash`、`parser version`、`normalization version`、命令行与时间戳。
+- 本地训练、本地评测与 API 评测现在共享同一套 `prompt_variant + fewshot_num_examples` 语义；`use_oneshot/use_fewshot` 仅作为兼容旧 CLI 的别名存在。
+- 当前 summary / metrics 文件已经区分 `academic_metrics` 与 `legacy_metrics`，前者用于论文口径，后者用于兼容旧脚本和旧汇总逻辑。
 - 对 dev 集等带金标场景，当前代码已支持 bootstrap 置信区间；多 seed 复现实验脚本还支持聚合统计和 paired permutation 显著性比较。
 - API 评测场景下，应记录请求模型名与实际返回的 `response_model`；这一点很重要，因为上游 API 别名可能漂移。
 - 自动指标不能替代人工误差分析。当前代码已经保留 error breakdown、hallucination、CoT 一致性与反事实检查，但论文或报告仍应补充人工案例分析。
@@ -71,6 +74,7 @@
 - `run_eval_academic.sh`：批量执行学术口径评测。
 - `run_api_repro_suite.py`：多 seed、多模式 API 复现实验汇总。
 - `run_local_repro_suite.py`：本地 checkpoint 多 seed 复现实验汇总。
+- `run_mini_matrix.py`：在小样本子集上串起 base/full/A1-A7、zeroshot/fewshot 与多 seed 的 mini 对比矩阵。
 - `validate_academic_artifacts.py`：检查评测摘要字段完整性。
 - `build_graph.py`：从 schema 构建事件本体图。
 - `ablation_study.py`：按配置覆盖组织消融实验。

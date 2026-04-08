@@ -119,7 +119,7 @@ def test_build_eval_command_uses_base_only_for_base_and_checkpoint_for_adapters(
         output_file=Path("base.jsonl"),
         batch_size=4,
         canonical_metric_mode="analysis_only",
-        report_primary_metric="strict_f1",
+        report_primary_metric="doc_role_micro_f1",
         model_name_or_path="/models/base",
         checkpoint_path=None,
     )
@@ -138,7 +138,7 @@ def test_build_eval_command_uses_base_only_for_base_and_checkpoint_for_adapters(
         output_file=Path("full.jsonl"),
         batch_size=4,
         canonical_metric_mode="analysis_only",
-        report_primary_metric="strict_f1",
+        report_primary_metric="doc_role_micro_f1",
         model_name_or_path="/models/base",
         checkpoint_path="logs/full",
     )

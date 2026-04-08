@@ -88,6 +88,7 @@ from oglans.data.adapter import DuEEFinAdapter
 from oglans.config import ConfigManager
 from oglans.evaluation import (
     AcademicEventEvaluator,
+    build_primary_metric_map,
     print_metrics_report,
 )
 from oglans.utils.json_parser import (
@@ -100,6 +101,7 @@ from oglans.data.prompt_builder import (
     ChinesePromptBuilder,
     PROMPT_BUILDER_VERSION,
     build_inference_prompt_payload,
+    resolve_prompt_settings,
 )
 from oglans.inference.cat_lite import apply_cat_lite_pipeline, perturb_text_for_counterfactual
 from oglans.utils.academic_eval import bootstrap_confidence_intervals
@@ -356,6 +358,7 @@ def compute_sample_metric_row(
     gold_relaxed = evaluator.extract_triplets_relaxed(gold_events)
     pred_types = evaluator.extract_event_types(pred_events)
     gold_types = evaluator.extract_event_types(gold_events)
+    doc_sample = evaluator._compute_doc_ee_sample_stats(pred_events, gold_events)
     return {
         "strict_tp": len(pred_strict & gold_strict),
         "strict_pred_total": len(pred_strict),
@@ -366,6 +369,18 @@ def compute_sample_metric_row(
         "type_tp": len(pred_types & gold_types),
         "type_pred_total": len(pred_types),
         "type_gold_total": len(gold_types),
+        "doc_role_tp": doc_sample["overall"][0],
+        "doc_role_pred_total": doc_sample["overall"][0] + doc_sample["overall"][1],
+        "doc_role_gold_total": doc_sample["overall"][0] + doc_sample["overall"][2],
+        "doc_event_type_tp": doc_sample["classification"][0],
+        "doc_event_type_pred_total": doc_sample["classification"][0] + doc_sample["classification"][1],
+        "doc_event_type_gold_total": doc_sample["classification"][0] + doc_sample["classification"][2],
+        "doc_instance_tp": doc_sample["instance"][0],
+        "doc_instance_pred_total": doc_sample["instance"][0] + doc_sample["instance"][1],
+        "doc_instance_gold_total": doc_sample["instance"][0] + doc_sample["instance"][2],
+        "doc_combination_tp": doc_sample["combination"][0],
+        "doc_combination_pred_total": doc_sample["combination"][0] + doc_sample["combination"][1],
+        "doc_combination_gold_total": doc_sample["combination"][0] + doc_sample["combination"][2],
     }
 
 
@@ -538,7 +553,25 @@ def main():
         help="是否计算 bootstrap 置信区间（默认开启）"
     )
     # 【新增参数】
-    parser.add_argument("--use_fewshot", action="store_true", help="使用 Few-shot 示例增强基线性能")
+    parser.add_argument(
+        "--use_fewshot",
+        action="store_true",
+        default=None,
+        help="兼容旧参数名：等价于 --prompt_variant fewshot",
+    )
+    parser.add_argument(
+        "--prompt_variant",
+        type=str,
+        default=None,
+        choices=["zeroshot", "fewshot"],
+        help="推理 prompt 模式（默认 zeroshot）",
+    )
+    parser.add_argument(
+        "--fewshot_num_examples",
+        type=int,
+        default=None,
+        help="few-shot 示例数（默认读取 api_evaluation.fewshot_num_examples）",
+    )
     parser.add_argument(
         "--cot_eval_mode",
         type=str,
@@ -563,7 +596,7 @@ def main():
 
     api_cfg = config.get('api_evaluation', {})
     protocol_eval = protocol.get("evaluation", {}) if isinstance(protocol, dict) else {}
-    protocol_primary_metric = str(protocol.get("primary_metric", "strict_f1"))
+    protocol_primary_metric = str(protocol.get("primary_metric", "doc_role_micro_f1"))
     if args.report_primary_metric is None:
         args.report_primary_metric = protocol_primary_metric
     args.report_primary_metric = validate_primary_metric(args.report_primary_metric)
@@ -580,6 +613,16 @@ def main():
         args.pipeline_mode = str(config.get("inference", {}).get("pipeline_mode", "e2e"))
     if args.pipeline_mode not in {"e2e", "cat_lite"}:
         raise ValueError(f"Unsupported pipeline_mode: {args.pipeline_mode}")
+    prompt_settings = resolve_prompt_settings(
+        prompt_variant=args.prompt_variant,
+        fewshot_num_examples=args.fewshot_num_examples,
+        use_oneshot=args.use_fewshot,
+        default_prompt_variant=str(comparison_cfg.get("prompt_variant", "zeroshot")),
+        default_num_examples=int(api_cfg.get("fewshot_num_examples", 3)),
+    )
+    prompt_variant = prompt_settings["prompt_variant"]
+    use_fewshot = bool(prompt_settings["use_oneshot"])
+    fewshot_num_examples = int(prompt_settings["fewshot_num_examples"])
     metric_settings.setdefault("cot", {})
     metric_settings["cot"]["eval_mode"] = args.cot_eval_mode
 
@@ -628,7 +671,7 @@ def main():
     eval_api_root = infer_eval_api_root(config, dataset_name)
     dataset_name_lower = dataset_name.lower().replace("-", "_")
     model_name = args.model or api_cfg.get('model', 'deepseek-chat')
-    shot_tag = "fewshot" if args.use_fewshot else "zeroshot"
+    shot_tag = prompt_variant
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_{args.split}_seed{args.seed}_{shot_tag}_{sanitize_tag(model_name)}_p{os.getpid()}"
     run_dir = os.path.join(eval_api_root, run_id)
@@ -693,6 +736,10 @@ def main():
             f"无法加载 split={args.split} 的数据文件，请检查路径: {data_dir}"
         ) from exc
     valid_event_types = set(adapter.get_event_types())
+    role_order_by_event = {
+        etype: list(roles or [])
+        for etype, roles in getattr(adapter, "schema", {}).items()
+    } if hasattr(adapter, "schema") else None
     valid_roles_by_event = {
         etype: set(roles or [])
         for etype, roles in getattr(adapter, "schema", {}).items()
@@ -740,11 +787,10 @@ def main():
     counterfactual_api_calls = 0
     parse_stats = {"success": 0, "failure": 0}
 
-    print(f"🚀 Starting API Evaluation (Mode: {'Few-shot' if args.use_fewshot else 'Zero-shot'})")
+    print(f"🚀 Starting API Evaluation (Mode: {'Few-shot' if use_fewshot else 'Zero-shot'})")
 
     # ThreadPool Execution
     max_retries = api_cfg.get('max_retries', 3)
-    fewshot_num_examples = int(api_cfg.get('fewshot_num_examples', 3))
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_sample = {
             executor.submit(
@@ -754,7 +800,7 @@ def main():
                 max_retries,
                 idx,
                 sample,
-                args.use_fewshot,
+                use_fewshot,
                 fewshot_num_examples,
                 args.json_mode,
                 prompt_schema,
@@ -782,7 +828,8 @@ def main():
                         parse_success=res["parse_success"],
                         parse_diagnostics=res["parse_diagnostics"],
                         valid_event_types=valid_event_types,
-                        valid_roles_by_event=valid_roles_by_event
+                        valid_roles_by_event=valid_roles_by_event,
+                        role_order_by_event=role_order_by_event,
                     )
                     canonical_pred_events = res["pred_events"]
                     rewrite_count = 0
@@ -801,6 +848,7 @@ def main():
                             parse_diagnostics=res["parse_diagnostics"],
                             valid_event_types=valid_event_types,
                             valid_roles_by_event=valid_roles_by_event,
+                            role_order_by_event=role_order_by_event,
                         )
                         canonical_sample_rows.append(
                             compute_sample_metric_row(
@@ -824,7 +872,8 @@ def main():
                         cf_payload = build_inference_prompt_payload(
                             text=perturbed_text,
                             schema=prompt_schema,
-                            use_oneshot=args.use_fewshot,
+                            prompt_variant=prompt_variant,
+                            use_oneshot=use_fewshot,
                             num_examples=fewshot_num_examples,
                         )
                         cf_messages = cf_payload["messages"]
@@ -909,6 +958,8 @@ def main():
             eval_mode="both",
         )
         metrics_dict = asdict(report)
+        primary_metric_values = build_primary_metric_map(report)
+        metrics_dict.update(primary_metric_values)
         metrics_dict["parse_error_rate"] = round(report.parse_error_rate, 4)
         metrics_dict["parse_success"] = parse_stats["success"]
         metrics_dict["parse_failure"] = parse_stats["failure"]
@@ -916,9 +967,30 @@ def main():
             parse_stats["success"] / len(samples) if samples else 0.0,
             4,
         )
+        metrics_dict["legacy_metrics"] = {
+            "strict_f1": report.strict_f1,
+            "relaxed_f1": report.relaxed_f1,
+            "type_f1": report.type_f1,
+            "parse_error_rate": round(report.parse_error_rate, 4),
+            "parse_success_rate": round(
+                parse_stats["success"] / len(samples) if samples else 0.0,
+                4,
+            ),
+            "hallucination_rate": report.hallucination_rate,
+            "schema_compliance_rate": report.schema_compliance_rate,
+        }
+        metrics_dict["academic_metrics"] = {
+            "doc_ee": report.doc_ee,
+            "ee_text_proxy": report.ee_text_proxy,
+            "primary_metric": args.report_primary_metric,
+            "primary_metric_value": resolve_primary_metric_value(
+                primary_metric_values,
+                args.report_primary_metric,
+            ),
+        }
         metrics_dict["primary_metric"] = args.report_primary_metric
         metrics_dict["primary_metric_value"] = resolve_primary_metric_value(
-            metrics_dict,
+            primary_metric_values,
             args.report_primary_metric,
         )
 
@@ -997,7 +1069,7 @@ def main():
     prompt_schema_block = ChinesePromptBuilder.build_schema_constraints(prompt_schema)
     selected_fewshot_examples = (
         ChinesePromptBuilder.select_fewshot_examples(num_examples=fewshot_num_examples)
-        if args.use_fewshot
+        if use_fewshot
         else []
     )
     prompt_hashes = {
@@ -1005,7 +1077,7 @@ def main():
         "schema_constraints_sha256": hash_text(prompt_schema_block) if prompt_schema_block else None,
         "fewshot_example_indices": (
             list(range(min(fewshot_num_examples, len(ChinesePromptBuilder.FEW_SHOT_EXAMPLES))))
-            if args.use_fewshot else []
+            if use_fewshot else []
         ),
         "fewshot_examples_sha256": (
             [
@@ -1015,7 +1087,7 @@ def main():
                 }
                 for ex in selected_fewshot_examples
             ]
-            if args.use_fewshot else []
+            if use_fewshot else []
         ),
     }
     protocol_hash = compute_file_hash(args.protocol)
@@ -1033,8 +1105,8 @@ def main():
             "split": args.split,
             "concurrency": args.concurrency,
             "has_gold_labels": has_gold_labels,
-            "use_fewshot": args.use_fewshot,
-            "fewshot_num_examples": fewshot_num_examples if args.use_fewshot else 0,
+            "use_fewshot": use_fewshot,
+            "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
             "prompt_style": "profile_contract",
             "json_mode": args.json_mode,
             "cot_eval_mode": args.cot_eval_mode,
@@ -1071,7 +1143,7 @@ def main():
             "decode_mode": "api_temperature_0",
             "seed_effective": False,
             "prompt_hashes": prompt_hashes,
-            "prompt_variant": "fewshot" if args.use_fewshot else "zeroshot",
+            "prompt_variant": prompt_variant,
             "prompt_builder_version": str(comparison_cfg.get("prompt_builder_version", PROMPT_BUILDER_VERSION)),
             "parser_version": str(comparison_cfg.get("parser_version", PARSER_VERSION)),
             "normalization_version": str(comparison_cfg.get("normalization_version", NORMALIZATION_VERSION)),
