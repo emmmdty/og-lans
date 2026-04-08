@@ -15,7 +15,7 @@
 | 本地评测 | 已实现 | `evaluate.py` 支持 strict/relaxed/type 指标、解析诊断、schema compliance、hallucination、CoT 一致性、CAT-lite 与反事实扰动评估 | 补充统一的结果汇总模板和更明确的论文表格导出约束 |
 | API 基线评测 | 已实现 | `evaluate_api.py` 支持 DeepSeek/OpenAI 兼容接口、并发请求、重试、usage 统计、运行清单与 dev 集 bootstrap 统计 | 增加对更多供应商别名、成本汇总和结果缓存策略的约束 |
 | 实验脚本 | 已实现 | `scripts/` 下已有训练包装、base 模型评测、API 评测、学术汇总、local/API reproducibility suite、图构建、消融实验和产物校验脚本 | 增加统一 CLI 文档、示例输出以及 CI 级 smoke tests |
-| 测试支撑 | 已实现但当前环境未验证 | `tests/` 下已有 29 个 pytest 文件，覆盖配置、路径推断、LANS、SCV、JSON 解析、评测语义、脚本包装和复现实验工具 | 建立固定依赖环境并接入 CI，让“仓库中有测试”转化为“持续可运行的测试” |
+| 测试支撑 | 已实现且当前环境已验证 | `tests/` 下当前有 35 个 `test_*.py` 文件，覆盖配置、路径推断、LANS、SCV、JSON 解析、评测语义、脚本包装、复现实验工具以及部分 Phase 3 后处理逻辑；当前可在 `uv` 环境下跑通 `uv run pytest` | 建立 CI，把“当前可运行”进一步提升为“持续自动验证” |
 
 ## 3. 当前工程边界
 
@@ -29,8 +29,8 @@
 但它也仍然有明确边界：
 
 - 当前没有仓库级 `README.md`，对外入口仍偏工程内使用。
-- 当前没有 `requirements.txt` 或 lockfile，依赖安装主要依赖 `pyproject.toml`。
-- 当前环境未安装 `pytest`，因此本次整理只能确认测试文件存在，不能声称全量通过。
+- 当前没有 `requirements.txt`，但仓库已经包含 `uv.lock`，因此实际依赖安装不再只是“裸 `pyproject.toml`”状态。
+- 当前仓库可在 `uv sync --extra dev` 后直接运行 `uv run pytest`；CPU-only 环境下仍会跳过一部分 GPU/集成测试。
 - 许多能力依赖较重的可选环境，包括 `unsloth`、`trl`、`transformers`、`networkx`、`openai` 和外部 API 凭证。
 
 ## 4. 已实现但需要弱化表述的部分
@@ -40,6 +40,7 @@
 - `RPO` 相关逻辑存在，但 `configs/config.yaml` 中 `training.rpo.alpha` 默认为 `0.0`，注释也明确表示主线默认关闭。
 - `LANSDataCollator` 在 `src/oglans/trainer/unsloth_trainer.py` 中被标为 `Legacy`，当前默认训练路径并不依赖它。
 - `SCV` 长文档滑窗参数在配置里有预留注释，但目前主实现仍以代码内逻辑为主。
+- 训练与推理主契约已经收敛为“纯 JSON 输出”；CoT 一致性检查目前属于评测侧分析能力，而不是默认训练输出格式。
 - `experiment` 区域包含一些“预留扩展”字段，不能当作已完成功能写入对外文档。
 - `scripts/ablation_study.py`、`run_*_repro_suite.py` 等脚本说明仓库已支持实验编排，但并不等于已经附带完整论文结果。
 
@@ -80,7 +81,7 @@
 如果后续继续完善仓库，优先级最高的不是继续堆叠算法名词，而是补齐工程基础设施：
 
 1. 增加仓库级 `README.md`，明确安装、数据准备、训练、评测和结果目录。
-2. 固化依赖安装方式，例如 lockfile、`requirements-dev.txt` 或 CI 环境文件。
+2. 继续围绕 `uv.lock` 固化依赖环境，并补齐 CI 环境文件或最小安装说明。
 3. 在可复现环境中跑通并记录测试结果，最好接入自动化 CI。
 4. 为训练、评测、复现实验提供最小可运行示例和示例产物。
 5. 对论文口径与工程口径做分层，避免配置注释里的“publication ready”误导真实成熟度判断。

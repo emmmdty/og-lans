@@ -86,6 +86,10 @@ load_dotenv_file()
 
 from oglans.data.adapter import DuEEFinAdapter
 from oglans.config import ConfigManager
+from oglans.evaluation import (
+    AcademicEventEvaluator,
+    print_metrics_report,
+)
 from oglans.utils.json_parser import (
     NORMALIZATION_VERSION,
     PARSER_VERSION,
@@ -112,8 +116,6 @@ from oglans.utils.eval_protocol import (
     load_role_alias_map as shared_load_role_alias_map,
     canonicalize_pred_roles as shared_canonicalize_pred_roles,
 )
-# 引用 evaluate.py 中的 Evaluator
-from evaluate import AcademicEventEvaluator, print_metrics_report
 
 # 日志设置保持不变
 logging.getLogger("httpx").setLevel(logging.WARNING)

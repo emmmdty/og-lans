@@ -21,6 +21,9 @@ def test_evaluation_entrypoints_delegate_to_shared_compare_layers():
     assert "ConfigManager" in evaluate_api_text
     assert "DEFAULT_EVAL_PROTOCOL" not in evaluate_api_text
     assert "yaml.safe_load(f)" not in evaluate_api_text
+    assert "from evaluate import AcademicEventEvaluator" not in evaluate_api_text
+    assert "from oglans.evaluation import (" in evaluate_text
+    assert "from oglans.evaluation import (" in evaluate_api_text
 
 
 def test_checkpoint_evaluation_no_longer_uses_eval_local_task_name():

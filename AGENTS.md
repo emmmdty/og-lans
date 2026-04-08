@@ -21,40 +21,41 @@
 - `src/oglans/trainer/`：Unsloth 偏好训练与 plain SFT 基线封装。
 - `src/oglans/inference/`：CAT-lite 过滤与反事实扰动等推理后处理。
 - `src/oglans/utils/`：LANS、SCV、JSON 解析、评测协议、运行清单、路径推断、模型下载运行时等工具。
-- `configs/`：当前存在 `config.yaml`、`config_debug.yaml`、`config_compare_base.yaml`、`config_plain_sft.yaml`、`eval_protocol.yaml`、`role_aliases_duee_fin.yaml`。
+- `configs/`：当前存在 `config.yaml`、`config_debug.yaml`、`config_compare_base.yaml`、`config_plain_sft.yaml`、`config_phase3_mvp.yaml`、`eval_protocol.yaml`、`role_aliases_duee_fin.yaml`。
 - `main.py`：训练入口。
 - `evaluate.py`：本地模型与 checkpoint 评测入口。
 - `evaluate_api.py`：外部 API 模型评测入口。
 - `scripts/`：训练、评测、复现实验、图构建、消融实验和产物校验脚本。
-- `tests/`：pytest 测试集；当前有 29 个 `test_*.py` 文件。
+- `tests/`：pytest 测试集；当前有 35 个 `test_*.py` 文件。
 - `data/raw/DuEE-Fin/`：当前仓库内实际使用的数据与 schema。
 - `logs/`：训练、评测和实验产物输出根目录。
 
 ## 常用命令
 
-- `pip install -e .`：安装项目运行依赖。
-- `pip install -e '.[dev]'`：安装开发与测试依赖；在 `zsh` 下请保留引号，避免被 glob 展开。
-- `python main.py --config configs/config.yaml --data_dir ./data/raw/DuEE-Fin`：运行主训练流程。
+- `uv sync`：安装项目运行依赖。
+- `uv sync --extra dev`：安装开发与测试依赖。
+- `uv run python main.py --config configs/config.yaml --data_dir ./data/raw/DuEE-Fin`：运行主训练流程。
 - `bash scripts/run_train.sh --data_dir ./data/raw/DuEE-Fin`：通过 shell wrapper 启动训练。
-- `python evaluate.py --config configs/config.yaml --checkpoint logs/DuEE-Fin/checkpoints/<exp> --output_file logs/DuEE-Fin/eval_checkpoint/<run_id>/eval_results.jsonl`：评测本地 checkpoint。
+- `uv run python evaluate.py --config configs/config.yaml --checkpoint logs/DuEE-Fin/checkpoints/<exp> --output_file logs/DuEE-Fin/eval_checkpoint/<run_id>/eval_results.jsonl`：评测本地 checkpoint。
 - `bash scripts/run_eval_base.sh --model-name <model_or_path> --config configs/config.yaml`：评测本地基座模型。
-- `python evaluate_api.py --config configs/config.yaml --split dev --model deepseek-chat --concurrency 8`：运行 API 基线评测。
-- `python scripts/run_api_repro_suite.py --config configs/config.yaml --split dev --seeds 3407,3408,3409`：汇总 API 多 seed 复现实验。
-- `python scripts/run_local_repro_suite.py --config configs/config.yaml --base-model Qwen/Qwen3-4B-Instruct-2507 --split dev --checkpoints full=logs/DuEE-Fin/checkpoints/exp1`：汇总本地基座模型与 checkpoint 的多 seed 复现实验。
-- `python scripts/ablation_study.py --config configs/config.yaml --experiments A1,A2`：运行指定消融实验。
+- `uv run python evaluate_api.py --config configs/config.yaml --split dev --model deepseek-chat --concurrency 8`：运行 API 基线评测。
+- `uv run python scripts/run_api_repro_suite.py --config configs/config.yaml --split dev --seeds 3407,3408,3409`：汇总 API 多 seed 复现实验。
+- `uv run python scripts/run_local_repro_suite.py --config configs/config.yaml --base-model Qwen/Qwen3-4B-Instruct-2507 --split dev --checkpoints full=logs/DuEE-Fin/checkpoints/exp1`：汇总本地基座模型与 checkpoint 的多 seed 复现实验。
+- `uv run python scripts/ablation_study.py --config configs/config.yaml --experiments A1,A2`：运行指定消融实验。
 - `bash scripts/run_eval_api.sh --preflight`：检查 API 评测运行前置条件。
 - `bash scripts/run_eval_academic.sh --help`：查看多 seed 学术口径评测入口。
-- `python scripts/build_graph.py --dataset_name DuEE-Fin`：从 schema 构建本体图缓存。
-- `python scripts/resolve_config_context.py --config configs/config.yaml`：输出 shell wrapper 可复用的配置上下文。
-- `python scripts/validate_academic_artifacts.py --summary <summary.json>`：校验学术汇总字段完整性。
-- `python -m pytest`：运行测试。
+- `uv run python scripts/build_graph.py --dataset_name DuEE-Fin`：从 schema 构建本体图缓存。
+- `uv run python scripts/resolve_config_context.py --config configs/config.yaml`：输出 shell wrapper 可复用的配置上下文。
+- `uv run python scripts/validate_academic_artifacts.py --summary <summary.json>`：校验学术汇总字段完整性。
+- `uv run pytest`：运行测试。
 
 说明：
 
 - 当前仓库没有 `requirements.txt`，依赖安装以 `pyproject.toml` 为准。
+- 当前仓库已包含 `uv.lock`，优先使用 `uv sync` / `uv run`。
 - 当前仓库也没有 `README.md`；对仓库的结构理解请以本文件和三份核心文档为准。
 - `pyproject.toml` 当前仍引用了缺失的 `README.md` 作为打包元数据；如果后续处理打包或发布，需要同步修正。
-- 若当前环境未安装 dev 依赖，`python -m pytest` 会直接失败。
+- 若当前环境未安装 dev 依赖，`uv run pytest` 或 `python -m pytest` 都会直接失败。
 - API 评测默认依赖根目录 `.env` 或外部环境变量中的 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`。
 
 ## 编码与测试约定

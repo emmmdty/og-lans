@@ -1,5 +1,5 @@
 # ==============================================================================
-# RA-DPO Config v3.1 (2026 Final - RTX 4090 Optimized)
+# OG-LANS Debug Config v3.1
 # 
 # 审查修订记录:
 # - v2.1: 删除僵尸参数，统一预热机制，校准超参数
@@ -197,9 +197,6 @@ inference:
   do_sample: true                       # 推理时开启采样
   
   # 【新增】推理时思考控制
-  enable_thinking: true                 # 是否生成 CoT
-  thinking_budget: null                 # null = 不限制思考长度
-
 evaluation:
   mode: "scored"
 

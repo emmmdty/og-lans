@@ -78,3 +78,47 @@ def test_prompt_builder_contract_requires_plain_json_output():
     assert "<thought>" not in prompt_builder_text
     assert "```json" not in prompt_builder_text
     assert "严格输出 JSON 数组" in prompt_builder_text
+
+
+def test_config_rejects_deprecated_comparison_thinking_flags(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "project": {"seed": 3407},
+                "model": {
+                    "base_model": "Qwen/Qwen3-4B-Instruct-2507",
+                    "profile": "qwen3_instruct",
+                    "source": "modelscope",
+                },
+                "training": {"mode": "preference"},
+                "algorithms": {
+                    "lans": {"enabled": True},
+                    "scv": {"enabled": True},
+                },
+                "comparison": {
+                    "eval_protocol_path": "./configs/eval_protocol.yaml",
+                    "role_alias_map_path": "./configs/role_aliases_duee_fin.yaml",
+                    "prompt_builder_version": "phase3_mvp_v1",
+                    "parser_version": "phase3_mvp_v1",
+                    "normalization_version": "phase3_mvp_v1",
+                    "enable_thinking": True,
+                    "thinking_budget": 128,
+                },
+                "evaluation": {"mode": "scored"},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="comparison\\.(enable_thinking|thinking_budget)"):
+        ConfigManager.load_config(str(config_path))
+
+
+def test_gpu_smoke_test_contract_no_longer_expects_markdown_json():
+    repo_root = Path(__file__).resolve().parents[1]
+    smoke_test_text = (repo_root / "tests" / "test_inference.py").read_text(encoding="utf-8")
+
+    assert "```json" not in smoke_test_text

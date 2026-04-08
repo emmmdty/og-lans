@@ -45,10 +45,11 @@ def test_base_inference():
     print("\n[Output]:")
     print(response)
 
-    if "```json" in response and "股份回购" in response:
-        print("\n✅ Base model understands the prompt template.")
+    normalized = response.lstrip()
+    if normalized.startswith("[") and "```" not in response and "股份回购" in response:
+        print("\n✅ Base model follows the plain JSON prompt contract.")
     else:
-        print("\n❌ Base model struggled with the format.")
+        print("\n❌ Base model violated the plain JSON prompt contract.")
 
 
 if __name__ == "__main__":

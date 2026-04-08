@@ -269,3 +269,13 @@ class ConfigManager:
                 "api_evaluation.system_prompt_style is no longer supported. "
                 "Prompt style is determined by model.profile."
             )
+        if cls._get_nested(config, "comparison.enable_thinking") is not None:
+            raise ValueError(
+                "comparison.enable_thinking is no longer supported. "
+                "The current prompt contract requires plain JSON output without hidden reasoning toggles."
+            )
+        if cls._get_nested(config, "comparison.thinking_budget") is not None:
+            raise ValueError(
+                "comparison.thinking_budget is no longer supported. "
+                "The current prompt contract requires plain JSON output without hidden reasoning budgets."
+            )
