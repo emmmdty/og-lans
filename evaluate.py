@@ -103,7 +103,7 @@ def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def parse_args(argv=None):
+def _build_arg_parser():
     parser = argparse.ArgumentParser(description="OG-LANS 评估脚本")
     parser.add_argument("--config", type=str, default="configs/config.yaml", help="配置文件路径")
     parser.add_argument(
@@ -171,7 +171,15 @@ def parse_args(argv=None):
         choices=["auto", "cuda", "cpu"],
         help="推理设备选择（auto/cuda/cpu）",
     )
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_args(argv=None):
+    return _build_arg_parser().parse_args(argv)
+
+
+def parse_args_with_unknown(argv=None):
+    return _build_arg_parser().parse_known_args(argv)
 
 
 def validate_eval_args(args) -> None:
@@ -239,7 +247,7 @@ def resolve_eval_model_path(
     )
 
 
-def main():
+def main(argv=None):
     # 仅在本地评估执行时加载深度学习依赖，避免 API-only 环境的硬依赖问题
     try:
         import numpy as np
@@ -256,10 +264,10 @@ def main():
             "本地模型评估依赖 unsloth。若只需 API 评估，请使用 evaluate_api.py。"
         ) from e
 
-    args = parse_args()
+    args, unknown = parse_args_with_unknown(argv)
     validate_eval_args(args)
     run_start_ts = time.time()
-    cmdline = " ".join(os.sys.argv)
+    cmdline = " ".join(os.sys.argv if argv is None else ["evaluate.py", *argv])
     repo_dir = os.path.dirname(os.path.abspath(__file__))
 
     # 0. 复现性设置
@@ -282,7 +290,7 @@ def main():
         device = "cpu"
 
     # 1. 加载配置（支持 extends 继承与运行时默认值）
-    config = ConfigManager().load_config(args.config)
+    config = ConfigManager().load_config(args.config, unknown)
     evaluation_mode = str(config.get("evaluation", {}).get("mode", "")).strip().lower()
     if evaluation_mode not in {"scored", "prediction_only"}:
         raise ValueError(

@@ -2,7 +2,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -27,6 +27,27 @@ def test_parse_args_supports_base_only_without_checkpoint():
     args = evaluate_module.parse_args(["--base_only"])
     assert args.base_only is True
     assert args.checkpoint is None
+
+
+def test_parse_args_with_unknown_preserves_cli_overrides():
+    args, unknown = evaluate_module.parse_args_with_unknown(
+        [
+            "--checkpoint",
+            "logs/DuEE-Fin/checkpoints/exp1",
+            "--model.source",
+            "local",
+            "--model.base_model",
+            "/tmp/local-model",
+        ]
+    )
+
+    assert args.checkpoint == "logs/DuEE-Fin/checkpoints/exp1"
+    assert unknown == [
+        "--model.source",
+        "local",
+        "--model.base_model",
+        "/tmp/local-model",
+    ]
 
 
 def test_infer_dataset_name_for_eval_prefers_config_when_no_checkpoint():
@@ -99,4 +120,58 @@ def test_resolve_eval_model_path_falls_back_to_config_base_model(monkeypatch):
         "model_name_or_path": "Qwen/Qwen3-4B-Instruct-2507",
         "source": "modelscope",
         "project_root": "/repo",
+    }
+
+
+def test_main_forwards_cli_overrides_to_config_manager(monkeypatch):
+    captured = {}
+
+    def fake_load_config(self, path, overrides=None, validate_semantic=True):
+        captured["path"] = path
+        captured["overrides"] = overrides
+        return {
+            "evaluation": {"mode": "scored"},
+            "model": {"source": "local", "profile": "qwen3_instruct"},
+            "comparison": {},
+            "inference": {},
+            "algorithms": {
+                "ds_cns": {
+                    "taxonomy_path": "./data/raw/DuEE-Fin/duee_fin_event_schema.json"
+                }
+            },
+        }
+
+    class SentinelError(RuntimeError):
+        pass
+
+    def stop_after_config(_profile):
+        raise SentinelError("stop after config load")
+
+    fake_unsloth = ModuleType("unsloth")
+    fake_unsloth.FastLanguageModel = object()
+
+    monkeypatch.setattr(evaluate_module.ConfigManager, "load_config", fake_load_config)
+    monkeypatch.setattr(evaluate_module, "load_local_model_profile", stop_after_config)
+    monkeypatch.setitem(sys.modules, "unsloth", fake_unsloth)
+
+    with pytest.raises(SentinelError, match="stop after config load"):
+        evaluate_module.main(
+            [
+                "--checkpoint",
+                "logs/DuEE-Fin/checkpoints/exp1",
+                "--model.source",
+                "local",
+                "--model.base_model",
+                "/tmp/local-model",
+            ]
+        )
+
+    assert captured == {
+        "path": "configs/config.yaml",
+        "overrides": [
+            "--model.source",
+            "local",
+            "--model.base_model",
+            "/tmp/local-model",
+        ],
     }
