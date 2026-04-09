@@ -5,6 +5,7 @@ from oglans.data.prompt_builder import (
     resolve_prompt_settings,
     validate_prompt_variant,
 )
+import json
 
 
 class DummyTokenizer:
@@ -99,3 +100,41 @@ def test_validate_prompt_variant_rejects_unknown_value():
         assert "Unsupported prompt_variant" in str(exc)
     else:
         raise AssertionError("validate_prompt_variant should reject unknown variants")
+
+
+def test_system_prompt_warns_against_cross_event_role_generalization():
+    prompt = ChinesePromptBuilder.build_system_prompt()
+
+    assert "时间相关 role 也必须与 schema 完全一致" in prompt
+    assert "证券代码仅适用于公司上市事件" in prompt
+    assert "股份回购应使用回购完成时间，不要使用事件时间" in prompt
+    assert "中标应使用披露日期，不要使用披露时间" in prompt
+
+
+def test_fewshot_examples_use_only_schema_valid_roles_for_demonstrated_events():
+    valid_roles = {
+        "被约谈": {"公司名称", "披露时间", "被约谈时间", "约谈机构"},
+        "股份回购": {"回购方", "披露时间", "回购股份数量", "每股交易价格", "占公司总股本比例", "交易金额", "回购完成时间"},
+        "中标": {"中标公司", "中标标的", "中标金额", "招标方", "中标日期", "披露日期"},
+    }
+
+    for example in ChinesePromptBuilder.FEW_SHOT_EXAMPLES:
+        events = json.loads(example["assistant"])
+        for event in events:
+            assert event["event_type"] in valid_roles
+            for argument in event["arguments"]:
+                assert argument["role"] in valid_roles[event["event_type"]]
+
+
+def test_fewshot_examples_include_same_type_multi_record_split_demonstration():
+    examples = ChinesePromptBuilder.select_fewshot_examples(num_examples=3)
+    found_split_demo = False
+
+    for example in examples:
+        events = json.loads(example["assistant"])
+        event_types = [event["event_type"] for event in events]
+        if any(event_types.count(event_type) > 1 for event_type in set(event_types)):
+            found_split_demo = True
+            break
+
+    assert found_split_demo is True

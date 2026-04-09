@@ -83,3 +83,50 @@ def test_resolve_api_runtime_config_falls_back_to_config(monkeypatch):
     assert resolved["model_source"] == "config"
     assert resolved["api_key"] == "config-secret"
     assert resolved["api_key_source"] == "config"
+
+
+def test_resolve_api_runtime_config_prefers_provider_default_model_env(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("DEEPSEEK_DEFAULT_MODEL", "deepseek-reasoner")
+    monkeypatch.setenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+
+    resolved = mod.resolve_api_runtime_config(
+        base_url_override=None,
+        model_override=None,
+        api_cfg={
+            "base_url": None,
+            "model": "config-model",
+            "api_key": None,
+        },
+        environ=os.environ,
+    )
+
+    assert resolved["base_url"] == "https://api.deepseek.com"
+    assert resolved["base_url_source"] == "env:DEEPSEEK_BASE_URL"
+    assert resolved["model_name"] == "deepseek-reasoner"
+    assert resolved["model_source"] == "env:DEEPSEEK_DEFAULT_MODEL"
+
+
+def test_resolve_api_runtime_config_prefers_openai_default_model_for_openai_endpoint(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://provider.openai.example/v1")
+    monkeypatch.setenv("DEEPSEEK_DEFAULT_MODEL", "deepseek-chat")
+    monkeypatch.setenv("OPENAI_DEFAULT_MODEL", "gpt-4.1")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+
+    resolved = mod.resolve_api_runtime_config(
+        base_url_override=None,
+        model_override=None,
+        api_cfg={
+            "base_url": None,
+            "model": "config-model",
+            "api_key": None,
+        },
+        environ=os.environ,
+    )
+
+    assert resolved["base_url"] == "https://provider.openai.example/v1"
+    assert resolved["base_url_source"] == "env:OPENAI_BASE_URL"
+    assert resolved["model_name"] == "gpt-4.1"
+    assert resolved["model_source"] == "env:OPENAI_DEFAULT_MODEL"

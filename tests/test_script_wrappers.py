@@ -104,6 +104,14 @@ def test_run_eval_api_wrapper_exposes_base_url_controls():
     assert '--base_url "$BASE_URL"' in text
 
 
+def test_run_eval_api_wrapper_does_not_force_hardcoded_model_override():
+    text = _read_script("run_eval_api.sh")
+
+    assert 'MODEL="deepseek-chat"' not in text
+    assert 'if [[ -n "$MODEL" ]]; then' in text
+    assert 'cmd+=(--model "$MODEL")' in text
+
+
 def test_removed_auxiliary_shell_scripts_are_absent():
     removed = [
         ROOT / "scripts" / "run_debug.sh",

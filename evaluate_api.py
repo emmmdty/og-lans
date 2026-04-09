@@ -266,16 +266,6 @@ def resolve_api_runtime_config(
     """Resolve effective API endpoint/model settings with explicit provenance."""
     env = environ or os.environ
 
-    if model_override:
-        model_name = str(model_override)
-        model_source = "cli"
-    elif api_cfg.get("model"):
-        model_name = str(api_cfg["model"])
-        model_source = "config"
-    else:
-        model_name = "deepseek-chat"
-        model_source = "default"
-
     if base_url_override:
         base_url = str(base_url_override)
         base_url_source = "cli"
@@ -294,6 +284,31 @@ def resolve_api_runtime_config(
 
     base_url_lower = base_url.lower()
     prefer_deepseek_key = "deepseek" in base_url_lower
+    preferred_env_models = (
+        ("DEEPSEEK_DEFAULT_MODEL", "env:DEEPSEEK_DEFAULT_MODEL"),
+        ("OPENAI_DEFAULT_MODEL", "env:OPENAI_DEFAULT_MODEL"),
+    )
+    if not prefer_deepseek_key:
+        preferred_env_models = tuple(reversed(preferred_env_models))
+
+    if model_override:
+        model_name = str(model_override)
+        model_source = "cli"
+    else:
+        model_name = None
+        model_source = None
+        for env_key, source in preferred_env_models:
+            if env.get(env_key):
+                model_name = str(env[env_key])
+                model_source = source
+                break
+        if model_name is None and api_cfg.get("model"):
+            model_name = str(api_cfg["model"])
+            model_source = "config"
+        if model_name is None:
+            model_name = "deepseek-chat"
+            model_source = "default"
+
     preferred_env_keys = (
         ("DEEPSEEK_API_KEY", "env:DEEPSEEK_API_KEY"),
         ("OPENAI_API_KEY", "env:OPENAI_API_KEY"),

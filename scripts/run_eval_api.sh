@@ -44,7 +44,7 @@ ACTION="run"                    # run | preflight | sweep
 CONFIG="configs/config.yaml"
 PROTOCOL="configs/eval_protocol.yaml"
 SPLIT="dev"
-MODEL="deepseek-chat"
+MODEL=""
 BASE_URL=""
 CONCURRENCY="8"
 NUM_SAMPLES=""
@@ -86,7 +86,7 @@ Usage:
   bash scripts/run_eval_api.sh [options]
 
 Default behavior:
-  action=run, split=dev, model=deepseek-chat, concurrency=8, zeroshot
+  action=run, split=dev, model=auto(cli/env/config), concurrency=8, zeroshot
 
 Actions:
   -a, --action <run|preflight|sweep>
@@ -98,7 +98,7 @@ Core options:
   -c, --config <path>          Config path. Default: configs/config.yaml
       --protocol <path>        Eval protocol path. Default: configs/eval_protocol.yaml
   -s, --split <dev|test|train> Dataset split. Default: dev
-  -m, --model <name>           Model name. Default: deepseek-chat
+  -m, --model <name>           Model name. Default: auto(cli/env/config)
       --base-url <url>         Override API base URL
   -j, --concurrency <int>      API concurrency. Default: 8
   -n, --num-samples <int>      Evaluate first N samples
@@ -215,7 +215,6 @@ build_run_cmd() {
     --config "$CONFIG"
     --protocol "$PROTOCOL"
     --split "$SPLIT"
-    --model "$MODEL"
     --concurrency "$CONCURRENCY"
     --json_mode "$JSON_MODE"
     --cot_eval_mode "$COT_EVAL_MODE"
@@ -224,6 +223,9 @@ build_run_cmd() {
     --canonical_metric_mode "$CANONICAL_METRIC_MODE"
   )
 
+  if [[ -n "$MODEL" ]]; then
+    cmd+=(--model "$MODEL")
+  fi
   if [[ -n "$NUM_SAMPLES" ]]; then
     cmd+=(--num_samples "$NUM_SAMPLES")
   fi
