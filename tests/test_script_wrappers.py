@@ -72,6 +72,11 @@ def test_run_train_wrapper_uses_effective_config_helper_for_manifest_provenance(
     assert "load_effective_config_metadata" in text
 
 
+def test_run_train_wrapper_prefers_uv_managed_python():
+    text = _read_script("run_train.sh")
+    assert "uv run python" in text
+
+
 def test_run_train_wrapper_no_longer_hardcodes_gpu_banner():
     text = _read_script("run_train.sh")
     assert "Environment: A6000 (48GB) | CUDA 11.8 | torch 2.6.0" not in text

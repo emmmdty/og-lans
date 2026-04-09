@@ -141,6 +141,19 @@ from ..data.prompt_builder import (
     build_inference_prompt_payload,
     resolve_prompt_settings,
 )
+from ..utils.research_protocol import (
+    DEFAULT_TRAIN_TUNE_RATIO,
+    build_fewshot_example_pool,
+    resolve_stage_settings,
+    select_fewshot_pool_samples,
+)
+from ..utils.run_manifest import compute_file_sha256, compute_json_sha256
+from ..utils.training_protocol import (
+    build_training_cache_metadata,
+    expand_training_samples,
+    select_training_fit_samples,
+    training_cache_metadata_matches,
+)
 import random
 import numpy as np
 from typing import Optional, Dict, Any, List, Union, Tuple, Callable
@@ -963,6 +976,12 @@ class LANSNegativeSampler:
         text = example.get("text", "")
         event_types = example.get("event_types") or []
         prompt = example.get("prompt", "")
+        if bool(example.get("use_precomputed_rejected", False)) or not bool(example.get("lans_eligible", True)):
+            return {
+                "prompt": prompt,
+                "chosen": chosen,
+                "rejected": str(example.get("rejected", "")),
+            }
 
         if self.ds_cns._use_lans:
             strategy = self.ds_cns.get_negative_strategy_adaptive()
@@ -1298,6 +1317,10 @@ class LANSDataCollator:
                 "text": prepared["text"],
                 "event_types": prepared["event_types"],
                 "prompt": prompt_text,
+                "training_stage": prepared.get("training_stage"),
+                "lans_eligible": bool(prepared.get("lans_eligible", True)),
+                "use_precomputed_rejected": bool(prepared.get("use_precomputed_rejected", False)),
+                "rejected": prepared.get("rejected", ""),
             }
 
             # 2. 动态生成 Negative (基于当前 LANS Competence)
@@ -1412,12 +1435,16 @@ class UnslothDPOTrainerWrapper:
     def __init__(self, config: dict, data_samples: list):
         init_start_ts = time.perf_counter()
         self.config = config
-        self.samples = data_samples
+        self.all_training_samples = list(data_samples)
+        self.training_mode = str(self.config.get("training", {}).get("mode", "preference"))
         comparison_cfg = self.config.get("comparison", {})
         self.prompt_settings = resolve_prompt_settings(
             default_prompt_variant=str(comparison_cfg.get("prompt_variant", "zeroshot")),
             default_num_examples=int(comparison_cfg.get("fewshot_num_examples", 3)),
         )
+        self.stage_settings = resolve_stage_settings(comparison_cfg=comparison_cfg)
+        self.train_tune_ratio = float(comparison_cfg.get("train_tune_ratio", DEFAULT_TRAIN_TUNE_RATIO))
+        self.research_split_manifest_path = comparison_cfg.get("research_split_manifest_path")
         self.runtime_stats: Dict[str, Any] = {
             "phase_timings_seconds": {},
         }
@@ -1436,13 +1463,45 @@ class UnslothDPOTrainerWrapper:
             event_type: list(roles)
             for event_type, roles in sorted(self.ds_cns.event_roles.items())
         }
+        self.samples, self.training_split_manifest = select_training_fit_samples(
+            self.all_training_samples,
+            tune_ratio=self.train_tune_ratio,
+            seed=int(self.config["project"]["seed"]),
+            split_manifest=self.research_split_manifest_path,
+        )
+        if self.prompt_settings["use_oneshot"]:
+            self.fewshot_pool_samples, self.fewshot_split_manifest = select_fewshot_pool_samples(
+                self.all_training_samples,
+                pool_split=self.stage_settings["fewshot_pool_split"],
+                tune_ratio=self.train_tune_ratio,
+                seed=int(self.config["project"]["seed"]),
+                split_manifest=self.research_split_manifest_path,
+            )
+            self.fewshot_example_pool = build_fewshot_example_pool(
+                self.fewshot_pool_samples,
+                schema=self.prompt_schema,
+                source_split=self.stage_settings["fewshot_pool_split"],
+            )
+        else:
+            self.fewshot_pool_samples = []
+            self.fewshot_split_manifest = {
+                "seed": int(self.config["project"]["seed"]),
+                "tune_ratio": self.train_tune_ratio,
+                "pool_split": self.stage_settings["fewshot_pool_split"],
+                "fit_ids": [],
+                "tune_ids": [],
+                "fit_count": 0,
+                "tune_count": 0,
+                "manifest_path": self.research_split_manifest_path,
+            }
+            self.fewshot_example_pool = []
         self.runtime_stats["phase_timings_seconds"]["ds_cns_init"] = round(
             time.perf_counter() - ds_cns_start_ts, 4
         )
         
         self.scv_cfg = config.get('algorithms', {}).get('scv', {})
         self.scv = None
-        if config['algorithms']['scv']['enabled']:
+        if config['algorithms']['scv']['enabled'] and self.training_mode == "preference":
             scv_start_ts = time.perf_counter()
             self.scv = SemanticConsistencyVerifier(
                 self.scv_cfg['nli_model'],
@@ -1463,6 +1522,19 @@ class UnslothDPOTrainerWrapper:
         self.lans_sampler = None
         self.lans_dataset = None
         self.lans_runtime_mode = None
+        self.runtime_stats["training_protocol"] = {
+            "stage_mode": self.stage_settings["stage_mode"],
+            "fewshot_selection_mode": self.stage_settings["fewshot_selection_mode"],
+            "fewshot_pool_split": self.stage_settings["fewshot_pool_split"],
+            "train_tune_ratio": self.train_tune_ratio,
+            "research_split_manifest_path": self.research_split_manifest_path,
+            "configured_train_count": len(self.all_training_samples),
+            "effective_train_count": len(self.samples),
+            "fewshot_pool_count": len(self.fewshot_pool_samples),
+            "effective_lans_enabled": False,
+            "effective_scv_enabled": bool(self.scv is not None),
+            "training_stage_breakdown": {},
+        }
         self.runtime_stats["phase_timings_seconds"]["trainer_init"] = round(
             time.perf_counter() - init_start_ts, 4
         )
@@ -1544,12 +1616,64 @@ class UnslothDPOTrainerWrapper:
             use_oneshot=self.prompt_settings["use_oneshot"],
             schema=self.prompt_schema,
             num_examples=self.prompt_settings["fewshot_num_examples"],
+            fewshot_selection_mode=self.stage_settings["fewshot_selection_mode"],
+            fewshot_example_pool=self.fewshot_example_pool,
         )
 
     def _apply_chat_template(self, raw_text: str) -> str:
         """[关键] 应用 Chat Template，统一训练与评估的 prompt 构建"""
         payload = self._build_prompt_payload(raw_text)
         return payload["formatted_text"]
+
+    def _expand_training_samples(self) -> List[Dict[str, Any]]:
+        expanded = expand_training_samples(
+            self.samples,
+            tokenizer=self.tokenizer,
+            schema=self.prompt_schema,
+            stage_mode=self.stage_settings["stage_mode"],
+            prompt_variant=self.prompt_settings["prompt_variant"],
+            fewshot_num_examples=int(self.prompt_settings["fewshot_num_examples"]),
+            fewshot_selection_mode=self.stage_settings["fewshot_selection_mode"],
+            fewshot_example_pool=self.fewshot_example_pool,
+        )
+        stage_counts: Dict[str, int] = {}
+        for item in expanded:
+            stage_name = str(item.get("training_stage", "unknown"))
+            stage_counts[stage_name] = stage_counts.get(stage_name, 0) + 1
+        self.runtime_stats.setdefault("training_protocol", {})
+        self.runtime_stats["training_protocol"]["training_stage_breakdown"] = stage_counts
+        self.runtime_stats["training_protocol"]["expanded_sample_count"] = len(expanded)
+        return expanded
+
+    def _build_expected_cache_metadata(self, *, use_lans: bool) -> Dict[str, Any]:
+        manifest_hash = (
+            compute_file_sha256(self.research_split_manifest_path)
+            if self.research_split_manifest_path and os.path.exists(self.research_split_manifest_path)
+            else compute_json_sha256(self.training_split_manifest)
+        )
+        taxonomy_path = self.config["algorithms"]["ds_cns"].get("taxonomy_path")
+        taxonomy_hash = compute_file_sha256(taxonomy_path) if taxonomy_path and os.path.exists(taxonomy_path) else None
+        return build_training_cache_metadata(
+            dataset_name=str(self.config.get("project", {}).get("name", "DuEE-Fin")),
+            training_mode=str(self.config.get("training", {}).get("mode", "preference")),
+            stage_mode=self.stage_settings["stage_mode"],
+            prompt_variant=self.prompt_settings["prompt_variant"],
+            fewshot_num_examples=int(self.prompt_settings["fewshot_num_examples"]),
+            fewshot_selection_mode=self.stage_settings["fewshot_selection_mode"],
+            fewshot_pool_split=self.stage_settings["fewshot_pool_split"],
+            research_split_manifest_hash=manifest_hash,
+            prompt_builder_version=str(
+                self.config.get("comparison", {}).get("prompt_builder_version", "phase3_mvp_v1")
+            ),
+            parser_version=str(self.config.get("comparison", {}).get("parser_version", "phase3_mvp_v1")),
+            normalization_version=str(
+                self.config.get("comparison", {}).get("normalization_version", "phase3_mvp_v1")
+            ),
+            model_profile=str(self.config.get("model", {}).get("profile", "")),
+            max_seq_length=int(self.config.get("model", {}).get("max_seq_length", 4096)),
+            use_lans=bool(use_lans),
+            taxonomy_hash=taxonomy_hash,
+        )
 
     def _get_preference_sequence_limits(self) -> Tuple[int, int]:
         max_seq_len = int(self.config["model"].get("max_seq_length", 4096))
@@ -1599,6 +1723,14 @@ class UnslothDPOTrainerWrapper:
             extra_fields={
                 "text": sample.get("text", ""),
                 "event_types": sample.get("event_types", []),
+                "training_stage": sample.get("training_stage"),
+                "stage_mode": sample.get("stage_mode"),
+                "fewshot_example_ids": sample.get("fewshot_example_ids", []),
+                "fewshot_selection_mode": sample.get("fewshot_selection_mode", "none"),
+                "fewshot_count": int(sample.get("fewshot_count", 0)),
+                "lans_eligible": bool(sample.get("lans_eligible", True)),
+                "use_precomputed_rejected": bool(sample.get("use_precomputed_rejected", False)),
+                "stage2_schema_event_types": sample.get("stage2_schema_event_types", []),
             },
         )
 
@@ -1669,11 +1801,22 @@ class UnslothDPOTrainerWrapper:
             self._build_tokenized_dpo_record(
                 prompt=sample["prompt"],
                 chosen=sample["chosen"],
-                rejected="",
+                rejected=sample.get("rejected", "") if sample.get("use_precomputed_rejected") else "",
                 require_valid_labels=require_valid_labels,
                 extra_fields={
                     "text": sample.get("text", ""),
                     "event_types": sample.get("event_types", []),
+                    "prompt": sample.get("prompt", ""),
+                    "chosen": sample.get("chosen", ""),
+                    "rejected": sample.get("rejected", ""),
+                    "training_stage": sample.get("training_stage"),
+                    "stage_mode": sample.get("stage_mode"),
+                    "fewshot_example_ids": sample.get("fewshot_example_ids", []),
+                    "fewshot_selection_mode": sample.get("fewshot_selection_mode", "none"),
+                    "fewshot_count": int(sample.get("fewshot_count", 0)),
+                    "lans_eligible": bool(sample.get("lans_eligible", True)),
+                    "use_precomputed_rejected": bool(sample.get("use_precomputed_rejected", False)),
+                    "stage2_schema_event_types": sample.get("stage2_schema_event_types", []),
                 },
             )
             for sample in base_samples
@@ -1696,7 +1839,20 @@ class UnslothDPOTrainerWrapper:
             if all(t in self.ds_cns.graph for t in (s.event_types or [])):
                 verified_samples.append(s)
         self.samples = verified_samples
-        total_steps = len(self.samples)
+        expanded_samples = self._expand_training_samples()
+        eligible_lans_steps = max(
+            1,
+            sum(1 for sample in expanded_samples if bool(sample.get("lans_eligible", True))),
+        )
+        self.runtime_stats.setdefault("training_protocol", {})
+        self.runtime_stats["training_protocol"]["effective_train_count"] = len(self.samples)
+        self.runtime_stats["training_protocol"]["effective_lans_enabled"] = bool(
+            use_lans and any(bool(sample.get("lans_eligible", True)) for sample in expanded_samples)
+        )
+        self.runtime_stats["training_protocol"]["effective_scv_enabled"] = bool(self.scv is not None)
+        self.runtime_stats["training_protocol"]["lans_eligible_count"] = sum(
+            1 for sample in expanded_samples if bool(sample.get("lans_eligible", True))
+        )
         
         if use_lans:
             logger.info("🚀 启用 LANS (在线模式)")
@@ -1755,20 +1911,29 @@ class UnslothDPOTrainerWrapper:
             )
 
             samples_data = []
-            for sample in self.samples:
-                formatted_prompt = self._apply_chat_template(sample.text) # 修复 Loss
+            for sample in expanded_samples:
                 samples_data.append({
-                    "prompt": formatted_prompt,
-                    "chosen": sample.chosen,
-                    "rejected": "",  # 【关键修改】提供空 Rejected，由 LANSDataCollator 动态生成
-                    "text": sample.text,
-                    "event_types": sample.event_types or []
+                    "prompt": sample["prompt"],
+                    "chosen": sample["chosen"],
+                    "rejected": sample.get("rejected", ""),
+                    "text": sample["text"],
+                    "event_types": sample.get("event_types", []),
+                    "training_stage": sample.get("training_stage"),
+                    "stage_mode": sample.get("stage_mode"),
+                    "fewshot_example_ids": sample.get("fewshot_example_ids", []),
+                    "fewshot_selection_mode": sample.get("fewshot_selection_mode", "none"),
+                    "fewshot_count": int(sample.get("fewshot_count", 0)),
+                    "lans_eligible": bool(sample.get("lans_eligible", True)),
+                    "use_precomputed_rejected": bool(sample.get("use_precomputed_rejected", False)),
+                    "stage2_schema_event_types": sample.get("stage2_schema_event_types", []),
                 })
             return samples_data
 
         else:
             logger.info("📦 使用静态课程学习模式")
             cache_dir = os.path.join(self.config['project']['dataset_cache_dir'], "dpo_dataset_cache")
+            cache_meta_path = os.path.join(cache_dir, "cache_meta.json")
+            expected_cache_meta = self._build_expected_cache_metadata(use_lans=False)
             required_cache_columns = {
                 "prompt_input_ids",
                 "prompt_attention_mask",
@@ -1787,12 +1952,17 @@ class UnslothDPOTrainerWrapper:
                 try:
                     cached_dataset = Dataset.load_from_disk(cache_dir)
                     cache_columns = set(getattr(cached_dataset, "column_names", []))
-                    if required_cache_columns.issubset(cache_columns):
+                    cache_meta = None
+                    if os.path.exists(cache_meta_path):
+                        with open(cache_meta_path, "r", encoding="utf-8") as handle:
+                            cache_meta = json.load(handle)
+                    if (
+                        required_cache_columns.issubset(cache_columns)
+                        and training_cache_metadata_matches(expected_cache_meta, cache_meta)
+                    ):
                         logger.info("   ✅ 缓存结构兼容，直接复用")
                         return cached_dataset
-                    logger.warning(
-                        "   ♻️ 检测到旧版静态缓存，缺少显式 DPO labels 字段；将重新生成缓存。"
-                    )
+                    logger.warning("   ♻️ 静态缓存命中但协议不兼容，将重新生成缓存。")
                 except Exception as exc:
                     logger.warning(f"   ♻️ 静态缓存加载失败，将重新生成: {exc}")
                 rebuild_cache = True
@@ -1800,33 +1970,52 @@ class UnslothDPOTrainerWrapper:
             logger.info("   🔧 生成静态数据集...")
             records: List[Dict[str, Any]] = []
             static_samples_log = []  # 记录静态样本用于导出
+            lans_step = 0
             
-            for idx, sample in enumerate(self.samples):
-                formatted_prompt = self._apply_chat_template(sample.text) # 修复 Loss
-                strategy = self.ds_cns.get_negative_strategy(idx, total_steps)
-                neg_json = self.ds_cns.generate_negative_json(sample.chosen, strategy, idx, total_steps)
-                rejected_cot = ChinesePromptBuilder.build_incorrect_cot_response(
-                    neg_json, strategy, sample.event_types
-                )
+            for sample in expanded_samples:
+                if bool(sample.get("use_precomputed_rejected", False)):
+                    strategy = "FIXED_STAGE1"
+                    rejected_cot = str(sample.get("rejected", ""))
+                else:
+                    strategy = self.ds_cns.get_negative_strategy(lans_step, eligible_lans_steps)
+                    neg_json = self.ds_cns.generate_negative_json(
+                        sample["chosen"],
+                        strategy,
+                        lans_step,
+                        eligible_lans_steps,
+                    )
+                    rejected_cot = ChinesePromptBuilder.build_incorrect_cot_response(
+                        neg_json, strategy, sample.get("event_types", [])
+                    )
+                    lans_step += 1
                 records.append(
                     self._build_tokenized_dpo_record(
-                        prompt=formatted_prompt,
-                        chosen=sample.chosen,
+                        prompt=sample["prompt"],
+                        chosen=sample["chosen"],
                         rejected=rejected_cot,
                         require_valid_labels=self._rpo_requires_valid_labels(),
                         extra_fields={
-                            "text": sample.text,
-                            "event_types": sample.event_types or [],
+                            "text": sample["text"],
+                            "event_types": sample.get("event_types", []),
+                            "training_stage": sample.get("training_stage"),
+                            "stage_mode": sample.get("stage_mode"),
+                            "fewshot_example_ids": sample.get("fewshot_example_ids", []),
+                            "fewshot_selection_mode": sample.get("fewshot_selection_mode", "none"),
+                            "fewshot_count": int(sample.get("fewshot_count", 0)),
+                            "lans_eligible": bool(sample.get("lans_eligible", True)),
+                            "use_precomputed_rejected": bool(sample.get("use_precomputed_rejected", False)),
+                            "stage2_schema_event_types": sample.get("stage2_schema_event_types", []),
                         },
                     )
                 )
                 
                 # 记录用于导出
                 static_samples_log.append({
-                    "sample_id": idx,
+                    "sample_id": sample.get("sample_id"),
+                    "training_stage": sample.get("training_stage"),
                     "strategy": strategy,
-                    "prompt_preview": formatted_prompt[:200],
-                    "chosen_preview": sample.chosen[:300],
+                    "prompt_preview": sample["prompt"][:200],
+                    "chosen_preview": sample["chosen"][:300],
                     "rejected_preview": rejected_cot[:300]
                 })
             
@@ -1837,6 +2026,8 @@ class UnslothDPOTrainerWrapper:
                 shutil.rmtree(cache_dir, ignore_errors=True)
             os.makedirs(cache_dir, exist_ok=True)
             dataset.save_to_disk(cache_dir)
+            with open(cache_meta_path, "w", encoding="utf-8") as handle:
+                json.dump(expected_cache_meta, handle, ensure_ascii=False, indent=2)
             logger.info(f"   💾 数据集已缓存: {cache_dir}")
             
             # 导出静态样本日志
@@ -2136,13 +2327,18 @@ class UnslothSFTTrainerWrapper(UnslothDPOTrainerWrapper):
             if all(t in self.ds_cns.graph for t in (s.event_types or [])):
                 verified_samples.append(s)
         self.samples = verified_samples
+        expanded_samples = self._expand_training_samples()
+        self.runtime_stats.setdefault("training_protocol", {})
+        self.runtime_stats["training_protocol"]["effective_train_count"] = len(self.samples)
+        self.runtime_stats["training_protocol"]["effective_lans_enabled"] = False
+        self.runtime_stats["training_protocol"]["effective_scv_enabled"] = False
 
         max_seq_length = int(self.config['model']['max_seq_length'])
         samples_data: List[Dict[str, Any]] = []
-        for sample in self.samples:
-            payload = self._build_prompt_payload(sample.text)
-            prompt_text = payload["formatted_text"] or self._apply_chat_template(sample.text)
-            full_text = self._build_sft_training_text(payload["messages"], sample.chosen)
+        for sample in expanded_samples:
+            prompt_messages = list(sample.get("messages", []))
+            prompt_text = str(sample.get("prompt", ""))
+            full_text = self._build_sft_training_text(prompt_messages, str(sample.get("chosen", "")))
 
             prompt_tokens = self.tokenizer(
                 prompt_text,

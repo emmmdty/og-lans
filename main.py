@@ -48,6 +48,37 @@ from oglans.data import DuEEFinAdapter
 from oglans.trainer import UnslothDPOTrainerWrapper, UnslothSFTTrainerWrapper
 from oglans.config import ConfigManager
 from oglans.utils.pathing import normalize_dataset_name, resolve_schema_path
+try:
+    from oglans.utils.research_protocol import resolve_stage_settings
+except Exception:  # pragma: no cover - compatibility for tests stubbing utils package
+    def resolve_stage_settings(*, comparison_cfg: dict | None = None, **_: object) -> dict:
+        cfg = dict(comparison_cfg or {})
+        return {
+            "stage_mode": str(cfg.get("stage_mode", "single_pass")),
+            "fewshot_selection_mode": str(cfg.get("fewshot_selection_mode", "dynamic")),
+            "fewshot_pool_split": str(cfg.get("fewshot_pool_split", "train_fit")),
+        }
+
+try:
+    from oglans.utils.training_protocol import select_training_fit_samples
+except Exception:  # pragma: no cover - compatibility for tests stubbing utils package
+    def select_training_fit_samples(
+        samples,
+        *,
+        tune_ratio: float = 0.1,
+        seed: int = 3407,
+        split_manifest=None,
+    ):
+        del tune_ratio, seed, split_manifest
+        return list(samples), {
+            "seed": 3407,
+            "tune_ratio": 0.1,
+            "fit_ids": [],
+            "tune_ids": [],
+            "fit_count": len(samples),
+            "tune_count": 0,
+            "pool_split": "train_fit",
+        }
 from oglans.data.prompt_builder import (
     PROMPT_BUILDER_VERSION,
     build_inference_prompt_payload,
@@ -223,6 +254,30 @@ def main():
             return None
         return compute_file_sha256(path)
 
+    configured_lans_enabled = bool(config.get("algorithms", {}).get("lans", {}).get("enabled", True))
+    configured_scv_enabled = bool(config.get("algorithms", {}).get("scv", {}).get("enabled", False))
+    stage_settings = resolve_stage_settings(comparison_cfg=comparison_cfg)
+    train_tune_ratio = float(comparison_cfg.get("train_tune_ratio", 0.1))
+    research_split_manifest_path = comparison_cfg.get("research_split_manifest_path")
+    effective_train_samples, training_split_manifest = select_training_fit_samples(
+        samples,
+        tune_ratio=train_tune_ratio,
+        seed=int(seed),
+        split_manifest=research_split_manifest_path,
+    )
+    training_split_manifest_hash = (
+        optional_file_sha256(research_split_manifest_path)
+        if research_split_manifest_path
+        else compute_json_sha256(training_split_manifest)
+    )
+    logger.info(
+        "🧪 Training protocol: stage_mode=%s, pool_split=%s, train_fit=%s/%s",
+        stage_settings["stage_mode"],
+        stage_settings["fewshot_pool_split"],
+        len(effective_train_samples),
+        len(samples),
+    )
+
     protocol_path = comparison_cfg.get("eval_protocol_path")
     role_alias_path = comparison_cfg.get("role_alias_map_path")
     prompt_settings = resolve_prompt_settings(
@@ -244,7 +299,7 @@ def main():
             schema=getattr(trainer, "prompt_schema", None),
             num_examples=int(prompt_settings["fewshot_num_examples"]),
         )
-        trainer.train()
+        trainer.train(use_lans=configured_lans_enabled)
         manifest_status = "completed"
     except Exception as e:
         error_message = str(e)
@@ -278,7 +333,49 @@ def main():
                 "eval_protocol_hash": optional_file_sha256(protocol_path),
                 "role_alias_path": os.path.abspath(role_alias_path) if role_alias_path else None,
                 "role_alias_hash": optional_file_sha256(role_alias_path),
-                "prompt_variant": prompt_payload.get("prompt_variant") if prompt_payload else prompt_variant,
+                "prompt_variant": (
+                    prompt_payload.get("prompt_variant")
+                    if prompt_payload
+                    else prompt_settings["prompt_variant"]
+                ),
+                "stage_mode": trainer_runtime_stats.get("training_protocol", {}).get(
+                    "stage_mode",
+                    stage_settings["stage_mode"],
+                ),
+                "fewshot_selection_mode": trainer_runtime_stats.get("training_protocol", {}).get(
+                    "fewshot_selection_mode",
+                    stage_settings["fewshot_selection_mode"],
+                ),
+                "fewshot_pool_split": trainer_runtime_stats.get("training_protocol", {}).get(
+                    "fewshot_pool_split",
+                    stage_settings["fewshot_pool_split"],
+                ),
+                "train_tune_ratio": train_tune_ratio,
+                "research_split_manifest_path": (
+                    os.path.abspath(research_split_manifest_path)
+                    if research_split_manifest_path
+                    else None
+                ),
+                "research_split_manifest_hash": training_split_manifest_hash,
+                "configured_train_count": len(samples),
+                "effective_train_count": trainer_runtime_stats.get("training_protocol", {}).get(
+                    "effective_train_count",
+                    len(effective_train_samples),
+                ),
+                "training_stage_breakdown": trainer_runtime_stats.get("training_protocol", {}).get(
+                    "training_stage_breakdown",
+                    {},
+                ),
+                "configured_lans_enabled": configured_lans_enabled,
+                "effective_lans_enabled": trainer_runtime_stats.get("training_protocol", {}).get(
+                    "effective_lans_enabled",
+                    configured_lans_enabled and training_mode == "preference",
+                ),
+                "configured_scv_enabled": configured_scv_enabled,
+                "effective_scv_enabled": trainer_runtime_stats.get("training_protocol", {}).get(
+                    "effective_scv_enabled",
+                    configured_scv_enabled and training_mode == "preference",
+                ),
                 "prompt_builder_version": str(comparison_cfg.get("prompt_builder_version", PROMPT_BUILDER_VERSION)),
                 "parser_version": str(comparison_cfg.get("parser_version", PARSER_VERSION)),
                 "normalization_version": str(comparison_cfg.get("normalization_version", NORMALIZATION_VERSION)),

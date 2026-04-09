@@ -209,6 +209,13 @@ def load_effective_config_metadata(
         "training_mode": str(training_cfg.get("mode", "preference")),
         "lans_enabled": bool(algorithms.get("lans", {}).get("enabled", False)),
         "scv_enabled": bool(algorithms.get("scv", {}).get("enabled", False)),
+        "stage_mode": str(config.get("comparison", {}).get("stage_mode", "single_pass")),
+        "fewshot_selection_mode": str(
+            config.get("comparison", {}).get("fewshot_selection_mode", "dynamic")
+        ),
+        "fewshot_pool_split": str(config.get("comparison", {}).get("fewshot_pool_split", "train_fit")),
+        "train_tune_ratio": float(config.get("comparison", {}).get("train_tune_ratio", 0.1)),
+        "research_split_manifest_path": config.get("comparison", {}).get("research_split_manifest_path"),
     }
 
 

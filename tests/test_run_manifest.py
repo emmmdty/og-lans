@@ -102,6 +102,11 @@ algorithms:
   scv:
     enabled: true
 comparison:
+  stage_mode: single_pass
+  fewshot_selection_mode: dynamic
+  fewshot_pool_split: train_fit
+  train_tune_ratio: 0.1
+  research_split_manifest_path: configs/research_splits/duee_fin_train_seed3407_tune0.1.json
   prompt_builder_version: phase3_mvp_v1
   parser_version: phase3_mvp_v1
   normalization_version: phase3_mvp_v1
@@ -122,12 +127,21 @@ evaluation:
             "sft",
             "--algorithms.scv.enabled",
             "false",
+            "--comparison.stage_mode",
+            "two_stage",
+            "--comparison.fewshot_pool_split",
+            "train",
         ],
     )
 
     assert meta["seed"] == 3047
     assert meta["training_mode"] == "sft"
     assert meta["scv_enabled"] is False
+    assert meta["stage_mode"] == "two_stage"
+    assert meta["fewshot_pool_split"] == "train"
+    assert meta["fewshot_selection_mode"] == "dynamic"
+    assert meta["train_tune_ratio"] == 0.1
+    assert meta["research_split_manifest_path"].endswith("duee_fin_train_seed3407_tune0.1.json")
     assert isinstance(meta["config_hash_sha256"], str)
     assert len(meta["config_hash_sha256"]) == 64
 

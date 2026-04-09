@@ -57,6 +57,14 @@ SCV 的职责不是生成答案，而是检查候选 rejected 样本是否真的
 
 在此基础上，训练侧通过 Unsloth/TRL 执行偏好优化。当前实现既支持 preference 模式，也保留了 plain SFT 作为最小可比基线。主线配置默认采用 IPO 风格损失，并允许在代码层面扩展至其他 preference 变体。这里的方法论重点不在于宣称“某一损失函数本身就是创新”，而在于将偏好学习与本体图难度控制、SCV 过滤和严格 JSON 抽取契约联合起来。
 
+在当前工程实现中，训练侧已经与评测侧共享同一套 `single_pass / two_stage` 协议，而不是仅在推理时做阶段划分。具体来说：
+
+- `single_pass` 训练直接学习结构化事件抽取；
+- `two_stage` 训练采用联合训练：同一条 `train_fit` 样本会同时展开为 `stage1` 事件类型判别样本与 `stage2` 受类型约束的抽取样本；
+- `stage2` 训练中的类型约束来自训练期 teacher-forced 的 gold event types，而评测期仍只允许使用 Stage 1 预测类型，从而避免把评测先验泄漏回训练报告。
+
+这也意味着当前仓库里的 LANS 消融已经不再只是“配置注释上的开关”。`algorithms.lans.enabled` 会真正决定偏好训练是否进入 LANS 负样本调度分支，而训练清单会同时记录 `configured_lans_enabled` 与 `effective_lans_enabled`，用于区分“方法定义”与“实际运行状态”。
+
 ## 7. 评测侧约束
 
 OG-LANS 的方法论并不把评测视为训练之后的附属步骤，而是把评测定义为方法完整性的一部分。当前仓库已经在评测端实现：

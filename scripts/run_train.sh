@@ -40,6 +40,10 @@ All other options are forwarded to main.py unchanged.
 EOF
 }
 resolve_python_bin() {
+  if command -v uv >/dev/null 2>&1; then
+    echo "uv run python"
+    return
+  fi
   if command -v python >/dev/null 2>&1; then
     echo "python"
     return
@@ -50,10 +54,24 @@ resolve_python_bin() {
   fi
   echo ""
 }
+resolve_python_cmd() {
+  local resolved
+  resolved="$(resolve_python_bin)"
+  if [[ -z "$resolved" ]]; then
+    return
+  fi
+  if [[ "$resolved" == "uv run python" ]]; then
+    PYTHON_CMD=(uv run python)
+    PYTHON_DISPLAY="uv run python"
+    return
+  fi
+  PYTHON_CMD=("$resolved")
+  PYTHON_DISPLAY="$resolved"
+}
 resolve_gpu_banner() {
   local gpu_info=""
-  if [[ -n "${PYTHON_BIN:-}" ]]; then
-    gpu_info="$("$PYTHON_BIN" - <<'PY' 2>/dev/null
+  if [[ ${#PYTHON_CMD[@]} -gt 0 ]]; then
+    gpu_info="$("${PYTHON_CMD[@]}" - <<'PY' 2>/dev/null
 import json
 try:
     import torch
@@ -80,7 +98,7 @@ PY
 
   if [[ -n "$gpu_info" ]]; then
     local parsed
-    parsed="$("$PYTHON_BIN" - <<'PY' "$gpu_info"
+    parsed="$("${PYTHON_CMD[@]}" - <<'PY' "$gpu_info"
 import json
 import sys
 payload = json.loads(sys.argv[1])
@@ -98,7 +116,7 @@ PY
   if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -n 1
     echo "unknown"
-    "$PYTHON_BIN" - <<'PY' 2>/dev/null || echo "unknown"
+    "${PYTHON_CMD[@]}" - <<'PY' 2>/dev/null || echo "unknown"
 try:
     import torch
     print(torch.__version__)
@@ -110,9 +128,11 @@ PY
 
   printf 'GPU unknown\nunknown\nunknown\n'
 }
-PYTHON_BIN="$(resolve_python_bin)"
-if [[ -z "$PYTHON_BIN" ]]; then
-  echo "ERROR: neither python nor python3 found in PATH."
+PYTHON_CMD=()
+PYTHON_DISPLAY=""
+resolve_python_cmd
+if [[ ${#PYTHON_CMD[@]} -eq 0 ]]; then
+  echo "ERROR: unable to resolve Python runtime (expected uv run python, python, or python3)."
   exit 1
 fi
 # 手动创建目录，防止报错
@@ -168,6 +188,7 @@ TORCH_VERSION="${GPU_BANNER_LINES[2]:-unknown}"
 echo "=========================================================="
 echo "   OG-LANS                                                  "
 echo "   Environment: ${GPU_SUMMARY} | CUDA ${CUDA_VERSION} | torch ${TORCH_VERSION}"
+echo "   Python=${PYTHON_DISPLAY}"
 echo "   CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "   MODELSCOPE_CACHE=${MODELSCOPE_CACHE}"
 echo "=========================================================="
@@ -196,7 +217,7 @@ RUN_MANIFEST="${RUN_DIR}/run_manifest.json"
 echo "📝 Terminal output will be saved to: $LOG_FILE"
 echo "🧾 Run manifest: $RUN_MANIFEST"
 
-"$PYTHON_BIN" - "$RUN_MANIFEST" "$TIMESTAMP" "$ORIGINAL_CMD" "$CONFIG_PATH" "$DATA_DIR" "$EXP_NAME" "$RUN_DIR" "$USER_SCHEMA_PATH" -- "$@" <<'PY'
+"${PYTHON_CMD[@]}" - "$RUN_MANIFEST" "$TIMESTAMP" "$ORIGINAL_CMD" "$CONFIG_PATH" "$DATA_DIR" "$EXP_NAME" "$RUN_DIR" "$USER_SCHEMA_PATH" -- "$@" <<'PY'
 import json
 import os
 import sys
@@ -212,6 +233,11 @@ seed = None
 training_mode = None
 lans_enabled = None
 scv_enabled = None
+stage_mode = None
+fewshot_selection_mode = None
+fewshot_pool_split = None
+train_tune_ratio = None
+research_split_manifest_path = None
 try:
     config_meta = load_effective_config_metadata(config_path, cli_args=forwarded_args)
     config_hash = config_meta["config_hash_sha256"]
@@ -219,6 +245,11 @@ try:
     training_mode = config_meta["training_mode"]
     lans_enabled = config_meta["lans_enabled"]
     scv_enabled = config_meta["scv_enabled"]
+    stage_mode = config_meta["stage_mode"]
+    fewshot_selection_mode = config_meta["fewshot_selection_mode"]
+    fewshot_pool_split = config_meta["fewshot_pool_split"]
+    train_tune_ratio = config_meta["train_tune_ratio"]
+    research_split_manifest_path = config_meta["research_split_manifest_path"]
 except Exception:
     pass
 
@@ -237,6 +268,11 @@ manifest = {
     "training_mode": training_mode,
     "lans_enabled": lans_enabled,
     "scv_enabled": scv_enabled,
+    "stage_mode": stage_mode,
+    "fewshot_selection_mode": fewshot_selection_mode,
+    "fewshot_pool_split": fewshot_pool_split,
+    "train_tune_ratio": train_tune_ratio,
+    "research_split_manifest_path": research_split_manifest_path,
     "artifacts": {
         "run_dir": os.path.abspath(run_dir),
         "log_file": os.path.abspath(os.path.join(run_dir, "run.log")),
@@ -255,7 +291,7 @@ PY
 exec > >(tee -a "$LOG_FILE") 2>&1
 # ==============================
 
-"$PYTHON_BIN" - "$CONFIG_PATH" -- "$@" <<'PY'
+"${PYTHON_CMD[@]}" - "$CONFIG_PATH" -- "$@" <<'PY'
 import sys
 
 from oglans.utils.run_manifest import load_effective_config_metadata
@@ -299,6 +335,16 @@ print(
     "  LANS hard_floor="
     f"{st.get('hard_floor_prob', 0.0)} -> {st.get('hard_floor_after_warmup', st.get('hard_floor_prob', 0.0))}"
 )
+print(f"  Stage mode={cfg.get('comparison', {}).get('stage_mode', 'single_pass')}")
+print(
+    "  Few-shot selection="
+    f"{cfg.get('comparison', {}).get('fewshot_selection_mode', 'dynamic')} "
+    f"| pool_split={cfg.get('comparison', {}).get('fewshot_pool_split', 'train_fit')}"
+)
+print(
+    "  Research split manifest="
+    f"{cfg.get('comparison', {}).get('research_split_manifest_path')}"
+)
 PY
 
 echo "=========================================================="
@@ -317,7 +363,7 @@ echo "=========================================================="
 # 3) 若用户未传 --exp_name，则补自动生成的 EXP_NAME。
 RUN_START_EPOCH="$(date +%s)"
 set +e
-MAIN_CMD=("$PYTHON_BIN" main.py)
+MAIN_CMD=("${PYTHON_CMD[@]}" main.py)
 if [[ "$USER_HAS_CONFIG" -eq 0 ]]; then
   MAIN_CMD+=(--config "$CONFIG_PATH")
 fi
@@ -333,7 +379,7 @@ RC=$?
 set -e
 RUN_END_EPOCH="$(date +%s)"
 
-"$PYTHON_BIN" - "$RUN_MANIFEST" "$RC" "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$CHECKPOINT_ROOT" "$EXP_NAME" <<'PY'
+"${PYTHON_CMD[@]}" - "$RUN_MANIFEST" "$RC" "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$CHECKPOINT_ROOT" "$EXP_NAME" <<'PY'
 import json
 import os
 import sys

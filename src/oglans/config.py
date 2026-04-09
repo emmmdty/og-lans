@@ -229,6 +229,11 @@ class ConfigManager:
         comparison_cfg.setdefault("role_alias_map_path", "./configs/role_aliases_duee_fin.yaml")
         comparison_cfg.setdefault("prompt_variant", "zeroshot")
         comparison_cfg.setdefault("fewshot_num_examples", 3)
+        comparison_cfg.setdefault("stage_mode", "single_pass")
+        comparison_cfg.setdefault("fewshot_selection_mode", "dynamic")
+        comparison_cfg.setdefault("fewshot_pool_split", "train_fit")
+        comparison_cfg.setdefault("train_tune_ratio", 0.1)
+        comparison_cfg.setdefault("research_split_manifest_path", None)
 
     @staticmethod
     def _get_nested(config: Dict[str, Any], path: str) -> Any:
