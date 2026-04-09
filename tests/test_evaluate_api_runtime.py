@@ -38,6 +38,7 @@ def test_resolve_api_runtime_config_cli_base_url_overrides_env_and_config(monkey
 def test_resolve_api_runtime_config_env_base_url_overrides_config(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_BASE_URL", "https://env.openai.example/v1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
 
     resolved = mod.resolve_api_runtime_config(

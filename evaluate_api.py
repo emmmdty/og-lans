@@ -292,18 +292,26 @@ def resolve_api_runtime_config(
         base_url = "https://api.deepseek.com"
         base_url_source = "default"
 
-    if env.get("DEEPSEEK_API_KEY"):
-        api_key = str(env["DEEPSEEK_API_KEY"])
-        api_key_source = "env:DEEPSEEK_API_KEY"
-    elif env.get("OPENAI_API_KEY"):
-        api_key = str(env["OPENAI_API_KEY"])
-        api_key_source = "env:OPENAI_API_KEY"
-    elif api_cfg.get("api_key"):
+    base_url_lower = base_url.lower()
+    prefer_deepseek_key = "deepseek" in base_url_lower
+    preferred_env_keys = (
+        ("DEEPSEEK_API_KEY", "env:DEEPSEEK_API_KEY"),
+        ("OPENAI_API_KEY", "env:OPENAI_API_KEY"),
+    )
+    if not prefer_deepseek_key:
+        preferred_env_keys = tuple(reversed(preferred_env_keys))
+
+    api_key = None
+    api_key_source = None
+    for env_key, source in preferred_env_keys:
+        if env.get(env_key):
+            api_key = str(env[env_key])
+            api_key_source = source
+            break
+
+    if api_key is None and api_cfg.get("api_key"):
         api_key = str(api_cfg["api_key"])
         api_key_source = "config"
-    else:
-        api_key = None
-        api_key_source = None
 
     return {
         "model_name": model_name,
