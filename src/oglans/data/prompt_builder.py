@@ -9,12 +9,13 @@
 3. 官方评测需要 strict JSON，不能依赖解析修复
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import json
 import re
 
 PROMPT_BUILDER_VERSION = "phase3_mvp_v1"
 SUPPORTED_PROMPT_VARIANTS = ("zeroshot", "fewshot")
+SUPPORTED_FEWSHOT_SELECTION_MODES = ("static", "dynamic")
 
 
 def validate_prompt_variant(prompt_variant: Optional[str]) -> str:
@@ -23,6 +24,16 @@ def validate_prompt_variant(prompt_variant: Optional[str]) -> str:
         raise ValueError(
             f"Unsupported prompt_variant: {normalized}. "
             f"Expected one of {', '.join(SUPPORTED_PROMPT_VARIANTS)}."
+        )
+    return normalized
+
+
+def validate_fewshot_selection_mode(selection_mode: Optional[str]) -> str:
+    normalized = str(selection_mode or "static").strip().lower()
+    if normalized not in SUPPORTED_FEWSHOT_SELECTION_MODES:
+        raise ValueError(
+            f"Unsupported fewshot selection mode: {normalized}. "
+            f"Expected one of {', '.join(SUPPORTED_FEWSHOT_SELECTION_MODES)}."
         )
     return normalized
 
@@ -223,6 +234,19 @@ class ChinesePromptBuilder:
     # 兼容旧代码引用
     ONE_SHOT_EXAMPLE = FEW_SHOT_EXAMPLES[0]
 
+    _RETRIEVAL_TEXT_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]+")
+    _RETRIEVAL_STOPWORDS = {
+        "公司",
+        "公告",
+        "称",
+        "表示",
+        "披露",
+        "本次",
+        "相关",
+        "项目",
+        "股份",
+    }
+
     @classmethod
     def _normalize_schema(cls, schema: Optional[Dict]) -> Dict[str, List[str]]:
         """规范化 schema 输入，统一为 {event_type: [role,...]}。"""
@@ -379,13 +403,179 @@ class ChinesePromptBuilder:
         return payload["messages"]
 
     @classmethod
-    def select_fewshot_examples(cls, num_examples: int = 3) -> List[Dict[str, str]]:
+    def _normalize_retrieval_text(cls, text: str) -> str:
+        return "".join(cls._RETRIEVAL_TEXT_RE.findall(str(text or ""))).lower()
+
+    @classmethod
+    def _char_ngrams(cls, text: str, n: int = 2) -> Set[str]:
+        normalized = cls._normalize_retrieval_text(text)
+        if len(normalized) < n:
+            return {normalized} if normalized else set()
+        return {normalized[idx: idx + n] for idx in range(len(normalized) - n + 1)}
+
+    @classmethod
+    def _extract_text_keywords(cls, text: str) -> Set[str]:
+        normalized = str(text or "")
+        keywords: Set[str] = set()
+        for token in cls._RETRIEVAL_TEXT_RE.findall(normalized):
+            stripped = token.strip()
+            if not stripped or stripped in cls._RETRIEVAL_STOPWORDS:
+                continue
+            if len(stripped) >= 2:
+                keywords.add(stripped)
+        return keywords
+
+    @classmethod
+    def _normalize_example_record(cls, example: Dict[str, Any], index: int) -> Dict[str, Any]:
+        if not isinstance(example, dict):
+            raise TypeError(f"few-shot example must be dict, got {type(example).__name__}")
+        normalized = dict(example)
+        normalized.setdefault("id", f"fewshot-{index}")
+        normalized.setdefault("event_types", [])
+        normalized.setdefault("triggers", [])
+        normalized.setdefault("keywords", [])
+        normalized.setdefault("roles", [])
+        normalized.setdefault("source_text", normalized.get("user", ""))
+        return normalized
+
+    @classmethod
+    def _score_fewshot_example(
+        cls,
+        text: str,
+        example: Dict[str, Any],
+        schema: Optional[Dict[str, List[str]]] = None,
+    ) -> Tuple[float, float, int, int, int, str]:
+        query_text = str(text or "")
+        query_ngrams = cls._char_ngrams(query_text)
+        query_keywords = cls._extract_text_keywords(query_text)
+        event_type_hits = sum(
+            1 for event_type in example.get("event_types", [])
+            if isinstance(event_type, str) and event_type and event_type in query_text
+        )
+        trigger_hits = sum(
+            1 for trigger in example.get("triggers", [])
+            if isinstance(trigger, str) and trigger and trigger in query_text
+        )
+        keyword_hits = sum(
+            1 for keyword in example.get("keywords", [])
+            if isinstance(keyword, str) and keyword and keyword in query_text
+        )
+        example_ngrams = cls._char_ngrams(example.get("source_text", example.get("user", "")))
+        ngram_similarity = (
+            len(query_ngrams & example_ngrams) / len(query_ngrams | example_ngrams)
+            if query_ngrams and example_ngrams else 0.0
+        )
+        query_schema_hits = 0
+        if schema:
+            normalized_schema = cls._normalize_schema(schema)
+            for event_type in example.get("event_types", []):
+                if event_type in normalized_schema and event_type in query_text:
+                    query_schema_hits += 1
+        role_hits = sum(
+            1 for role in example.get("roles", [])
+            if isinstance(role, str) and role and role in query_keywords
+        )
+        score = (
+            (12.0 * event_type_hits)
+            + (7.0 * trigger_hits)
+            + (3.0 * keyword_hits)
+            + (2.0 * query_schema_hits)
+            + (1.5 * role_hits)
+            + (6.0 * ngram_similarity)
+            - (0.002 * len(str(example.get("source_text", ""))))
+        )
+        return (
+            score,
+            ngram_similarity,
+            event_type_hits,
+            trigger_hits,
+            keyword_hits + role_hits,
+            str(example.get("id", "")),
+        )
+
+    @classmethod
+    def select_dynamic_fewshot_examples(
+        cls,
+        *,
+        text: str,
+        num_examples: int,
+        example_pool: Iterable[Dict[str, Any]],
+        schema: Optional[Dict[str, List[str]]] = None,
+    ) -> List[Dict[str, Any]]:
+        normalized_pool = [
+            cls._normalize_example_record(example, index)
+            for index, example in enumerate(example_pool)
+        ]
+        if not normalized_pool:
+            return []
+
+        ranked = sorted(
+            normalized_pool,
+            key=lambda example: cls._score_fewshot_example(text, example, schema=schema),
+            reverse=True,
+        )
+        selected: List[Dict[str, Any]] = []
+        selected_ids: Set[str] = set()
+        covered_event_types: Set[str] = set()
+        for example in ranked:
+            example_id = str(example.get("id", ""))
+            if example_id in selected_ids:
+                continue
+            event_types = {
+                str(event_type)
+                for event_type in example.get("event_types", [])
+                if event_type
+            }
+            if event_types - covered_event_types:
+                selected.append(example)
+                selected_ids.add(example_id)
+                covered_event_types.update(event_types)
+            if len(selected) >= num_examples:
+                break
+
+        if len(selected) < num_examples:
+            for example in ranked:
+                example_id = str(example.get("id", ""))
+                if example_id in selected_ids:
+                    continue
+                selected.append(example)
+                selected_ids.add(example_id)
+                if len(selected) >= num_examples:
+                    break
+
+        return selected[:num_examples]
+
+    @classmethod
+    def select_fewshot_examples(
+        cls,
+        num_examples: int = 3,
+        *,
+        text: Optional[str] = None,
+        selection_mode: str = "static",
+        example_pool: Optional[Iterable[Dict[str, Any]]] = None,
+        schema: Optional[Dict[str, List[str]]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         选择 few-shot 示例。
-        目前使用稳定的前 n 条示例，确保实验可复现。
+        默认使用稳定的前 n 条示例；在 dynamic 模式下按输入文本做可复现的检索。
         """
-        n = max(1, min(num_examples, len(cls.FEW_SHOT_EXAMPLES)))
-        return cls.FEW_SHOT_EXAMPLES[:n]
+        selection_mode = validate_fewshot_selection_mode(selection_mode)
+        pool = list(example_pool) if example_pool is not None else list(cls.FEW_SHOT_EXAMPLES)
+        n = max(1, min(num_examples, len(pool)))
+        if selection_mode == "dynamic" and text:
+            selected = cls.select_dynamic_fewshot_examples(
+                text=text,
+                num_examples=n,
+                example_pool=pool,
+                schema=schema,
+            )
+            if selected:
+                return selected
+        normalized_pool = [
+            cls._normalize_example_record(example, index)
+            for index, example in enumerate(pool)
+        ]
+        return normalized_pool[:n]
 
     @classmethod
     def get_messages_with_oneshot(
@@ -421,6 +611,9 @@ class ChinesePromptBuilder:
         prompt_variant: Optional[str] = None,
         use_oneshot: Optional[bool] = None,
         num_examples: int = 3,
+        fewshot_selection_mode: str = "static",
+        fewshot_example_pool: Optional[Iterable[Dict[str, Any]]] = None,
+        fewshot_examples: Optional[Iterable[Dict[str, Any]]] = None,
         tokenizer: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
@@ -442,10 +635,21 @@ class ChinesePromptBuilder:
             {"role": "system", "content": cls.build_system_prompt(schema=schema)},
         ]
         fewshot_count = 0
+        selected_examples: List[Dict[str, Any]] = []
         if prompt_settings["use_oneshot"]:
-            selected_examples = cls.select_fewshot_examples(
-                num_examples=prompt_settings["fewshot_num_examples"]
-            )
+            if fewshot_examples is not None:
+                selected_examples = [
+                    cls._normalize_example_record(example, index)
+                    for index, example in enumerate(fewshot_examples)
+                ]
+            else:
+                selected_examples = cls.select_fewshot_examples(
+                    num_examples=prompt_settings["fewshot_num_examples"],
+                    text=text,
+                    selection_mode=fewshot_selection_mode,
+                    example_pool=fewshot_example_pool,
+                    schema=schema,
+                )
             fewshot_count = len(selected_examples)
             for ex in selected_examples:
                 messages.append({"role": "user", "content": ex["user"]})
@@ -465,6 +669,14 @@ class ChinesePromptBuilder:
             "formatted_text": formatted_text,
             "prompt_variant": prompt_settings["prompt_variant"],
             "fewshot_count": fewshot_count,
+            "fewshot_selection_mode": (
+                validate_fewshot_selection_mode(fewshot_selection_mode)
+                if prompt_settings["use_oneshot"] else "none"
+            ),
+            "fewshot_example_ids": [
+                str(example.get("id", f"fewshot-{index}"))
+                for index, example in enumerate(selected_examples)
+            ],
             "schema_enabled": bool(schema),
         }
 
@@ -527,6 +739,9 @@ def build_inference_prompt_payload(
     use_oneshot: Optional[bool] = None,
     schema: Optional[Dict] = None,
     num_examples: int = 3,
+    fewshot_selection_mode: str = "static",
+    fewshot_example_pool: Optional[Iterable[Dict[str, Any]]] = None,
+    fewshot_examples: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """便捷函数：导出统一的推理 payload。"""
     return ChinesePromptBuilder.build_inference_payload(
@@ -535,6 +750,9 @@ def build_inference_prompt_payload(
         prompt_variant=prompt_variant,
         use_oneshot=use_oneshot,
         num_examples=num_examples,
+        fewshot_selection_mode=fewshot_selection_mode,
+        fewshot_example_pool=fewshot_example_pool,
+        fewshot_examples=fewshot_examples,
         tokenizer=tokenizer,
     )
 

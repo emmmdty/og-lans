@@ -45,6 +45,7 @@ import platform
 import socket
 import subprocess
 import hashlib
+from collections import Counter
 from contextlib import redirect_stdout
 from pathlib import Path
 from dataclasses import asdict
@@ -125,6 +126,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
 ZERO_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+API_FEWSHOT_SELECTION_MODE = "dynamic"
 
 def infer_dataset_name(config: Dict[str, Any]) -> str:
     """
@@ -466,6 +468,74 @@ def compute_sample_metric_row(
     }
 
 
+def build_api_fewshot_example_pool(
+    samples: List[Any],
+    *,
+    schema: Optional[Dict[str, List[str]]] = None,
+    source_split: str = "train",
+) -> List[Dict[str, Any]]:
+    """Build a retrieval-ready few-shot pool from labeled dataset samples."""
+    pool: List[Dict[str, Any]] = []
+    for sample in samples:
+        events = list(getattr(sample, "events", []) or [])
+        if not events:
+            continue
+        event_types: List[str] = []
+        triggers: List[str] = []
+        roles: List[str] = []
+        keywords: List[str] = []
+        for event in events:
+            event_type = event.get("event_type")
+            if isinstance(event_type, str) and event_type and event_type not in event_types:
+                event_types.append(event_type)
+                keywords.append(event_type)
+            trigger = event.get("trigger")
+            if isinstance(trigger, str) and trigger and trigger not in triggers:
+                triggers.append(trigger)
+                keywords.append(trigger)
+            for argument in event.get("arguments", []):
+                role = argument.get("role")
+                if isinstance(role, str) and role and role not in roles:
+                    roles.append(role)
+                value = argument.get("argument")
+                if isinstance(value, str) and value and len(value) <= 12 and value not in keywords:
+                    keywords.append(value)
+        user_prompt = ChinesePromptBuilder.build_user_prompt(str(getattr(sample, "text", "")))
+        assistant_prompt = ChinesePromptBuilder.build_cot_response(events, schema=schema)
+        pool.append(
+            {
+                "id": f"{source_split}:{getattr(sample, 'id', f'sample-{len(pool)}')}",
+                "user": user_prompt,
+                "assistant": assistant_prompt,
+                "source_text": str(getattr(sample, "text", "")),
+                "event_types": event_types or list(getattr(sample, "event_types", []) or []),
+                "triggers": triggers,
+                "roles": roles,
+                "keywords": keywords,
+            }
+        )
+    return pool
+
+
+def summarize_fewshot_usage(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    selection_counter: Counter[str] = Counter()
+    combination_counter: Counter[str] = Counter()
+    for item in results:
+        prompt_meta = item.get("prompt_meta", {}) or {}
+        example_ids = [str(x) for x in prompt_meta.get("fewshot_example_ids", []) if x]
+        for example_id in example_ids:
+            selection_counter[example_id] += 1
+        if example_ids:
+            combination_counter[" | ".join(example_ids)] += 1
+    return {
+        "example_selection_counts": dict(sorted(selection_counter.items())),
+        "top_example_combinations": [
+            {"example_ids": combo.split(" | "), "count": count}
+            for combo, count in combination_counter.most_common(10)
+        ],
+    }
+
+
 def perform_api_inference(
     client: OpenAI,
     model: str,
@@ -520,6 +590,8 @@ def process_single_sample(
     sample,
     use_fewshot: bool = False,
     fewshot_num_examples: int = 3,
+    fewshot_selection_mode: str = "static",
+    fewshot_example_pool: Optional[List[Dict[str, Any]]] = None,
     json_mode: str = "auto",
     schema: Optional[Dict[str, List[str]]] = None,
     pipeline_mode: str = "e2e",
@@ -535,6 +607,8 @@ def process_single_sample(
         schema=schema,
         use_oneshot=use_fewshot,
         num_examples=fewshot_num_examples,
+        fewshot_selection_mode=fewshot_selection_mode,
+        fewshot_example_pool=fewshot_example_pool,
     )
     messages = prompt_payload["messages"]
 
@@ -580,6 +654,11 @@ def process_single_sample(
         "api_error": api_error,
         "response_meta": response_meta,
         "cat_stats": cat_stats,
+        "prompt_meta": {
+            "fewshot_selection_mode": prompt_payload.get("fewshot_selection_mode", "none"),
+            "fewshot_example_ids": prompt_payload.get("fewshot_example_ids", []),
+            "fewshot_count": prompt_payload.get("fewshot_count", 0),
+        },
     }
 
 
@@ -816,6 +895,26 @@ def main():
         raise RuntimeError(
             f"无法加载 split={args.split} 的数据文件，请检查路径: {data_dir}"
         ) from exc
+    fewshot_example_pool: List[Dict[str, Any]] = []
+    if use_fewshot:
+        try:
+            retrieval_samples = adapter.load_data("train")
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"few-shot 动态检索需要 train split 作为示例池，但未找到数据文件: {data_dir}"
+            ) from exc
+        fewshot_example_pool = build_api_fewshot_example_pool(
+            retrieval_samples,
+            schema=getattr(adapter, "schema", None),
+            source_split="train",
+        )
+        if not fewshot_example_pool:
+            raise ValueError("few-shot 动态检索示例池为空，无法继续运行 API few-shot 评测。")
+        logger.info(
+            "📚 API few-shot retrieval pool ready: mode=%s, size=%d",
+            API_FEWSHOT_SELECTION_MODE,
+            len(fewshot_example_pool),
+        )
     valid_event_types = set(adapter.get_event_types())
     role_order_by_event = {
         etype: list(roles or [])
@@ -883,6 +982,8 @@ def main():
                 sample,
                 use_fewshot,
                 fewshot_num_examples,
+                API_FEWSHOT_SELECTION_MODE if use_fewshot else "static",
+                fewshot_example_pool if use_fewshot else None,
                 args.json_mode,
                 prompt_schema,
                 args.pipeline_mode,
@@ -956,6 +1057,10 @@ def main():
                             prompt_variant=prompt_variant,
                             use_oneshot=use_fewshot,
                             num_examples=fewshot_num_examples,
+                            fewshot_selection_mode=(
+                                API_FEWSHOT_SELECTION_MODE if use_fewshot else "static"
+                            ),
+                            fewshot_example_pool=fewshot_example_pool if use_fewshot else None,
                         )
                         cf_messages = cf_payload["messages"]
                         cf_text, cf_usage, _, _, _ = perform_api_inference(
@@ -1005,6 +1110,7 @@ def main():
                     "pipeline_mode": args.pipeline_mode,
                     "cat_stats": res.get("cat_stats", {}),
                     "cot_eval_mode": args.cot_eval_mode,
+                    "prompt_meta": res.get("prompt_meta", {}),
                     "pred_canonical": canonical_pred_events if canonical_enabled else None,
                     "canonical_role_rewrites": rewrite_count if canonical_enabled else 0,
                 })
@@ -1148,27 +1254,19 @@ def main():
     manifest = collect_runtime_manifest(Path(__file__).parent.resolve())
     cmdline = " ".join(os.sys.argv)
     prompt_schema_block = ChinesePromptBuilder.build_schema_constraints(prompt_schema)
-    selected_fewshot_examples = (
-        ChinesePromptBuilder.select_fewshot_examples(num_examples=fewshot_num_examples)
-        if use_fewshot
-        else []
-    )
+    fewshot_usage_summary = summarize_fewshot_usage(results) if use_fewshot else {}
     prompt_hashes = {
         "system_prompt_sha256": hash_text(ChinesePromptBuilder.build_system_prompt(schema=prompt_schema)),
         "schema_constraints_sha256": hash_text(prompt_schema_block) if prompt_schema_block else None,
-        "fewshot_example_indices": (
-            list(range(min(fewshot_num_examples, len(ChinesePromptBuilder.FEW_SHOT_EXAMPLES))))
-            if use_fewshot else []
+        "fewshot_selection_mode": (
+            API_FEWSHOT_SELECTION_MODE if use_fewshot else "none"
         ),
-        "fewshot_examples_sha256": (
-            [
-                {
-                    "user": hash_text(ex["user"]),
-                    "assistant": hash_text(ex["assistant"]),
-                }
-                for ex in selected_fewshot_examples
-            ]
-            if use_fewshot else []
+        "fewshot_retrieval_pool_size": len(fewshot_example_pool) if use_fewshot else 0,
+        "fewshot_example_selection_counts": (
+            fewshot_usage_summary.get("example_selection_counts", {}) if use_fewshot else {}
+        ),
+        "fewshot_top_combinations": (
+            fewshot_usage_summary.get("top_example_combinations", []) if use_fewshot else []
         ),
     }
     protocol_hash = compute_file_hash(args.protocol)
@@ -1191,6 +1289,8 @@ def main():
             "has_gold_labels": has_gold_labels,
             "use_fewshot": use_fewshot,
             "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
+            "fewshot_selection_mode": API_FEWSHOT_SELECTION_MODE if use_fewshot else "none",
+            "fewshot_retrieval_pool_size": len(fewshot_example_pool) if use_fewshot else 0,
             "prompt_style": "profile_contract",
             "json_mode": args.json_mode,
             "cot_eval_mode": args.cot_eval_mode,

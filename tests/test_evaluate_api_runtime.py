@@ -134,3 +134,39 @@ def test_resolve_api_runtime_config_prefers_openai_default_model_for_openai_endp
     assert resolved["base_url_source"] == "env:OPENAI_BASE_URL"
     assert resolved["model_name"] == "gpt-4.1"
     assert resolved["model_source"] == "env:OPENAI_DEFAULT_MODEL"
+
+
+def test_build_api_fewshot_example_pool_extracts_sample_metadata():
+    class DummySample:
+        def __init__(self, sample_id, text, event_types, events):
+            self.id = sample_id
+            self.text = text
+            self.event_types = event_types
+            self.events = events
+
+    schema = {"中标": ["中标公司", "中标金额"]}
+    sample = DummySample(
+        "s1",
+        "华建科技于2024年8月1日中标智慧园区项目。",
+        ["中标"],
+        [
+            {
+                "event_type": "中标",
+                "trigger": "中标",
+                "arguments": [
+                    {"role": "中标公司", "argument": "华建科技"},
+                    {"role": "中标金额", "argument": "1.2亿元"},
+                ],
+            }
+        ],
+    )
+
+    pool = mod.build_api_fewshot_example_pool([sample], schema=schema, source_split="train")
+
+    assert len(pool) == 1
+    example = pool[0]
+    assert example["id"] == "train:s1"
+    assert example["event_types"] == ["中标"]
+    assert example["triggers"] == ["中标"]
+    assert "中标公司" in example["roles"]
+    assert "【文本内容】" in example["user"]

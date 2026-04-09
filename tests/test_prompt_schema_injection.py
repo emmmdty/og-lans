@@ -138,3 +138,80 @@ def test_fewshot_examples_include_same_type_multi_record_split_demonstration():
             break
 
     assert found_split_demo is True
+
+
+def test_select_fewshot_examples_dynamic_prefers_matching_event_examples():
+    example_pool = [
+        {
+            "id": "pledge-example",
+            "user": "u1",
+            "assistant": "a1",
+            "source_text": "控股股东将其股份质押给银行。",
+            "event_types": ["质押"],
+            "triggers": ["质押"],
+            "keywords": ["质押", "股东", "银行"],
+        },
+        {
+            "id": "bid-example",
+            "user": "u2",
+            "assistant": "a2",
+            "source_text": "公司中标智慧园区项目。",
+            "event_types": ["中标"],
+            "triggers": ["中标"],
+            "keywords": ["中标", "项目", "招标方"],
+        },
+        {
+            "id": "buyback-example",
+            "user": "u3",
+            "assistant": "a3",
+            "source_text": "公司实施股份回购计划。",
+            "event_types": ["股份回购"],
+            "triggers": ["回购"],
+            "keywords": ["回购", "股份", "交易金额"],
+        },
+    ]
+
+    selected = ChinesePromptBuilder.select_fewshot_examples(
+        num_examples=2,
+        text="公告称控股股东已将所持股份质押给银行并办理质押登记。",
+        selection_mode="dynamic",
+        example_pool=example_pool,
+    )
+
+    assert [item["id"] for item in selected][:1] == ["pledge-example"]
+    assert "bid-example" not in [item["id"] for item in selected]
+
+
+def test_build_inference_prompt_payload_records_dynamic_fewshot_example_ids():
+    example_pool = [
+        {
+            "id": "bid-example",
+            "user": "示例用户",
+            "assistant": "[]",
+            "source_text": "公司中标智慧园区项目。",
+            "event_types": ["中标"],
+            "triggers": ["中标"],
+            "keywords": ["中标", "项目"],
+        },
+        {
+            "id": "buyback-example",
+            "user": "示例用户2",
+            "assistant": "[]",
+            "source_text": "公司实施股份回购计划。",
+            "event_types": ["股份回购"],
+            "triggers": ["回购"],
+            "keywords": ["回购", "股份"],
+        },
+    ]
+
+    payload = build_inference_prompt_payload(
+        "华建科技公告称公司中标智慧园区升级项目。",
+        prompt_variant="fewshot",
+        num_examples=1,
+        fewshot_selection_mode="dynamic",
+        fewshot_example_pool=example_pool,
+    )
+
+    assert payload["fewshot_count"] == 1
+    assert payload["fewshot_selection_mode"] == "dynamic"
+    assert payload["fewshot_example_ids"] == ["bid-example"]
