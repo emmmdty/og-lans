@@ -10,10 +10,193 @@ from __future__ import annotations
 import itertools
 import math
 import random
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 
 CountDict = Dict[str, int]
+MIN_SIGNIFICANCE_PAIRS = 2
+
+ACADEMIC_MAIN_TABLE_METRICS = (
+    "doc_role_micro_f1",
+    "doc_instance_micro_f1",
+    "doc_combination_micro_f1",
+    "doc_event_type_micro_f1",
+)
+CORE_DIAGNOSTIC_REPORT_METRICS = (
+    "strict_precision",
+    "strict_recall",
+    "strict_f1",
+    "relaxed_f1",
+    "type_f1",
+    "schema_compliance_rate",
+    "hallucination_rate",
+)
+LOCAL_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + CORE_DIAGNOSTIC_REPORT_METRICS
+API_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + (
+    "strict_f1",
+    "relaxed_f1",
+    "type_f1",
+)
+OPTIONAL_REPORT_METRICS = (
+    "parse_error_rate",
+    "parse_success_rate",
+    "cot_faithfulness",
+)
+
+
+def _mapping_get(mapping: Mapping[str, Any], key: str) -> Any:
+    value = mapping.get(key)
+    if isinstance(value, Mapping):
+        return dict(value)
+    return value
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        overall = value.get("overall")
+        if overall is None:
+            return None
+        return float(overall)
+    return float(value)
+
+
+def extract_report_metrics(
+    payload: Mapping[str, Any],
+    *,
+    required_metrics: Sequence[str] | None = None,
+    optional_metrics: Sequence[str] | None = None,
+) -> Dict[str, float]:
+    """
+    Normalize evaluation metrics across metrics.json, summary["metrics"], and legacy blocks.
+
+    Args:
+        payload: Metrics dict or full evaluation summary dict.
+        required_metrics: Metrics that must be present; missing entries raise ValueError.
+        optional_metrics: Metrics to include when available without raising.
+
+    Returns:
+        A flat metric mapping suitable for suite aggregation and reporting.
+    """
+    if not isinstance(payload, Mapping):
+        raise TypeError("payload must be a mapping.")
+
+    metrics_obj = payload
+    if isinstance(payload.get("metrics"), Mapping):
+        metrics_obj = payload["metrics"]  # type: ignore[index]
+
+    if not isinstance(metrics_obj, Mapping):
+        raise TypeError("metrics payload must be a mapping.")
+
+    academic_metrics = _mapping_get(metrics_obj, "academic_metrics") or {}
+    doc_ee = _mapping_get(academic_metrics, "doc_ee") or {}
+    overall = _mapping_get(doc_ee, "overall") or {}
+    instance = _mapping_get(doc_ee, "instance") or {}
+    combination = _mapping_get(doc_ee, "combination") or {}
+    classification = _mapping_get(doc_ee, "classification") or {}
+
+    legacy_metrics = _mapping_get(metrics_obj, "legacy_metrics") or {}
+    strict = _mapping_get(metrics_obj, "strict") or _mapping_get(legacy_metrics, "strict") or {}
+    relaxed = _mapping_get(metrics_obj, "relaxed") or _mapping_get(legacy_metrics, "relaxed") or {}
+    type_identification = (
+        _mapping_get(metrics_obj, "type_identification")
+        or _mapping_get(legacy_metrics, "type_identification")
+        or {}
+    )
+    parse_statistics = (
+        _mapping_get(metrics_obj, "parse_statistics")
+        or _mapping_get(legacy_metrics, "parse_statistics")
+        or {}
+    )
+    hallucination = _mapping_get(metrics_obj, "hallucination") or _mapping_get(legacy_metrics, "hallucination") or {}
+    cot_faithfulness = (
+        _mapping_get(metrics_obj, "cot_faithfulness")
+        or _mapping_get(legacy_metrics, "cot_faithfulness")
+        or None
+    )
+
+    candidates: Dict[str, float | None] = {
+        "doc_role_micro_f1": _to_float_or_none(metrics_obj.get("doc_role_micro_f1", overall.get("MicroF1"))),
+        "doc_instance_micro_f1": _to_float_or_none(
+            metrics_obj.get("doc_instance_micro_f1", instance.get("MicroF1"))
+        ),
+        "doc_combination_micro_f1": _to_float_or_none(
+            metrics_obj.get("doc_combination_micro_f1", combination.get("MicroF1"))
+        ),
+        "doc_event_type_micro_f1": _to_float_or_none(
+            metrics_obj.get("doc_event_type_micro_f1", classification.get("MicroF1"))
+        ),
+        "strict_precision": _to_float_or_none(metrics_obj.get("strict_precision", strict.get("precision"))),
+        "strict_recall": _to_float_or_none(metrics_obj.get("strict_recall", strict.get("recall"))),
+        "strict_f1": _to_float_or_none(metrics_obj.get("strict_f1", strict.get("f1"))),
+        "relaxed_f1": _to_float_or_none(metrics_obj.get("relaxed_f1", relaxed.get("f1"))),
+        "type_f1": _to_float_or_none(metrics_obj.get("type_f1", type_identification.get("f1"))),
+        "schema_compliance_rate": _to_float_or_none(
+            metrics_obj.get("schema_compliance_rate", legacy_metrics.get("schema_compliance_rate"))
+        ),
+        "hallucination_rate": _to_float_or_none(
+            metrics_obj.get("hallucination_rate", hallucination.get("sample_rate"))
+        ),
+        "parse_error_rate": _to_float_or_none(metrics_obj.get("parse_error_rate", parse_statistics.get("parse_error_rate"))),
+        "parse_success_rate": _to_float_or_none(
+            metrics_obj.get("parse_success_rate", parse_statistics.get("parse_success_rate"))
+        ),
+        "cot_faithfulness": _to_float_or_none(cot_faithfulness),
+    }
+
+    requested_required = tuple(required_metrics or ())
+    requested_optional = tuple(optional_metrics or ())
+    if not requested_required and not requested_optional:
+        requested_required = LOCAL_SUITE_REPORT_METRICS
+
+    flat: Dict[str, float] = {}
+    missing: List[str] = []
+
+    for metric_name in requested_required:
+        value = candidates.get(metric_name)
+        if value is None:
+            missing.append(metric_name)
+            continue
+        flat[metric_name] = float(value)
+
+    if missing:
+        raise ValueError(f"Missing required metrics: {', '.join(sorted(missing))}")
+
+    for metric_name in requested_optional:
+        value = candidates.get(metric_name)
+        if value is not None:
+            flat[metric_name] = float(value)
+
+    return flat
+
+
+def build_significance_metadata(
+    pair_counts: Sequence[int],
+    *,
+    min_pairs: int = MIN_SIGNIFICANCE_PAIRS,
+) -> Dict[str, Any]:
+    normalized_counts = [int(count) for count in pair_counts]
+    metadata: Dict[str, Any] = {
+        "significance_min_pairs": int(min_pairs),
+    }
+    if not normalized_counts:
+        metadata["significance_status"] = "skipped_no_complete_pairs"
+        metadata["significance_skipped_reason"] = "no complete paired comparisons were available"
+        return metadata
+
+    observed_min = min(normalized_counts)
+    metadata["significance_observed_pairs"] = observed_min
+    if observed_min < int(min_pairs):
+        metadata["significance_status"] = "skipped_insufficient_pairs"
+        metadata["significance_skipped_reason"] = (
+            f"paired permutation requires at least {int(min_pairs)} paired observations per comparison; "
+            f"observed {observed_min}"
+        )
+        return metadata
+
+    metadata["significance_status"] = "computed"
+    return metadata
 
 
 def safe_div(num: float, den: float) -> float:
@@ -194,6 +377,8 @@ def paired_permutation_pvalue(
         raise ValueError("baseline_scores and improved_scores must have equal length.")
     if len(baseline_scores) == 0:
         raise ValueError("Scores must be non-empty.")
+    if len(baseline_scores) < MIN_SIGNIFICANCE_PAIRS:
+        raise ValueError(f"Scores must contain at least {MIN_SIGNIFICANCE_PAIRS} paired observations.")
 
     diffs = [float(b) - float(a) for a, b in zip(baseline_scores, improved_scores)]
     observed = abs(sum(diffs) / len(diffs))

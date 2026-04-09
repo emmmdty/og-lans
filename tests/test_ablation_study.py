@@ -91,3 +91,66 @@ def test_ablation_script_exposes_prompt_mode_controls():
 
     assert "--prompt_modes" in script_text
     assert "--fewshot_num_examples" in script_text
+
+
+def test_flatten_metrics_includes_relaxed_type_schema_fields():
+    metrics = mod._flatten_metrics(
+        {
+            "academic_metrics": {
+                "doc_ee": {
+                    "overall": {"MicroF1": 0.31},
+                    "instance": {"MicroF1": 0.22},
+                    "combination": {"MicroF1": 0.23},
+                    "classification": {"MicroF1": 0.91},
+                }
+            },
+            "strict": {"precision": 0.41, "recall": 0.42, "f1": 0.4},
+            "relaxed": {"f1": 0.52},
+            "type_identification": {"f1": 0.63},
+            "schema_compliance_rate": 0.74,
+            "hallucination": {"sample_rate": 0.08},
+        }
+    )
+
+    assert metrics["relaxed_f1"] == 0.52
+    assert metrics["type_f1"] == 0.63
+    assert metrics["schema_compliance_rate"] == 0.74
+
+
+def test_generate_latex_table_uses_academic_first_columns():
+    latex = mod.generate_latex_table(
+        {
+            "full": {
+                "status": "success",
+                "metrics": {
+                    "doc_role_micro_f1": 0.31,
+                    "doc_instance_micro_f1": 0.22,
+                    "doc_combination_micro_f1": 0.23,
+                    "doc_event_type_micro_f1": 0.91,
+                    "strict_f1": 0.4,
+                    "relaxed_f1": 0.52,
+                    "type_f1": 0.63,
+                    "schema_compliance_rate": 0.74,
+                    "hallucination_rate": 0.08,
+                },
+            }
+        }
+    )
+
+    assert "Doc Role F1" in latex
+    assert "Strict P" not in latex
+
+
+def test_generate_latex_table_rejects_missing_aggregated_mean():
+    with pytest.raises(ValueError, match="Missing aggregated mean"):
+        mod.generate_latex_table(
+            {
+                "full": {
+                    "aggregated": {
+                        "metrics": {
+                            "doc_role_micro_f1": {"std": 0.0},
+                        }
+                    }
+                }
+            }
+        )

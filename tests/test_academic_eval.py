@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "src" / "oglans" / "utils" / "academic_eval.py"
 spec = importlib.util.spec_from_file_location("academic_eval", str(MODULE_PATH))
 if spec is None or spec.loader is None:
@@ -10,6 +12,7 @@ spec.loader.exec_module(academic_eval)
 
 aggregate_sample_counts = academic_eval.aggregate_sample_counts
 bootstrap_confidence_intervals = academic_eval.bootstrap_confidence_intervals
+extract_report_metrics = academic_eval.extract_report_metrics
 metrics_from_sample_counts = academic_eval.metrics_from_sample_counts
 paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
 
@@ -129,3 +132,64 @@ def test_paired_permutation_pvalue_exact_output():
     assert 0.0 <= stat["p_value"] <= 1.0
     assert stat["n_pairs"] == 3
     assert stat["method"] == "exact_permutation"
+
+
+def test_extract_report_metrics_reads_nested_summary_fields():
+    payload = {
+        "metrics": {
+            "academic_metrics": {
+                "doc_ee": {
+                    "overall": {"MicroF1": 0.61},
+                    "instance": {"MicroF1": 0.55},
+                    "combination": {"MicroF1": 0.57},
+                    "classification": {"MicroF1": 0.72},
+                }
+            },
+            "strict": {"precision": 0.51, "recall": 0.49, "f1": 0.5},
+            "relaxed": {"f1": 0.63},
+            "type_identification": {"f1": 0.74},
+            "schema_compliance_rate": 0.81,
+            "hallucination": {"sample_rate": 0.12},
+            "parse_statistics": {"parse_error_rate": 0.05},
+            "cot_faithfulness": {"overall": 0.9},
+        }
+    }
+
+    metrics = extract_report_metrics(
+        payload,
+        required_metrics=(
+            "doc_role_micro_f1",
+            "doc_instance_micro_f1",
+            "doc_combination_micro_f1",
+            "doc_event_type_micro_f1",
+            "strict_precision",
+            "strict_recall",
+            "strict_f1",
+            "relaxed_f1",
+            "type_f1",
+            "schema_compliance_rate",
+            "hallucination_rate",
+        ),
+        optional_metrics=("parse_error_rate", "cot_faithfulness"),
+    )
+
+    assert metrics["doc_role_micro_f1"] == 0.61
+    assert metrics["relaxed_f1"] == 0.63
+    assert metrics["type_f1"] == 0.74
+    assert metrics["schema_compliance_rate"] == 0.81
+    assert metrics["hallucination_rate"] == 0.12
+    assert metrics["parse_error_rate"] == 0.05
+    assert metrics["cot_faithfulness"] == 0.9
+
+
+def test_extract_report_metrics_rejects_missing_required_metric():
+    with pytest.raises(ValueError, match="relaxed_f1"):
+        extract_report_metrics(
+            {"metrics": {"strict": {"f1": 0.5}}},
+            required_metrics=("strict_f1", "relaxed_f1"),
+        )
+
+
+def test_paired_permutation_pvalue_rejects_single_pair():
+    with pytest.raises(ValueError, match="at least 2"):
+        paired_permutation_pvalue([0.4], [0.5])

@@ -31,6 +31,9 @@ if spec is None or spec.loader is None:
 academic_eval = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(academic_eval)
 aggregate_runs = academic_eval.aggregate_runs
+build_significance_metadata = academic_eval.build_significance_metadata
+extract_report_metrics = academic_eval.extract_report_metrics
+MIN_SIGNIFICANCE_PAIRS = academic_eval.MIN_SIGNIFICANCE_PAIRS
 paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
 
 
@@ -311,8 +314,7 @@ def markdown_table(agg: Dict[str, Dict], metrics: Sequence[str]) -> str:
 
 
 def _build_run_metrics(summary: Dict, seed: int) -> Dict[str, float]:
-    metrics = summary.get("metrics", {}) or {}
-    row = {metric: float(metrics[metric]) for metric in TARGET_METRICS if metric in metrics}
+    row = extract_report_metrics(summary, required_metrics=TARGET_METRICS)
     row["seed"] = float(seed)
     return row
 
@@ -321,8 +323,9 @@ def _compute_significance(
     validated_by_run: Dict[str, Dict[int, Dict]],
     report_primary_metric: str,
     expected_seeds: Sequence[int],
-) -> Dict[str, Dict[str, Dict]]:
+) -> Tuple[Dict[str, Dict[str, Dict]], Dict[str, object]]:
     result: Dict[str, Dict[str, Dict]] = {}
+    pair_counts: List[int] = []
     a2_alias = next((key for key in validated_by_run if key in {"a2", "a2_no_scv", "a2-noscv"}), None)
     comparison_pairs = [("base", "full")]
     if a2_alias is not None:
@@ -349,6 +352,9 @@ def _compute_significance(
                 f"incomplete seed coverage for significance: {baseline_key} vs {improved_key}, "
                 f"expected={list(expected_seeds)}, got={common_seeds}"
             )
+        pair_counts.append(len(common_seeds))
+        if len(common_seeds) < MIN_SIGNIFICANCE_PAIRS:
+            continue
         pair_key = f"{baseline_key}_vs_{improved_key}"
         result[pair_key] = {}
         for metric in metric_order:
@@ -367,7 +373,7 @@ def _compute_significance(
                     improved_scores=improved_scores,
                     seed=3407,
                 )
-    return result
+    return result, build_significance_metadata(pair_counts)
 
 
 def main() -> None:
@@ -505,7 +511,7 @@ def main() -> None:
         if run_key != "base" and first_summary is not None:
             aggregated[run_key]["checkpoint"] = first_summary["meta"]["checkpoint"]
 
-    significance = _compute_significance(validated_by_run, primary_metric, seeds)
+    significance, significance_meta = _compute_significance(validated_by_run, primary_metric, seeds)
     suite_summary = {
         "timestamp": ts,
         "config": args.config,
@@ -522,6 +528,7 @@ def main() -> None:
         "runs": [record._asdict() for record in records],
         "aggregated": aggregated,
         "significance": significance,
+        **significance_meta,
         "shared_reference_meta": shared_reference_meta or {},
     }
 
@@ -544,6 +551,11 @@ def main() -> None:
                     f"| {pair_key} | {metric} | {stat['p_value']:.6f} | {stat['observed_mean_diff']:.6f} | "
                     f"{int(stat['n_pairs'])} | {stat['method']} |"
                 )
+        md_lines.append("")
+    elif significance_meta.get("significance_status", "").startswith("skipped_"):
+        md_lines.append("## Significance")
+        md_lines.append(f"- status: `{significance_meta['significance_status']}`")
+        md_lines.append(f"- reason: {significance_meta['significance_skipped_reason']}")
         md_lines.append("")
 
     suite_md = suite_dir / "suite_summary.md"

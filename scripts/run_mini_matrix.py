@@ -35,6 +35,9 @@ def _load_module(module_name: str, path: Path):
 
 academic_eval = _load_module("academic_eval", ACADEMIC_EVAL_PATH)
 aggregate_runs = academic_eval.aggregate_runs
+build_significance_metadata = academic_eval.build_significance_metadata
+extract_report_metrics = academic_eval.extract_report_metrics
+MIN_SIGNIFICANCE_PAIRS = academic_eval.MIN_SIGNIFICANCE_PAIRS
 paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
 
 ablation_mod = _load_module("ablation_study", ABALATION_SCRIPT_PATH)
@@ -46,8 +49,6 @@ parse_seeds = ablation_mod.parse_seeds
 resolve_checkpoint_dir = ablation_mod.resolve_checkpoint_dir
 save_config = ablation_mod.save_config
 validate_eval_split = ablation_mod.validate_eval_split
-_flatten_metrics = ablation_mod._flatten_metrics
-
 TARGET_METRICS = (
     "doc_role_micro_f1",
     "doc_instance_micro_f1",
@@ -202,9 +203,8 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 
 def build_metric_row(summary_or_metrics: Dict[str, Any], seed: int) -> Dict[str, float]:
-    metrics = summary_or_metrics.get("metrics", summary_or_metrics)
-    flat = _flatten_metrics(metrics)
-    row = {metric: float(flat.get(metric, 0.0)) for metric in TARGET_METRICS}
+    flat = extract_report_metrics(summary_or_metrics, required_metrics=TARGET_METRICS)
+    row = {metric: float(flat[metric]) for metric in TARGET_METRICS}
     row["seed"] = float(seed)
     return row
 
@@ -221,16 +221,20 @@ def compute_significance(
     prompt_modes: Sequence[str],
     seeds: Sequence[int],
     primary_metric: str,
-) -> Dict[str, Dict[str, Dict[str, Any]]]:
+) -> Tuple[Dict[str, Dict[str, Dict[str, Any]]], Dict[str, Any]]:
     significance: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    pair_counts: List[int] = []
     if "base" not in by_run_prompt_seed or "full" not in by_run_prompt_seed:
-        return significance
+        return significance, build_significance_metadata(pair_counts)
 
     for prompt_mode in prompt_modes:
         base_seed_map = by_run_prompt_seed.get("base", {}).get(prompt_mode, {})
         full_seed_map = by_run_prompt_seed.get("full", {}).get(prompt_mode, {})
         common_seeds = sorted(set(base_seed_map) & set(full_seed_map))
         if common_seeds != sorted(int(seed) for seed in seeds):
+            continue
+        pair_counts.append(len(common_seeds))
+        if len(common_seeds) < MIN_SIGNIFICANCE_PAIRS:
             continue
         metrics = [primary_metric] + [m for m in ("strict_f1", "type_f1") if m != primary_metric]
         pair_key = f"base_vs_full/{prompt_mode}"
@@ -243,7 +247,7 @@ def compute_significance(
                 improved_scores=improved_scores,
                 seed=3407,
             )
-    return significance
+    return significance, build_significance_metadata(pair_counts)
 
 
 def main() -> None:
@@ -455,7 +459,7 @@ def main() -> None:
                 "metrics": aggregate_mode_results(seed_map),
             }
 
-    significance = compute_significance(
+    significance, significance_meta = compute_significance(
         by_run_prompt_seed=by_run_prompt_seed,
         prompt_modes=prompt_modes,
         seeds=seeds,
@@ -479,6 +483,7 @@ def main() -> None:
         "records": records,
         "aggregated": aggregated,
         "significance": significance,
+        **significance_meta,
     }
 
     summary_json = suite_dir / "suite_summary.json"
@@ -516,6 +521,11 @@ def main() -> None:
                     f"| {comparison} | {metric} | {stat['p_value']:.6f} | {stat['observed_mean_diff']:.6f} | "
                     f"{int(stat['n_pairs'])} | {stat['method']} |"
                 )
+        md_lines.append("")
+    elif significance_meta.get("significance_status", "").startswith("skipped_"):
+        md_lines.append("## Significance")
+        md_lines.append(f"- status: `{significance_meta['significance_status']}`")
+        md_lines.append(f"- reason: {significance_meta['significance_skipped_reason']}")
         md_lines.append("")
     summary_md = suite_dir / "suite_summary.md"
     summary_md.write_text("\n".join(md_lines), encoding="utf-8")

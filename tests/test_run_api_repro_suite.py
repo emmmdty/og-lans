@@ -93,3 +93,48 @@ project:
         encoding="utf-8",
     )
     assert mod.infer_dataset_name_from_config(str(child_cfg)) == "DuEE-Fin"
+
+
+def _summary(metric_value: float) -> dict:
+    return {
+        "metrics": {
+            "doc_role_micro_f1": metric_value,
+            "doc_instance_micro_f1": 0.11,
+            "doc_combination_micro_f1": 0.12,
+            "doc_event_type_micro_f1": 0.91,
+            "strict_f1": 0.41,
+            "relaxed_f1": 0.51,
+            "type_f1": 0.61,
+        }
+    }
+
+
+def test_compute_significance_skips_single_seed_and_sets_metadata():
+    significance, metadata = mod.compute_significance(
+        {
+            "zeroshot": {3407: _summary(0.2)},
+            "fewshot": {3407: _summary(0.25)},
+        },
+        report_primary_metric="doc_role_micro_f1",
+        expected_seeds=[3407],
+    )
+
+    assert significance == {}
+    assert metadata["significance_status"] == "skipped_insufficient_pairs"
+    assert metadata["significance_min_pairs"] == 2
+
+
+def test_compute_significance_rejects_incomplete_seed_coverage():
+    try:
+        mod.compute_significance(
+            {
+                "zeroshot": {3407: _summary(0.2), 3408: _summary(0.21)},
+                "fewshot": {3407: _summary(0.25)},
+            },
+            report_primary_metric="doc_role_micro_f1",
+            expected_seeds=[3407, 3408],
+        )
+    except ValueError as exc:
+        assert "incomplete seed coverage for significance" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for incomplete seed coverage")

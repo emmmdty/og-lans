@@ -29,6 +29,9 @@ if spec is None or spec.loader is None:
 academic_eval = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(academic_eval)
 aggregate_runs = academic_eval.aggregate_runs
+build_significance_metadata = academic_eval.build_significance_metadata
+extract_report_metrics = academic_eval.extract_report_metrics
+MIN_SIGNIFICANCE_PAIRS = academic_eval.MIN_SIGNIFICANCE_PAIRS
 paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
 
 DEFAULT_PROTOCOL = {
@@ -105,6 +108,12 @@ def load_json(path: Path) -> Dict:
         return json.load(f)
 
 
+def build_metric_row(summary: Dict, target_metrics: List[str], seed: int) -> Dict[str, float]:
+    row = extract_report_metrics(summary, required_metrics=target_metrics)
+    row["seed"] = float(seed)
+    return row
+
+
 def deep_merge(base: Dict, override: Dict) -> Dict:
     merged = dict(base)
     for k, v in (override or {}).items():
@@ -124,6 +133,56 @@ def load_protocol(path: str) -> Dict:
     if not isinstance(payload, dict):
         raise ValueError(f"Protocol must be a dict: {path}")
     return deep_merge(DEFAULT_PROTOCOL, payload)
+
+
+def compute_significance(
+    by_mode_seed: Dict[str, Dict[int, Dict]],
+    report_primary_metric: str,
+    expected_seeds: List[int],
+) -> Tuple[Dict[str, Dict], Dict[str, object]]:
+    significance: Dict[str, Dict] = {}
+    common_seeds = sorted(set(by_mode_seed.get("zeroshot", {}).keys()) & set(by_mode_seed.get("fewshot", {}).keys()))
+    if common_seeds != sorted(int(seed) for seed in expected_seeds):
+        raise ValueError(
+            "incomplete seed coverage for significance: "
+            f"expected={sorted(int(seed) for seed in expected_seeds)}, got={common_seeds}"
+        )
+    metadata = build_significance_metadata([len(common_seeds)])
+    if len(common_seeds) < MIN_SIGNIFICANCE_PAIRS:
+        return significance, metadata
+
+    sig_metrics = [report_primary_metric] + [
+        m
+        for m in [
+            "doc_instance_micro_f1",
+            "doc_combination_micro_f1",
+            "doc_event_type_micro_f1",
+            "strict_f1",
+            "relaxed_f1",
+            "type_f1",
+        ]
+        if m != report_primary_metric
+    ]
+    for metric in sig_metrics:
+        baseline_scores = []
+        improved_scores = []
+        for seed in common_seeds:
+            baseline_value = extract_report_metrics(
+                by_mode_seed["zeroshot"][seed],
+                required_metrics=(metric,),
+            )[metric]
+            improved_value = extract_report_metrics(
+                by_mode_seed["fewshot"][seed],
+                required_metrics=(metric,),
+            )[metric]
+            baseline_scores.append(float(baseline_value))
+            improved_scores.append(float(improved_value))
+        significance[metric] = paired_permutation_pvalue(
+            baseline_scores=baseline_scores,
+            improved_scores=improved_scores,
+            seed=3407,
+        )
+    return significance, metadata
 
 
 def build_cmd(
@@ -359,47 +418,17 @@ def main():
     for mode, seed_map in by_mode_seed.items():
         run_metric_rows = []
         for seed, summary in sorted(seed_map.items()):
-            metrics = summary.get("metrics", {})
-            row = {k: float(metrics[k]) for k in target_metrics if k in metrics}
-            if row:
-                row["seed"] = seed
-                run_metric_rows.append(row)
+            run_metric_rows.append(build_metric_row(summary, target_metrics, seed))
         aggregated[mode] = {
             "n_success_runs": len(run_metric_rows),
             "metrics": aggregate_runs(run_metric_rows, [k for k in target_metrics if all(k in r for r in run_metric_rows)]),
         }
 
-    significance = {}
-    if "zeroshot" in by_mode_seed and "fewshot" in by_mode_seed:
-        common_seeds = sorted(set(by_mode_seed["zeroshot"].keys()) & set(by_mode_seed["fewshot"].keys()))
-        sig_metrics = [args.report_primary_metric] + [
-            m
-            for m in [
-                "doc_instance_micro_f1",
-                "doc_combination_micro_f1",
-                "doc_event_type_micro_f1",
-                "strict_f1",
-                "relaxed_f1",
-                "type_f1",
-            ]
-            if m != args.report_primary_metric
-        ]
-        for metric in sig_metrics:
-            baseline_scores = []
-            improved_scores = []
-            for seed in common_seeds:
-                b = by_mode_seed["zeroshot"][seed].get("metrics", {}).get(metric)
-                i = by_mode_seed["fewshot"][seed].get("metrics", {}).get(metric)
-                if b is None or i is None:
-                    continue
-                baseline_scores.append(float(b))
-                improved_scores.append(float(i))
-            if baseline_scores and improved_scores:
-                significance[metric] = paired_permutation_pvalue(
-                    baseline_scores=baseline_scores,
-                    improved_scores=improved_scores,
-                    seed=3407,
-                )
+    significance, significance_meta = compute_significance(
+        by_mode_seed,
+        args.report_primary_metric,
+        expected_seeds=seeds,
+    )
 
     suite_summary = {
         "timestamp": ts,
@@ -421,6 +450,7 @@ def main():
         "runs": [asdict(r) for r in records],
         "aggregated": aggregated,
         "significance": significance,
+        **significance_meta,
     }
 
     suite_json = output_dir / "suite_summary.json"
@@ -442,6 +472,11 @@ def main():
                 f"| {metric} | {stat['p_value']:.6f} | {stat['observed_mean_diff']:.6f} | "
                 f"{int(stat['n_pairs'])} | {stat['method']} |"
             )
+        md_lines.append("")
+    elif significance_meta.get("significance_status", "").startswith("skipped_"):
+        md_lines.append("## Significance (Few-shot vs Zero-shot)")
+        md_lines.append(f"- status: `{significance_meta['significance_status']}`")
+        md_lines.append(f"- reason: {significance_meta['significance_skipped_reason']}")
         md_lines.append("")
 
     suite_md = output_dir / "suite_summary.md"

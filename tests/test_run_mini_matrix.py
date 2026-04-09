@@ -85,3 +85,52 @@ def test_build_eval_command_switches_between_base_and_checkpoint_modes(tmp_path)
     assert "--base_only" not in adapter_cmd
     assert "--fewshot_num_examples" not in adapter_cmd
     assert "--model.source" in adapter_cmd
+
+
+def _nested_summary(doc_role: float, relaxed: float, type_f1: float, schema: float, hallucination: float):
+    return {
+        "metrics": {
+            "academic_metrics": {
+                "doc_ee": {
+                    "overall": {"MicroF1": doc_role},
+                    "instance": {"MicroF1": 0.11},
+                    "combination": {"MicroF1": 0.12},
+                    "classification": {"MicroF1": 0.91},
+                }
+            },
+            "strict": {"f1": 0.41},
+            "relaxed": {"f1": relaxed},
+            "type_identification": {"f1": type_f1},
+            "schema_compliance_rate": schema,
+            "hallucination": {"sample_rate": hallucination},
+        }
+    }
+
+
+def test_build_metric_row_preserves_nested_diagnostic_metrics():
+    row = mod.build_metric_row(_nested_summary(0.31, 0.62, 0.73, 0.84, 0.05), 3407)
+
+    assert row["doc_role_micro_f1"] == 0.31
+    assert row["relaxed_f1"] == 0.62
+    assert row["type_f1"] == 0.73
+    assert row["schema_compliance_rate"] == 0.84
+    assert row["hallucination_rate"] == 0.05
+    assert row["seed"] == 3407.0
+
+
+def test_compute_significance_skips_single_seed_and_returns_metadata():
+    seed_map = {
+        "base": {"zeroshot": {3407: _nested_summary(0.2, 0.3, 0.4, 0.5, 0.1)}},
+        "full": {"zeroshot": {3407: _nested_summary(0.25, 0.35, 0.45, 0.55, 0.08)}},
+    }
+
+    significance, metadata = mod.compute_significance(
+        by_run_prompt_seed=seed_map,
+        prompt_modes=["zeroshot"],
+        seeds=[3407],
+        primary_metric="doc_role_micro_f1",
+    )
+
+    assert significance == {}
+    assert metadata["significance_status"] == "skipped_insufficient_pairs"
+    assert metadata["significance_min_pairs"] == 2

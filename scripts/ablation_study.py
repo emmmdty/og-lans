@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from oglans.config import ConfigManager
 from oglans.data.prompt_builder import validate_prompt_variant
+from oglans.utils.academic_eval import ACADEMIC_MAIN_TABLE_METRICS, extract_report_metrics
 from oglans.utils.pathing import infer_dataset_name_from_config as infer_dataset_name_from_loaded_config
 
 # 添加项目根目录到路径
@@ -266,21 +267,21 @@ def _flatten_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
     """
     兼容新版/旧版 evaluate.py 指标结构，统一输出扁平字段。
     """
-    cot_faith = metrics.get("cot_faithfulness", 0.0)
-    if isinstance(cot_faith, dict):
-        cot_faith = cot_faith.get("overall", 0.0)
-
-    return {
-        "doc_role_micro_f1": float(metrics.get("doc_role_micro_f1", metrics.get("academic_metrics", {}).get("doc_ee", {}).get("overall", {}).get("MicroF1", 0.0))),
-        "doc_instance_micro_f1": float(metrics.get("doc_instance_micro_f1", metrics.get("academic_metrics", {}).get("doc_ee", {}).get("instance", {}).get("MicroF1", 0.0))),
-        "doc_combination_micro_f1": float(metrics.get("doc_combination_micro_f1", metrics.get("academic_metrics", {}).get("doc_ee", {}).get("combination", {}).get("MicroF1", 0.0))),
-        "doc_event_type_micro_f1": float(metrics.get("doc_event_type_micro_f1", metrics.get("academic_metrics", {}).get("doc_ee", {}).get("classification", {}).get("MicroF1", 0.0))),
-        "strict_precision": float(metrics.get("strict_precision", metrics.get("strict", {}).get("precision", 0.0))),
-        "strict_recall": float(metrics.get("strict_recall", metrics.get("strict", {}).get("recall", 0.0))),
-        "strict_f1": float(metrics.get("strict_f1", metrics.get("strict", {}).get("f1", 0.0))),
-        "hallucination_rate": float(metrics.get("hallucination_rate", metrics.get("hallucination", {}).get("sample_rate", 0.0))),
-        "cot_faithfulness": float(cot_faith),
-    }
+    return extract_report_metrics(
+        metrics,
+        required_metrics=(
+            "doc_role_micro_f1",
+            "doc_instance_micro_f1",
+            "doc_combination_micro_f1",
+            "doc_event_type_micro_f1",
+            "strict_f1",
+            "relaxed_f1",
+            "type_f1",
+            "schema_compliance_rate",
+            "hallucination_rate",
+        ),
+        optional_metrics=("strict_precision", "strict_recall", "cot_faithfulness"),
+    )
 
 
 def run_experiment(
@@ -532,9 +533,9 @@ def generate_latex_table(results: Dict[str, Dict]) -> str:
     latex.append(r"\centering")
     latex.append(r"\caption{Ablation Study Results on DuEE-Fin}")
     latex.append(r"\label{tab:ablation}")
-    latex.append(r"\begin{tabular}{l|ccc|cc}")
+    latex.append(r"\begin{tabular}{l|cccc}")
     latex.append(r"\toprule")
-    latex.append(r"Model & Strict P & Strict R & Strict F1 & Hall. Rate $\downarrow$ & CoT Faith. \\")
+    latex.append(r"Model & Doc Role F1 & Doc Inst. F1 & Doc Comb. F1 & Event Type F1 \\")
     latex.append(r"\midrule")
     
     for exp_id, exp_config in ABLATION_EXPERIMENTS.items():
@@ -543,28 +544,30 @@ def generate_latex_table(results: Dict[str, Dict]) -> str:
         if row_source.get("status") == "success":
             metrics_source = row_source.get("metrics", {})
         elif row_source.get("aggregated", {}).get("metrics"):
-            metrics_source = {
-                metric: values.get("mean", 0.0)
-                for metric, values in row_source["aggregated"]["metrics"].items()
-            }
+            metrics_source = {}
+            for metric, values in row_source["aggregated"]["metrics"].items():
+                if "mean" not in values:
+                    raise ValueError(f"Missing aggregated mean for metric: {metric}")
+                metrics_source[metric] = values["mean"]
 
         if metrics_source:
             metrics = _flatten_metrics(metrics_source)
 
-            p = metrics["strict_precision"] * 100
-            r = metrics["strict_recall"] * 100
-            f1 = metrics["strict_f1"] * 100
-            hall = metrics["hallucination_rate"] * 100
-            faith = metrics["cot_faithfulness"] * 100
-            
-            row = f"{exp_config.name} & {p:.1f} & {r:.1f} & {f1:.1f} & {hall:.1f} & {faith:.1f} \\\\"
-            
+            role_f1, instance_f1, combination_f1, event_type_f1 = [
+                metrics[name] * 100 for name in ACADEMIC_MAIN_TABLE_METRICS
+            ]
+
+            row = (
+                f"{exp_config.name} & {role_f1:.1f} & {instance_f1:.1f} & "
+                f"{combination_f1:.1f} & {event_type_f1:.1f} \\\\"
+            )
+
             if exp_id == "full":
                 row = r"\textbf{" + row.replace("\\\\", r"} \\")
-            
+
             latex.append(row)
         else:
-            latex.append(f"{exp_config.name} & - & - & - & - & - \\\\")
+            latex.append(f"{exp_config.name} & - & - & - & - \\\\")
     
     latex.append(r"\bottomrule")
     latex.append(r"\end{tabular}")

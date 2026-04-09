@@ -189,3 +189,36 @@ def test_ensure_complete_seed_coverage_fail_fast_on_missing_runs():
             run_keys=["base", "full"],
             seeds=[3407, 3408],
         )
+
+
+def _summary(metric_value: float) -> dict:
+    return {
+        "metrics": {
+            "doc_role_micro_f1": metric_value,
+            "doc_instance_micro_f1": 0.11,
+            "doc_combination_micro_f1": 0.12,
+            "doc_event_type_micro_f1": 0.91,
+            "strict_f1": 0.41,
+            "relaxed_f1": 0.51,
+            "type_f1": 0.61,
+            "strict_precision": 0.42,
+            "strict_recall": 0.4,
+            "schema_compliance_rate": 0.71,
+            "hallucination_rate": 0.09,
+        }
+    }
+
+
+def test_compute_significance_skips_single_seed_and_sets_metadata():
+    significance, metadata = mod._compute_significance(
+        {
+            "base": {3407: _summary(0.2)},
+            "full": {3407: _summary(0.25)},
+        },
+        report_primary_metric="doc_role_micro_f1",
+        expected_seeds=[3407],
+    )
+
+    assert significance == {}
+    assert metadata["significance_status"] == "skipped_insufficient_pairs"
+    assert metadata["significance_min_pairs"] == 2
