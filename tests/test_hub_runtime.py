@@ -80,7 +80,65 @@ def test_resolve_model_name_or_path_uses_modelscope_when_available(monkeypatch, 
     assert resolved == "/tmp/downloaded-model"
 
 
-def test_resolve_model_name_or_path_raises_when_modelscope_fails(monkeypatch, caplog, tmp_path):
+def test_resolve_model_name_or_path_prefers_existing_modelscope_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
+    cached_model_dir = (
+        tmp_path
+        / "data"
+        / "cache"
+        / "modelscope"
+        / "Qwen"
+        / "Qwen3-4B-Instruct-2507"
+    )
+    cached_model_dir.mkdir(parents=True)
+
+    hub_runtime = _load_module()
+
+    fake_modelscope = types.ModuleType("modelscope")
+
+    def snapshot_download(*args, **kwargs):
+        raise AssertionError("snapshot_download should not be called when cache exists")
+
+    fake_modelscope.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "modelscope", fake_modelscope)
+
+    resolved = hub_runtime.resolve_model_name_or_path(
+        "Qwen/Qwen3-4B-Instruct-2507",
+        source="modelscope",
+        project_root=str(tmp_path),
+    )
+
+    assert resolved == str(cached_model_dir.resolve())
+
+
+def test_resolve_model_name_or_path_huggingface_prefers_existing_modelscope_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
+    cached_model_dir = (
+        tmp_path
+        / "data"
+        / "cache"
+        / "modelscope"
+        / "Qwen"
+        / "Qwen3-4B-Instruct-2507"
+    )
+    cached_model_dir.mkdir(parents=True)
+
+    hub_runtime = _load_module()
+
+    resolved = hub_runtime.resolve_model_name_or_path(
+        "Qwen/Qwen3-4B-Instruct-2507",
+        source="huggingface",
+        project_root=str(tmp_path),
+    )
+
+    assert resolved == str(cached_model_dir.resolve())
+
+
+def test_resolve_model_name_or_path_falls_back_to_huggingface_when_modelscope_fails(
+    monkeypatch,
+    caplog,
+    tmp_path,
+):
     monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
 
     hub_runtime = _load_module()
@@ -94,16 +152,16 @@ def test_resolve_model_name_or_path_raises_when_modelscope_fails(monkeypatch, ca
     fake_modelscope.snapshot_download = snapshot_download
     monkeypatch.setitem(sys.modules, "modelscope", fake_modelscope)
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(RuntimeError, match="ModelScope download failed"):
-            hub_runtime.resolve_model_name_or_path(
-                "Qwen/Qwen3-4B-Instruct-2507",
-                source="modelscope",
-                modelscope_cache_dir=str(expected_cache),
-                project_root=str(tmp_path),
-            )
+    with caplog.at_level(logging.WARNING):
+        resolved = hub_runtime.resolve_model_name_or_path(
+            "Qwen/Qwen3-4B-Instruct-2507",
+            source="modelscope",
+            modelscope_cache_dir=str(expected_cache),
+            project_root=str(tmp_path),
+        )
 
-    assert "ModelScope download failed" in caplog.text
+    assert resolved == "Qwen/Qwen3-4B-Instruct-2507"
+    assert "falling back to HuggingFace" in caplog.text
 
 
 def test_resolve_model_name_or_path_allows_explicit_huggingface(monkeypatch, tmp_path):
@@ -153,6 +211,23 @@ def test_build_unsloth_from_pretrained_kwargs_enforces_local_files_only_for_loca
     assert kwargs["model_name"] == "/abs/model"
     assert kwargs["max_seq_length"] == 4096
     assert kwargs["load_in_4bit"] is True
+    assert kwargs["local_files_only"] is True
+
+
+def test_build_unsloth_from_pretrained_kwargs_enforces_local_files_only_for_existing_path(
+    tmp_path,
+):
+    hub_runtime = _load_module()
+    local_model_dir = tmp_path / "Qwen3-4B-Instruct-2507"
+    local_model_dir.mkdir()
+
+    kwargs = hub_runtime.build_unsloth_from_pretrained_kwargs(
+        model_name=str(local_model_dir),
+        max_seq_length=4096,
+        load_in_4bit=True,
+        source="modelscope",
+    )
+
     assert kwargs["local_files_only"] is True
 
 

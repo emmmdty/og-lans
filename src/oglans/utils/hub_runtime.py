@@ -161,6 +161,17 @@ def _log(logger: Any, level: str, message: str) -> None:
         fn(message)
 
 
+def _resolve_modelscope_cache_path(
+    model_name_or_path: str,
+    *,
+    cache_dir: str | os.PathLike[str],
+) -> Optional[str]:
+    candidate = Path(cache_dir).expanduser() / model_name_or_path
+    if candidate.exists():
+        return str(candidate.resolve())
+    return None
+
+
 def resolve_model_name_or_path(
     model_name_or_path: str,
     *,
@@ -184,6 +195,16 @@ def resolve_model_name_or_path(
             "model.source=local requires an existing local filesystem path. "
             f"Got: {model_name_or_path}"
         )
+    if source_name in {"modelscope", "huggingface"}:
+        runtime = configure_modelscope_runtime(project_root or Path.cwd())
+        cache_dir = modelscope_cache_dir or runtime["MODELSCOPE_CACHE"]
+        cached_path = _resolve_modelscope_cache_path(
+            model_name_or_path,
+            cache_dir=cache_dir,
+        )
+        if cached_path is not None:
+            _log(logger, "info", f"Using cached ModelScope model path: {cached_path}")
+            return cached_path
     if source_name == "modelscope":
         runtime = configure_modelscope_runtime(project_root or Path.cwd())
         cache_dir = modelscope_cache_dir or runtime["MODELSCOPE_CACHE"]
@@ -196,16 +217,14 @@ def resolve_model_name_or_path(
         except Exception as exc:  # pragma: no cover - network/backend failure path
             _log(
                 logger,
-                "error",
-                "ModelScope download failed: "
+                "warning",
+                "ModelScope download failed; falling back to HuggingFace: "
                 f"model={model_name_or_path}, cache_dir={cache_dir}, "
                 f"error_type={type(exc).__name__}, error={exc}",
             )
-            raise RuntimeError(
-                "ModelScope download failed. "
-                f"model={model_name_or_path}, cache_dir={cache_dir}, "
-                "explicitly set model.source=huggingface if you want to use Hugging Face instead."
-            ) from exc
+            if project_root is not None:
+                configure_hf_hub_runtime(project_root)
+            return model_name_or_path
 
     if source_name == "huggingface":
         if project_root is not None:
@@ -256,12 +275,13 @@ def build_unsloth_from_pretrained_kwargs(
     remote Hugging Face statistics checks or hub lookups.
     """
     source_name = str(source or "modelscope").lower()
+    resolved_candidate = Path(model_name).expanduser()
     kwargs = {
         "model_name": model_name,
         "max_seq_length": max_seq_length,
         "dtype": dtype,
         "load_in_4bit": load_in_4bit,
-        "local_files_only": source_name == "local",
+        "local_files_only": source_name == "local" or resolved_candidate.exists(),
     }
     validated_attn = validate_attention_implementation(attn_implementation)
     if validated_attn is not None:
