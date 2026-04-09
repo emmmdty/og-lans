@@ -146,6 +146,42 @@ def test_build_eval_command_uses_base_only_for_base_and_checkpoint_for_adapters(
     assert "--base_only" not in adapter_cmd
 
 
+def test_build_eval_command_forwards_stage_and_pool_controls():
+    cmd = mod.build_eval_command(
+        evaluate_path=Path("evaluate.py"),
+        config="configs/config.yaml",
+        protocol="configs/eval_protocol.yaml",
+        role_alias_map="configs/role_aliases_duee_fin.yaml",
+        run_key="base",
+        split="dev",
+        seed=3407,
+        output_file=Path("base.jsonl"),
+        batch_size=4,
+        canonical_metric_mode="analysis_only",
+        report_primary_metric="doc_role_micro_f1",
+        model_name_or_path="/models/base",
+        checkpoint_path=None,
+        prompt_variant="fewshot",
+        fewshot_num_examples=3,
+        stage_mode="two_stage",
+        fewshot_selection_mode="dynamic",
+        fewshot_pool_split="train_fit",
+        train_tune_ratio=0.1,
+        research_split_manifest="configs/research_splits/frozen.json",
+    )
+
+    assert "--stage_mode" in cmd
+    assert "two_stage" in cmd
+    assert "--fewshot_selection_mode" in cmd
+    assert "dynamic" in cmd
+    assert "--fewshot_pool_split" in cmd
+    assert "train_fit" in cmd
+    assert "--train_tune_ratio" in cmd
+    assert "0.1" in cmd
+    assert "--research_split_manifest" in cmd
+    assert "configs/research_splits/frozen.json" in cmd
+
+
 def test_ensure_complete_seed_coverage_fail_fast_on_missing_runs():
     records = [
         mod.RunRecord(

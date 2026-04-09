@@ -54,6 +54,11 @@ NUM_SAMPLES=""
 BATCH_SIZE="16"
 PROMPT_VARIANT=""
 FEWSHOT_NUM_EXAMPLES=""
+STAGE_MODE=""
+FEWSHOT_SELECTION_MODE=""
+FEWSHOT_POOL_SPLIT=""
+TRAIN_TUNE_RATIO=""
+RESEARCH_SPLIT_MANIFEST=""
 EXTRA_ARGS=()
 
 usage() {
@@ -76,6 +81,15 @@ Options:
   --prompt-variant <mode>  zeroshot|fewshot (optional)
   --fewshot-num-examples <int>
                            Few-shot example count (optional)
+  --stage-mode <mode>      single_pass|two_stage (optional)
+  --fewshot-selection-mode <mode>
+                           static|dynamic (optional)
+  --fewshot-pool-split <mode>
+                           train|train_fit (optional)
+  --train-tune-ratio <float>
+                           Optional. train_tune ratio used when no frozen manifest is provided.
+  --research-split-manifest <path>
+                           Optional. Frozen train_fit/train_tune split manifest path.
   -h, --help               Show help.
 
 Other evaluate.py args are forwarded transparently.
@@ -110,6 +124,16 @@ while [[ $# -gt 0 ]]; do
       PROMPT_VARIANT="${2:-}"; shift 2 ;;
     --fewshot-num-examples|--fewshot_num_examples)
       FEWSHOT_NUM_EXAMPLES="${2:-}"; shift 2 ;;
+    --stage-mode|--stage_mode)
+      STAGE_MODE="${2:-}"; shift 2 ;;
+    --fewshot-selection-mode|--fewshot_selection_mode)
+      FEWSHOT_SELECTION_MODE="${2:-}"; shift 2 ;;
+    --fewshot-pool-split|--fewshot_pool_split)
+      FEWSHOT_POOL_SPLIT="${2:-}"; shift 2 ;;
+    --train-tune-ratio|--train_tune_ratio)
+      TRAIN_TUNE_RATIO="${2:-}"; shift 2 ;;
+    --research-split-manifest|--research_split_manifest)
+      RESEARCH_SPLIT_MANIFEST="${2:-}"; shift 2 ;;
     -h|--help)
       usage
       exit 0 ;;
@@ -194,6 +218,21 @@ if [[ -n "$PROMPT_VARIANT" ]]; then
 fi
 if [[ -n "$FEWSHOT_NUM_EXAMPLES" ]]; then
   cmd+=(--fewshot_num_examples "$FEWSHOT_NUM_EXAMPLES")
+fi
+if [[ -n "$STAGE_MODE" ]]; then
+  cmd+=(--stage_mode "$STAGE_MODE")
+fi
+if [[ -n "$FEWSHOT_SELECTION_MODE" ]]; then
+  cmd+=(--fewshot_selection_mode "$FEWSHOT_SELECTION_MODE")
+fi
+if [[ -n "$FEWSHOT_POOL_SPLIT" ]]; then
+  cmd+=(--fewshot_pool_split "$FEWSHOT_POOL_SPLIT")
+fi
+if [[ -n "$TRAIN_TUNE_RATIO" ]]; then
+  cmd+=(--train_tune_ratio "$TRAIN_TUNE_RATIO")
+fi
+if [[ -n "$RESEARCH_SPLIT_MANIFEST" ]]; then
+  cmd+=(--research_split_manifest "$RESEARCH_SPLIT_MANIFEST")
 fi
 cmd+=("${EXTRA_ARGS[@]}")
 "${cmd[@]}"

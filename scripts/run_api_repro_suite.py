@@ -29,7 +29,13 @@ if spec is None or spec.loader is None:
 academic_eval = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(academic_eval)
 aggregate_runs = academic_eval.aggregate_runs
+append_efficiency_metrics = academic_eval.append_efficiency_metrics
 build_significance_metadata = academic_eval.build_significance_metadata
+CORE_DIAGNOSTIC_REPORT_METRICS = academic_eval.CORE_DIAGNOSTIC_REPORT_METRICS
+ACADEMIC_MAIN_TABLE_METRICS = academic_eval.ACADEMIC_MAIN_TABLE_METRICS
+EFFICIENCY_REPORT_METRICS = academic_eval.EFFICIENCY_REPORT_METRICS
+API_SUITE_REPORT_METRICS = academic_eval.API_SUITE_REPORT_METRICS
+COST_REPORT_METRICS = academic_eval.COST_REPORT_METRICS
 extract_report_metrics = academic_eval.extract_report_metrics
 MIN_SIGNIFICANCE_PAIRS = academic_eval.MIN_SIGNIFICANCE_PAIRS
 paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
@@ -109,7 +115,12 @@ def load_json(path: Path) -> Dict:
 
 
 def build_metric_row(summary: Dict, target_metrics: List[str], seed: int) -> Dict[str, float]:
-    row = extract_report_metrics(summary, required_metrics=target_metrics)
+    row = extract_report_metrics(
+        summary,
+        required_metrics=target_metrics,
+        optional_metrics=COST_REPORT_METRICS,
+    )
+    row = append_efficiency_metrics(row)
     row["seed"] = float(seed)
     return row
 
@@ -204,6 +215,11 @@ def build_cmd(
     canonical_metric_mode: str,
     report_primary_metric: str,
     fewshot_num_examples: Optional[int],
+    stage_mode: str = "single_pass",
+    fewshot_selection_mode: str = "dynamic",
+    fewshot_pool_split: str = "train_fit",
+    train_tune_ratio: Optional[float] = None,
+    research_split_manifest: Optional[str] = None,
 ) -> List[str]:
     cmd = [
         sys.executable,
@@ -219,6 +235,9 @@ def build_cmd(
         "--role_alias_map", role_alias_map,
         "--canonical_metric_mode", canonical_metric_mode,
         "--report_primary_metric", report_primary_metric,
+        "--stage_mode", stage_mode,
+        "--fewshot_selection_mode", fewshot_selection_mode,
+        "--fewshot_pool_split", fewshot_pool_split,
     ]
     if model:
         cmd.extend(["--model", model])
@@ -228,6 +247,10 @@ def build_cmd(
         cmd.extend(["--num_samples", str(num_samples)])
     if bootstrap_samples is not None:
         cmd.extend(["--bootstrap_samples", str(bootstrap_samples)])
+    if train_tune_ratio is not None:
+        cmd.extend(["--train_tune_ratio", str(train_tune_ratio)])
+    if research_split_manifest:
+        cmd.extend(["--research_split_manifest", research_split_manifest])
     if mode == "fewshot":
         cmd.append("--use_fewshot")
         if fewshot_num_examples is not None:
@@ -304,6 +327,11 @@ def main():
     parser.add_argument("--json_mode", type=str, default="auto", choices=["auto", "on", "off"])
     parser.add_argument("--bootstrap_samples", type=int, default=None)
     parser.add_argument("--fewshot_num_examples", type=int, default=None)
+    parser.add_argument("--stage_mode", type=str, default="single_pass", choices=["single_pass", "two_stage"])
+    parser.add_argument("--fewshot_selection_mode", type=str, default="dynamic", choices=["static", "dynamic"])
+    parser.add_argument("--fewshot_pool_split", type=str, default="train_fit", choices=["train", "train_fit"])
+    parser.add_argument("--train_tune_ratio", type=float, default=None)
+    parser.add_argument("--research_split_manifest", type=str, default=None)
     parser.add_argument("--role_alias_map", type=str, default="configs/role_aliases_duee_fin.yaml")
     parser.add_argument(
         "--canonical_metric_mode",
@@ -382,6 +410,11 @@ def main():
                 canonical_metric_mode=args.canonical_metric_mode,
                 report_primary_metric=args.report_primary_metric,
                 fewshot_num_examples=args.fewshot_num_examples,
+                stage_mode=args.stage_mode,
+                fewshot_selection_mode=args.fewshot_selection_mode,
+                fewshot_pool_split=args.fewshot_pool_split,
+                train_tune_ratio=args.train_tune_ratio,
+                research_split_manifest=args.research_split_manifest,
             )
 
             print(f"[RUN] mode={mode} seed={seed}")
@@ -409,24 +442,22 @@ def main():
     for rec in successful:
         by_mode_seed.setdefault(rec.mode, {})[rec.seed] = load_json(Path(rec.summary_file))
 
-    target_metrics = [
-        "doc_role_micro_f1",
-        "doc_instance_micro_f1",
-        "doc_combination_micro_f1",
-        "doc_event_type_micro_f1",
-        "strict_f1",
-        "relaxed_f1",
-        "type_f1",
+    target_metrics = list(ACADEMIC_MAIN_TABLE_METRICS) + [
+        metric for metric in API_SUITE_REPORT_METRICS if metric not in ACADEMIC_MAIN_TABLE_METRICS
     ]
+    cost_metrics = list(COST_REPORT_METRICS) + list(EFFICIENCY_REPORT_METRICS)
 
     aggregated: Dict[str, Dict] = {}
     for mode, seed_map in by_mode_seed.items():
         run_metric_rows = []
         for seed, summary in sorted(seed_map.items()):
             run_metric_rows.append(build_metric_row(summary, target_metrics, seed))
+        main_metric_keys = [k for k in target_metrics if all(k in r for r in run_metric_rows)]
+        cost_metric_keys = [k for k in cost_metrics if all(k in r for r in run_metric_rows)]
         aggregated[mode] = {
             "n_success_runs": len(run_metric_rows),
-            "metrics": aggregate_runs(run_metric_rows, [k for k in target_metrics if all(k in r for r in run_metric_rows)]),
+            "metrics": aggregate_runs(run_metric_rows, main_metric_keys),
+            "cost_metrics": aggregate_runs(run_metric_rows, cost_metric_keys),
         }
 
     significance, significance_meta = compute_significance(
@@ -449,6 +480,11 @@ def main():
         "json_mode": args.json_mode,
         "bootstrap_samples": args.bootstrap_samples,
         "fewshot_num_examples": args.fewshot_num_examples,
+        "stage_mode": args.stage_mode,
+        "fewshot_selection_mode": args.fewshot_selection_mode,
+        "fewshot_pool_split": args.fewshot_pool_split,
+        "train_tune_ratio": args.train_tune_ratio,
+        "research_split_manifest": args.research_split_manifest,
         "protocol_path": str((PROJECT_ROOT / args.protocol).resolve()) if not Path(args.protocol).is_absolute() else args.protocol,
         "protocol": protocol,
         "primary_metric": args.report_primary_metric,
@@ -467,7 +503,13 @@ def main():
     for mode in modes:
         md_lines.append(f"## {mode}")
         mode_agg = aggregated.get(mode, {}).get("metrics", {})
+        md_lines.append("### Main Metrics")
         md_lines.append(markdown_table(mode_agg, target_metrics))
+        cost_agg = aggregated.get(mode, {}).get("cost_metrics", {})
+        if cost_agg:
+            md_lines.append("")
+            md_lines.append("### Cost And Efficiency")
+            md_lines.append(markdown_table(cost_agg, cost_metrics))
         md_lines.append("")
     if significance:
         md_lines.append("## Significance (Few-shot vs Zero-shot)")

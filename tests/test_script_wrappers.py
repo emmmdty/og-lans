@@ -90,6 +90,11 @@ def test_eval_shell_wrappers_expose_prompt_variant_controls():
 
     assert "--prompt-variant" in base_text
     assert "--fewshot-num-examples" in base_text
+    assert "--stage-mode" in base_text
+    assert "--fewshot-selection-mode" in base_text
+    assert "--fewshot-pool-split" in base_text
+    assert "--train-tune-ratio" in base_text
+    assert "--research-split-manifest" in base_text
     assert "--num-samples" in base_text
     assert "--num_samples" in base_text
     assert "--prompt-variant" in academic_text
@@ -101,6 +106,11 @@ def test_run_eval_api_wrapper_exposes_base_url_controls():
 
     assert "--base-url" in text
     assert "--base_url" in text
+    assert "--stage-mode" in text
+    assert "--fewshot-selection-mode" in text
+    assert "--fewshot-pool-split" in text
+    assert "--train-tune-ratio" in text
+    assert "--research-split-manifest" in text
     assert '--base_url "$BASE_URL"' in text
 
 

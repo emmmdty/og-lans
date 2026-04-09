@@ -26,6 +26,15 @@ reporting:
     - "doc_combination_micro_f1"
     - "doc_event_type_micro_f1"
 
+research_design:
+  dev_usage: "final_report_only"
+  tuning_source: "train_tune"
+  fewshot_pool_source: "train_fit"
+  split_seed: 3407
+  train_tune_ratio: 0.1
+  allow_gold_type_injection: false
+  allow_dev_tuning: false
+
 metrics:
   version: "2.0"
   report_level: "core_plus_diagnostics"   # core_only | core_plus_diagnostics

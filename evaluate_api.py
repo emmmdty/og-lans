@@ -104,6 +104,14 @@ from oglans.data.prompt_builder import (
     build_inference_prompt_payload,
     resolve_prompt_settings,
 )
+from oglans.utils.research_protocol import (
+    build_fewshot_example_pool as shared_build_fewshot_example_pool,
+    extract_event_types_from_events,
+    resolve_stage_settings as shared_resolve_stage_settings,
+    restrict_schema_to_event_types,
+    select_fewshot_pool_samples,
+    validate_stage_mode,
+)
 from oglans.inference.cat_lite import apply_cat_lite_pipeline, perturb_text_for_counterfactual
 from oglans.utils.academic_eval import bootstrap_confidence_intervals
 from oglans.utils.run_manifest import (
@@ -127,6 +135,9 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 ZERO_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 API_FEWSHOT_SELECTION_MODE = "dynamic"
+DEFAULT_STAGE_MODE = "single_pass"
+DEFAULT_FEWSHOT_POOL_SPLIT = "train_fit"
+DEFAULT_TRAIN_TUNE_RATIO = 0.1
 
 def infer_dataset_name(config: Dict[str, Any]) -> str:
     """
@@ -475,46 +486,37 @@ def build_api_fewshot_example_pool(
     source_split: str = "train",
 ) -> List[Dict[str, Any]]:
     """Build a retrieval-ready few-shot pool from labeled dataset samples."""
-    pool: List[Dict[str, Any]] = []
-    for sample in samples:
-        events = list(getattr(sample, "events", []) or [])
-        if not events:
-            continue
-        event_types: List[str] = []
-        triggers: List[str] = []
-        roles: List[str] = []
-        keywords: List[str] = []
-        for event in events:
-            event_type = event.get("event_type")
-            if isinstance(event_type, str) and event_type and event_type not in event_types:
-                event_types.append(event_type)
-                keywords.append(event_type)
-            trigger = event.get("trigger")
-            if isinstance(trigger, str) and trigger and trigger not in triggers:
-                triggers.append(trigger)
-                keywords.append(trigger)
-            for argument in event.get("arguments", []):
-                role = argument.get("role")
-                if isinstance(role, str) and role and role not in roles:
-                    roles.append(role)
-                value = argument.get("argument")
-                if isinstance(value, str) and value and len(value) <= 12 and value not in keywords:
-                    keywords.append(value)
-        user_prompt = ChinesePromptBuilder.build_user_prompt(str(getattr(sample, "text", "")))
-        assistant_prompt = ChinesePromptBuilder.build_cot_response(events, schema=schema)
-        pool.append(
-            {
-                "id": f"{source_split}:{getattr(sample, 'id', f'sample-{len(pool)}')}",
-                "user": user_prompt,
-                "assistant": assistant_prompt,
-                "source_text": str(getattr(sample, "text", "")),
-                "event_types": event_types or list(getattr(sample, "event_types", []) or []),
-                "triggers": triggers,
-                "roles": roles,
-                "keywords": keywords,
-            }
-        )
-    return pool
+    return shared_build_fewshot_example_pool(
+        samples,
+        schema=schema,
+        source_split=source_split,
+    )
+
+
+def resolve_stage_settings(
+    *,
+    stage_mode: Optional[str] = None,
+    fewshot_selection_mode: Optional[str] = None,
+    fewshot_pool_split: Optional[str] = None,
+    comparison_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    return shared_resolve_stage_settings(
+        stage_mode=stage_mode,
+        fewshot_selection_mode=fewshot_selection_mode,
+        fewshot_pool_split=fewshot_pool_split,
+        comparison_cfg=comparison_cfg,
+        default_stage_mode=DEFAULT_STAGE_MODE,
+        default_selection_mode=API_FEWSHOT_SELECTION_MODE,
+        default_pool_split=DEFAULT_FEWSHOT_POOL_SPLIT,
+    )
+
+
+def _merge_usage(*usage_rows: Dict[str, int]) -> Dict[str, int]:
+    merged = ZERO_USAGE.copy()
+    for row in usage_rows:
+        for key in merged.keys():
+            merged[key] += int((row or {}).get(key, 0))
+    return merged
 
 
 def summarize_fewshot_usage(results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -595,6 +597,7 @@ def process_single_sample(
     json_mode: str = "auto",
     schema: Optional[Dict[str, List[str]]] = None,
     pipeline_mode: str = "e2e",
+    stage_mode: str = "single_pass",
 ):
     """
     样本推理与解析。支持 few-shot、prompt 风格和 JSON 模式。
@@ -602,9 +605,61 @@ def process_single_sample(
     text = sample.text
     gold_events = sample.events
 
+    valid_event_types = list(schema.keys()) if isinstance(schema, dict) else []
+    stage_mode = validate_stage_mode(stage_mode)
+    stage_usage: Dict[str, Dict[str, int]] = {
+        "stage1": ZERO_USAGE.copy(),
+        "stage2": ZERO_USAGE.copy(),
+    }
+    stage_runtime = {
+        "stage1_wall_clock_seconds": 0.0,
+        "stage2_wall_clock_seconds": 0.0,
+    }
+    stage1_predicted_event_types: List[str] = []
+    stage1_parse_success = None
+    stage1_parse_error = None
+    stage2_schema = schema
+    stage2_schema_event_types = valid_event_types
+    response_text = ""
+    api_success = False
+    api_error = None
+    response_meta: Dict[str, Any] = {}
+
+    if stage_mode == "two_stage":
+        stage1_payload = ChinesePromptBuilder.build_event_type_payload(
+            text=text,
+            schema=schema,
+        )
+        stage1_start = time.perf_counter()
+        stage1_response_text, stage1_usage, stage1_api_success, stage1_api_error, stage1_response_meta = perform_api_inference(
+            client,
+            model,
+            stage1_payload["messages"],
+            max_retries,
+            json_mode,
+        )
+        stage_runtime["stage1_wall_clock_seconds"] = round(time.perf_counter() - stage1_start, 6)
+        stage_usage["stage1"] = dict(stage1_usage)
+        stage1_events, stage1_parse_diagnostics = parse_event_list_strict_with_diagnostics(stage1_response_text)
+        stage1_predicted_event_types = extract_event_types_from_events(
+            stage1_events,
+            valid_event_types=valid_event_types,
+        )
+        stage1_parse_success = bool(stage1_parse_diagnostics.get("success", False))
+        stage1_parse_error = stage1_parse_diagnostics.get("error")
+        stage2_schema, stage2_schema_event_types = restrict_schema_to_event_types(
+            schema,
+            stage1_predicted_event_types,
+        )
+        response_meta["stage1"] = {
+            "api_success": stage1_api_success,
+            "api_error": stage1_api_error,
+            "response_meta": stage1_response_meta,
+        }
+
     prompt_payload = build_inference_prompt_payload(
         text=text,
-        schema=schema,
+        schema=stage2_schema,
         use_oneshot=use_fewshot,
         num_examples=fewshot_num_examples,
         fewshot_selection_mode=fewshot_selection_mode,
@@ -612,14 +667,17 @@ def process_single_sample(
     )
     messages = prompt_payload["messages"]
 
-    # Inference
-    response_text, usage, api_success, api_error, response_meta = perform_api_inference(
-        client, 
-        model, 
+    stage2_start = time.perf_counter()
+    response_text, stage2_usage, api_success, api_error, response_meta_stage2 = perform_api_inference(
+        client,
+        model,
         messages,
         max_retries,
-        json_mode
+        json_mode,
     )
+    stage_runtime["stage2_wall_clock_seconds"] = round(time.perf_counter() - stage2_start, 6)
+    stage_usage["stage2"] = dict(stage2_usage)
+    response_meta["stage2"] = response_meta_stage2
 
     # Parse: 使用带诊断的解析器，区分 "[] 成功" 和 "解析失败"
     pred_events, parse_diagnostics = parse_event_list_strict_with_diagnostics(response_text)
@@ -647,13 +705,22 @@ def process_single_sample(
         "gold_events": gold_events,
         "pred_events": pred_events,
         "response_text": response_text,
-        "usage": usage,
+        "usage": _merge_usage(stage_usage["stage1"], stage_usage["stage2"]),
+        "stage_usage": stage_usage,
+        "stage_runtime": stage_runtime,
         "parse_success": parse_success,
         "parse_diagnostics": parse_diagnostics,
         "api_success": api_success,
         "api_error": api_error,
         "response_meta": response_meta,
         "cat_stats": cat_stats,
+        "stage_meta": {
+            "stage_mode": stage_mode,
+            "stage1_predicted_event_types": stage1_predicted_event_types,
+            "stage1_parse_success": stage1_parse_success,
+            "stage1_parse_error": stage1_parse_error,
+            "stage2_schema_event_types": stage2_schema_event_types,
+        },
         "prompt_meta": {
             "fewshot_selection_mode": prompt_payload.get("fewshot_selection_mode", "none"),
             "fewshot_example_ids": prompt_payload.get("fewshot_example_ids", []),
@@ -729,6 +796,39 @@ def main():
         help="推理 prompt 模式（默认 zeroshot）",
     )
     parser.add_argument(
+        "--stage_mode",
+        type=str,
+        default=None,
+        choices=["single_pass", "two_stage"],
+        help="推理阶段模式（single_pass | two_stage）",
+    )
+    parser.add_argument(
+        "--fewshot_selection_mode",
+        type=str,
+        default=None,
+        choices=["static", "dynamic"],
+        help="few-shot 示例选择模式",
+    )
+    parser.add_argument(
+        "--fewshot_pool_split",
+        type=str,
+        default=None,
+        choices=["train", "train_fit"],
+        help="few-shot 检索池来源（完整 train 或 train_fit）",
+    )
+    parser.add_argument(
+        "--train_tune_ratio",
+        type=float,
+        default=None,
+        help="research protocol 中 train_tune 占 train 的比例",
+    )
+    parser.add_argument(
+        "--research_split_manifest",
+        type=str,
+        default=None,
+        help="固定 train_fit/train_tune 划分清单路径；用于保证所有 baseline 与方法可比",
+    )
+    parser.add_argument(
         "--fewshot_num_examples",
         type=int,
         default=None,
@@ -785,6 +885,23 @@ def main():
     prompt_variant = prompt_settings["prompt_variant"]
     use_fewshot = bool(prompt_settings["use_oneshot"])
     fewshot_num_examples = int(prompt_settings["fewshot_num_examples"])
+    stage_settings = resolve_stage_settings(
+        stage_mode=args.stage_mode,
+        fewshot_selection_mode=args.fewshot_selection_mode,
+        fewshot_pool_split=args.fewshot_pool_split,
+        comparison_cfg=comparison_cfg,
+    )
+    args.stage_mode = stage_settings["stage_mode"]
+    args.fewshot_selection_mode = stage_settings["fewshot_selection_mode"]
+    args.fewshot_pool_split = stage_settings["fewshot_pool_split"]
+    if args.train_tune_ratio is None:
+        args.train_tune_ratio = float(
+            comparison_cfg.get("train_tune_ratio", DEFAULT_TRAIN_TUNE_RATIO)
+        )
+    args.research_split_manifest = (
+        args.research_split_manifest
+        or comparison_cfg.get("research_split_manifest_path")
+    )
     metric_settings.setdefault("cot", {})
     metric_settings["cot"]["eval_mode"] = args.cot_eval_mode
 
@@ -876,7 +993,10 @@ def main():
     logger.info(f"🧭 Canonical Metric Mode: {args.canonical_metric_mode}")
     logger.info(f"🧠 CoT Eval Mode: {args.cot_eval_mode}")
     logger.info(f"🧩 Pipeline Mode: {args.pipeline_mode}")
+    logger.info(f"🪜 Stage Mode: {args.stage_mode}")
     logger.info(f"🌐 API Base URL: {base_url} (source={api_runtime['base_url_source']})")
+    if args.research_split_manifest:
+        logger.info("🧪 Research Split Manifest: %s", args.research_split_manifest)
 
     evaluation_mode = str(config.get("evaluation", {}).get("mode", "")).strip().lower()
     if evaluation_mode not in {"scored", "prediction_only"}:
@@ -896,6 +1016,16 @@ def main():
             f"无法加载 split={args.split} 的数据文件，请检查路径: {data_dir}"
         ) from exc
     fewshot_example_pool: List[Dict[str, Any]] = []
+    fewshot_split_manifest: Dict[str, Any] = {
+        "seed": args.seed,
+        "tune_ratio": float(args.train_tune_ratio),
+        "pool_split": args.fewshot_pool_split,
+        "fit_ids": [],
+        "tune_ids": [],
+        "fit_count": 0,
+        "tune_count": 0,
+        "manifest_path": args.research_split_manifest,
+    }
     if use_fewshot:
         try:
             retrieval_samples = adapter.load_data("train")
@@ -903,16 +1033,24 @@ def main():
             raise RuntimeError(
                 f"few-shot 动态检索需要 train split 作为示例池，但未找到数据文件: {data_dir}"
             ) from exc
-        fewshot_example_pool = build_api_fewshot_example_pool(
+        pool_source_samples, fewshot_split_manifest = select_fewshot_pool_samples(
             retrieval_samples,
+            pool_split=args.fewshot_pool_split,
+            tune_ratio=args.train_tune_ratio,
+            seed=args.seed,
+            split_manifest=args.research_split_manifest,
+        )
+        fewshot_example_pool = build_api_fewshot_example_pool(
+            pool_source_samples,
             schema=getattr(adapter, "schema", None),
-            source_split="train",
+            source_split=args.fewshot_pool_split,
         )
         if not fewshot_example_pool:
             raise ValueError("few-shot 动态检索示例池为空，无法继续运行 API few-shot 评测。")
         logger.info(
-            "📚 API few-shot retrieval pool ready: mode=%s, size=%d",
-            API_FEWSHOT_SELECTION_MODE,
+            "📚 API few-shot retrieval pool ready: mode=%s, pool_split=%s, size=%d",
+            args.fewshot_selection_mode,
+            args.fewshot_pool_split,
             len(fewshot_example_pool),
         )
     valid_event_types = set(adapter.get_event_types())
@@ -982,11 +1120,12 @@ def main():
                 sample,
                 use_fewshot,
                 fewshot_num_examples,
-                API_FEWSHOT_SELECTION_MODE if use_fewshot else "static",
+                args.fewshot_selection_mode if use_fewshot else "static",
                 fewshot_example_pool if use_fewshot else None,
                 args.json_mode,
                 prompt_schema,
                 args.pipeline_mode,
+                args.stage_mode,
             ): idx
             for idx, sample in enumerate(samples)
         }
@@ -1058,7 +1197,7 @@ def main():
                             use_oneshot=use_fewshot,
                             num_examples=fewshot_num_examples,
                             fewshot_selection_mode=(
-                                API_FEWSHOT_SELECTION_MODE if use_fewshot else "static"
+                                args.fewshot_selection_mode if use_fewshot else "static"
                             ),
                             fewshot_example_pool=fewshot_example_pool if use_fewshot else None,
                         )
@@ -1111,6 +1250,9 @@ def main():
                     "cat_stats": res.get("cat_stats", {}),
                     "cot_eval_mode": args.cot_eval_mode,
                     "prompt_meta": res.get("prompt_meta", {}),
+                    "stage_meta": res.get("stage_meta", {}),
+                    "stage_usage": res.get("stage_usage", {}),
+                    "stage_runtime": res.get("stage_runtime", {}),
                     "pred_canonical": canonical_pred_events if canonical_enabled else None,
                     "canonical_role_rewrites": rewrite_count if canonical_enabled else 0,
                 })
@@ -1258,10 +1400,17 @@ def main():
     prompt_hashes = {
         "system_prompt_sha256": hash_text(ChinesePromptBuilder.build_system_prompt(schema=prompt_schema)),
         "schema_constraints_sha256": hash_text(prompt_schema_block) if prompt_schema_block else None,
+        "research_split_manifest_sha256": (
+            compute_file_hash(args.research_split_manifest)
+            if args.research_split_manifest and os.path.exists(args.research_split_manifest)
+            else None
+        ),
         "fewshot_selection_mode": (
-            API_FEWSHOT_SELECTION_MODE if use_fewshot else "none"
+            args.fewshot_selection_mode if use_fewshot else "none"
         ),
         "fewshot_retrieval_pool_size": len(fewshot_example_pool) if use_fewshot else 0,
+        "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
+        "stage_mode": args.stage_mode,
         "fewshot_example_selection_counts": (
             fewshot_usage_summary.get("example_selection_counts", {}) if use_fewshot else {}
         ),
@@ -1272,6 +1421,16 @@ def main():
     protocol_hash = compute_file_hash(args.protocol)
     role_alias_map_hash = compute_file_hash(args.role_alias_map)
     
+    stage1_prompt_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage1", {}).get("prompt_tokens", 0)) for item in results)
+    stage1_completion_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage1", {}).get("completion_tokens", 0)) for item in results)
+    stage1_total_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage1", {}).get("total_tokens", 0)) for item in results)
+    stage2_prompt_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage2", {}).get("prompt_tokens", 0)) for item in results)
+    stage2_completion_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage2", {}).get("completion_tokens", 0)) for item in results)
+    stage2_total_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage2", {}).get("total_tokens", 0)) for item in results)
+    stage1_wall_clock_seconds = round(sum(float((item.get("stage_runtime", {}) or {}).get("stage1_wall_clock_seconds", 0.0)) for item in results), 6)
+    stage2_wall_clock_seconds = round(sum(float((item.get("stage_runtime", {}) or {}).get("stage2_wall_clock_seconds", 0.0)) for item in results), 6)
+    wall_clock_seconds = time.time() - run_start_ts
+
     eval_summary = {
         "meta": {
             "run_id": run_id,
@@ -1289,12 +1448,21 @@ def main():
             "has_gold_labels": has_gold_labels,
             "use_fewshot": use_fewshot,
             "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
-            "fewshot_selection_mode": API_FEWSHOT_SELECTION_MODE if use_fewshot else "none",
+            "fewshot_selection_mode": args.fewshot_selection_mode if use_fewshot else "none",
             "fewshot_retrieval_pool_size": len(fewshot_example_pool) if use_fewshot else 0,
+            "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
+            "train_tune_ratio": float(args.train_tune_ratio),
+            "fewshot_split_manifest": fewshot_split_manifest if use_fewshot else None,
+            "research_split_manifest_path": (
+                os.path.abspath(args.research_split_manifest)
+                if args.research_split_manifest
+                else None
+            ),
             "prompt_style": "profile_contract",
             "json_mode": args.json_mode,
             "cot_eval_mode": args.cot_eval_mode,
             "pipeline_mode": args.pipeline_mode,
+            "stage_mode": args.stage_mode,
             "seed": args.seed,
             "model_profile": model_profile,
             "config_hash_sha256": compute_config_hash(config),
@@ -1338,6 +1506,13 @@ def main():
         "token_usage": {
             **token_stats,
             "avg_tokens_per_sample": avg_tokens,
+            "stage1_prompt_tokens": stage1_prompt_tokens,
+            "stage1_completion_tokens": stage1_completion_tokens,
+            "stage1_total_tokens": stage1_total_tokens,
+            "stage2_prompt_tokens": stage2_prompt_tokens,
+            "stage2_completion_tokens": stage2_completion_tokens,
+            "stage2_total_tokens": stage2_total_tokens,
+            "end_to_end_total_tokens": token_stats["total_tokens"],
             "counterfactual_api_calls": counterfactual_api_calls,
             "counterfactual_prompt_tokens": token_stats_counterfactual["prompt_tokens"],
             "counterfactual_completion_tokens": token_stats_counterfactual["completion_tokens"],
@@ -1349,7 +1524,12 @@ def main():
             "failed_call_rate": (api_call_failures / len(samples)) if samples else 0.0,
         },
         "runtime": {
-            "wall_clock_seconds": time.time() - run_start_ts,
+            "wall_clock_seconds": wall_clock_seconds,
+            "samples_per_second": (len(samples) / wall_clock_seconds) if wall_clock_seconds > 0 else 0.0,
+            "seconds_per_100_samples": (wall_clock_seconds * 100.0 / len(samples)) if samples else 0.0,
+            "stage1_wall_clock_seconds": stage1_wall_clock_seconds,
+            "stage2_wall_clock_seconds": stage2_wall_clock_seconds,
+            "end_to_end_wall_clock_seconds": wall_clock_seconds,
         },
         "runtime_manifest": manifest,
         "analysis": {

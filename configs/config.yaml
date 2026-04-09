@@ -236,6 +236,11 @@ comparison:
   role_alias_map_path: "./configs/role_aliases_duee_fin.yaml"
   prompt_variant: "zeroshot"            # zeroshot | fewshot
   fewshot_num_examples: 3
+  stage_mode: "single_pass"             # single_pass | two_stage
+  fewshot_selection_mode: "dynamic"     # static | dynamic
+  fewshot_pool_split: "train_fit"       # train | train_fit
+  train_tune_ratio: 0.1
+  research_split_manifest_path: "./configs/research_splits/duee_fin_train_seed3407_tune0.1.json"
   prompt_builder_version: "phase3_mvp_v1"
   parser_version: "phase3_mvp_v1"
   normalization_version: "phase3_mvp_v1"

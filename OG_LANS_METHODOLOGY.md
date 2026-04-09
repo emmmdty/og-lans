@@ -74,7 +74,19 @@ OG-LANS 的方法论并不把评测视为训练之后的附属步骤，而是把
 
 当前仓库也已经把 `zeroshot / fewshot` 提示模式收敛为显式的 `prompt_variant + fewshot_num_examples` 契约；训练、本地评测与 API 评测都共享这组语义，而旧的 `use_oneshot / use_fewshot` 仅保留为兼容入口。
 
+为了让 API baseline、本地 Qwen-4B baseline 与后续自研方法保持可比，当前仓库又进一步收敛出一套共享研究协议：
+
+- baseline 设计默认遵循 `train_fit / train_tune / dev_final` 三段式纪律；
+- `train_fit` 既用于训练，也用于 few-shot exemplar pool；
+- `train_tune` 只用于在全局层面选择 `single_pass / two_stage`、few-shot 检索策略和后处理开关；
+- `dev_final` 只在所有 prompt、检索、rerank 和 pipeline 冻结后运行一次；
+- 两阶段方案中，Stage 2 只能看到 Stage 1 预测出的事件类型子集，而不能使用任何 gold type。
+
+这意味着仓库当前支持的“单阶段 vs 两阶段”对比，不是把额外人工先验偷偷注入模型，而是在相同 prompt、相同 few-shot 检索池、相同 schema 约束与相同后处理条件下，仅比较“是否显式引入一个事件类型判别阶段”。
+
 还需要强调的是，当前仓库已经区分“论文主表指标”和“工程诊断指标”。对于 DuEE-Fin 这类篇章级事件抽取任务，主表更贴近 DocEE 系列工作中的角色级 Micro-F1、instance 与 combination 指标；而 `strict / relaxed / type`、schema compliance、hallucination、CoT 与 SCV-lite 统计更适合作为辅助分析或附录指标。
+
+同样重要的是，当前仓库已经把“指标表”和“成本表”视为同等重要的研究输出。对于 API baseline 与本地小模型 baseline，summary 与复现实验脚本不仅保留主指标，还会同步记录 token usage、wall-clock 和效率指标（如 `f1_per_1k_tokens` 与 `f1_per_minute`），从而避免只报告最强 F1 而掩盖方法代价。
 
 这意味着项目的方法论并非“只训练一个模型然后看 F1”，而是试图从训练与评测两侧同时约束结构化输出的可靠性。
 

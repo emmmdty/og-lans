@@ -64,6 +64,14 @@ from oglans.data.prompt_builder import (
     build_inference_prompt_payload,
     resolve_prompt_settings,
 )
+from oglans.utils.research_protocol import (
+    build_fewshot_example_pool,
+    extract_event_types_from_events,
+    resolve_stage_settings as shared_resolve_stage_settings,
+    restrict_schema_to_event_types,
+    select_fewshot_pool_samples,
+    validate_stage_mode,
+)
 from oglans.inference.cat_lite import apply_cat_lite_pipeline, perturb_text_for_counterfactual
 from oglans.utils.eval_protocol import (
     canonicalize_pred_roles as shared_canonicalize_pred_roles,
@@ -153,6 +161,39 @@ def _build_arg_parser():
         type=int,
         default=None,
         help="few-shot 示例数（默认读取 comparison.fewshot_num_examples）",
+    )
+    parser.add_argument(
+        "--stage_mode",
+        type=str,
+        default=None,
+        choices=["single_pass", "two_stage"],
+        help="推理阶段模式（single_pass | two_stage）",
+    )
+    parser.add_argument(
+        "--fewshot_selection_mode",
+        type=str,
+        default=None,
+        choices=["static", "dynamic"],
+        help="few-shot 示例选择模式",
+    )
+    parser.add_argument(
+        "--fewshot_pool_split",
+        type=str,
+        default=None,
+        choices=["train", "train_fit"],
+        help="few-shot 检索池来源（完整 train 或 train_fit）",
+    )
+    parser.add_argument(
+        "--train_tune_ratio",
+        type=float,
+        default=None,
+        help="research protocol 中 train_tune 占 train 的比例",
+    )
+    parser.add_argument(
+        "--research_split_manifest",
+        type=str,
+        default=None,
+        help="固定 train_fit/train_tune 划分清单路径；用于保证 baseline 与方法可比",
     )
     parser.add_argument("--verbose", action="store_true", help="输出详细日志")
     parser.add_argument("--do_sample", action="store_true", default=False,
@@ -288,6 +329,32 @@ def resolve_eval_model_path(
     )
 
 
+def resolve_stage_settings(
+    *,
+    stage_mode: Optional[str] = None,
+    fewshot_selection_mode: Optional[str] = None,
+    fewshot_pool_split: Optional[str] = None,
+    comparison_cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    return shared_resolve_stage_settings(
+        stage_mode=stage_mode,
+        fewshot_selection_mode=fewshot_selection_mode,
+        fewshot_pool_split=fewshot_pool_split,
+        comparison_cfg=comparison_cfg,
+        default_stage_mode="single_pass",
+        default_selection_mode="dynamic",
+        default_pool_split="train_fit",
+    )
+
+
+def count_non_pad_tokens(batch_ids, pad_token_id: Optional[int]) -> int:
+    if batch_ids is None:
+        return 0
+    if pad_token_id is None:
+        return int(batch_ids.numel())
+    return int((batch_ids != pad_token_id).sum().item())
+
+
 def main(argv=None):
     # 仅在本地评估执行时加载深度学习依赖，避免 API-only 环境的硬依赖问题
     try:
@@ -359,6 +426,21 @@ def main(argv=None):
     prompt_variant = prompt_settings["prompt_variant"]
     use_fewshot = bool(prompt_settings["use_oneshot"])
     fewshot_num_examples = int(prompt_settings["fewshot_num_examples"])
+    stage_settings = resolve_stage_settings(
+        stage_mode=args.stage_mode,
+        fewshot_selection_mode=args.fewshot_selection_mode,
+        fewshot_pool_split=args.fewshot_pool_split,
+        comparison_cfg=comparison_cfg,
+    )
+    args.stage_mode = stage_settings["stage_mode"]
+    args.fewshot_selection_mode = stage_settings["fewshot_selection_mode"]
+    args.fewshot_pool_split = stage_settings["fewshot_pool_split"]
+    if args.train_tune_ratio is None:
+        args.train_tune_ratio = float(comparison_cfg.get("train_tune_ratio", 0.1))
+    args.research_split_manifest = (
+        args.research_split_manifest
+        or comparison_cfg.get("research_split_manifest_path")
+    )
     if args.report_primary_metric is None:
         args.report_primary_metric = str(protocol.get("primary_metric", "doc_role_micro_f1"))
     args.report_primary_metric = validate_primary_metric(args.report_primary_metric)
@@ -423,6 +505,9 @@ def main(argv=None):
     print(f"🧭 Canonical Metric Mode: {args.canonical_metric_mode}")
     print(f"🧠 CoT Eval Mode: {args.cot_eval_mode}")
     print(f"🧩 Pipeline Mode: {args.pipeline_mode}")
+    print(f"🪜 Stage Mode: {args.stage_mode}")
+    if args.research_split_manifest:
+        print(f"🧪 Research Split Manifest: {args.research_split_manifest}")
     print(f"🧪 Metric Spec Version: {metric_settings.get('version', '2.0')}")
     print(
         f"📦 Model Runtime: source={model_source} "
@@ -509,6 +594,35 @@ def main(argv=None):
         all_samples = all_samples[:args.num_samples]
 
     print(f"   加载 {len(all_samples)} 条样本")
+    fewshot_example_pool = None
+    fewshot_split_manifest = {
+        "seed": args.seed,
+        "tune_ratio": float(args.train_tune_ratio),
+        "pool_split": args.fewshot_pool_split,
+        "fit_ids": [],
+        "tune_ids": [],
+        "fit_count": 0,
+        "tune_count": 0,
+        "manifest_path": args.research_split_manifest,
+    }
+    if use_fewshot:
+        retrieval_samples = adapter.load_data("train")
+        pool_source_samples, fewshot_split_manifest = select_fewshot_pool_samples(
+            retrieval_samples,
+            pool_split=args.fewshot_pool_split,
+            tune_ratio=args.train_tune_ratio,
+            seed=args.seed,
+            split_manifest=args.research_split_manifest,
+        )
+        fewshot_example_pool = build_fewshot_example_pool(
+            pool_source_samples,
+            schema=getattr(adapter, "schema", None),
+            source_split=args.fewshot_pool_split,
+        )
+        print(
+            f"   Few-shot 检索池: mode={args.fewshot_selection_mode}, "
+            f"pool_split={args.fewshot_pool_split}, size={len(fewshot_example_pool)}"
+        )
     has_gold_labels = any(bool(getattr(s, "events", [])) for s in all_samples)
     if evaluation_mode == "scored" and not has_gold_labels:
         raise ValueError(
@@ -549,6 +663,21 @@ def main(argv=None):
     diagnostics_to_save = []
     scv_lite_call_count = 0
     scv_lite_total_seconds = 0.0
+    token_usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "stage1_prompt_tokens": 0,
+        "stage1_completion_tokens": 0,
+        "stage1_total_tokens": 0,
+        "stage2_prompt_tokens": 0,
+        "stage2_completion_tokens": 0,
+        "stage2_total_tokens": 0,
+    }
+    stage_runtime = {
+        "stage1_wall_clock_seconds": 0.0,
+        "stage2_wall_clock_seconds": 0.0,
+    }
 
     # 6. 批量推理
     decoding_strategy = "采样解码 (Sampling)" if args.do_sample else "确定性解码 (Greedy)"
@@ -557,29 +686,103 @@ def main(argv=None):
 
     for i in pbar:
         batch_samples = all_samples[i:i + args.batch_size]
-        batch_prompts = []
+        stage1_payloads = []
+        stage1_event_types_by_sample: List[List[str]] = [[] for _ in batch_samples]
+        stage1_parse_successes: List[Optional[bool]] = [None for _ in batch_samples]
+        stage1_parse_errors: List[Optional[str]] = [None for _ in batch_samples]
+        stage2_schema_by_sample = []
 
-        for sample in batch_samples:
+        if args.stage_mode == "two_stage":
+            for sample in batch_samples:
+                stage1_payload = ChinesePromptBuilder.build_event_type_payload(
+                    text=sample.text,
+                    schema=getattr(adapter, "schema", None),
+                    tokenizer=tokenizer,
+                )
+                stage1_payloads.append(stage1_payload["formatted_text"])
+
+            stage1_inputs = tokenizer(
+                stage1_payloads,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=config['model'].get('max_seq_length', 4096)
+            ).to(device)
+            token_usage["stage1_prompt_tokens"] += count_non_pad_tokens(
+                stage1_inputs.input_ids,
+                tokenizer.pad_token_id,
+            )
+            stage1_generate_kwargs = {
+                "max_new_tokens": 256,
+                "use_cache": True,
+                "pad_token_id": tokenizer.pad_token_id,
+                "eos_token_id": (
+                    terminator_token_ids[0]
+                    if len(terminator_token_ids) == 1
+                    else terminator_token_ids
+                ),
+                "do_sample": False,
+            }
+            stage1_start = time.perf_counter()
+            with torch.no_grad():
+                stage1_outputs = model.generate(**stage1_inputs, **stage1_generate_kwargs)
+            stage_runtime["stage1_wall_clock_seconds"] += time.perf_counter() - stage1_start
+            stage1_generated_ids = stage1_outputs[:, stage1_inputs.input_ids.shape[1]:]
+            token_usage["stage1_completion_tokens"] += count_non_pad_tokens(
+                stage1_generated_ids,
+                tokenizer.pad_token_id,
+            )
+            token_usage["stage1_total_tokens"] = (
+                token_usage["stage1_prompt_tokens"] + token_usage["stage1_completion_tokens"]
+            )
+            stage1_decoded = tokenizer.batch_decode(stage1_generated_ids, skip_special_tokens=True)
+
+            for idx, response in enumerate(stage1_decoded):
+                stage1_events, stage1_diagnostics = parse_event_list_strict_with_diagnostics(response)
+                stage1_event_types_by_sample[idx] = extract_event_types_from_events(
+                    stage1_events,
+                    valid_event_types=list(valid_types or []),
+                )
+                stage1_parse_successes[idx] = bool(stage1_diagnostics.get("success", False))
+                stage1_parse_errors[idx] = stage1_diagnostics.get("error")
+                stage2_schema, _ = restrict_schema_to_event_types(
+                    getattr(adapter, "schema", None),
+                    stage1_event_types_by_sample[idx],
+                )
+                stage2_schema_by_sample.append(stage2_schema)
+        else:
+            stage2_schema_by_sample = [getattr(adapter, "schema", None) for _ in batch_samples]
+
+        batch_prompts = []
+        batch_prompt_meta = []
+        for sample, stage2_schema in zip(batch_samples, stage2_schema_by_sample):
             prompt_payload = build_inference_prompt_payload(
                 text=sample.text,
                 tokenizer=tokenizer,
                 prompt_variant=prompt_variant,
                 use_oneshot=use_fewshot,
-                schema=getattr(adapter, "schema", None),
+                schema=stage2_schema,
                 num_examples=fewshot_num_examples,
+                fewshot_selection_mode=args.fewshot_selection_mode,
+                fewshot_example_pool=fewshot_example_pool,
             )
             batch_prompts.append(prompt_payload["formatted_text"])
+            batch_prompt_meta.append(prompt_payload)
 
-        # Tokenize
         inputs = tokenizer(
-            batch_prompts, 
-            return_tensors="pt", 
-            padding=True, 
+            batch_prompts,
+            return_tensors="pt",
+            padding=True,
             truncation=True,
             max_length=config['model'].get('max_seq_length', 4096)
         ).to(device)
+        token_usage["stage2_prompt_tokens"] += count_non_pad_tokens(
+            inputs.input_ids,
+            tokenizer.pad_token_id,
+        )
         
         # 推理
+        stage2_start = time.perf_counter()
         with torch.no_grad():
             # [修复] 获取 inference 配置节点（直接获取，不要加 ['parameters']）
             inf_cfg = config.get('inference', {})
@@ -610,14 +813,23 @@ def main(argv=None):
                 generate_kwargs["do_sample"] = False
 
             outputs = model.generate(**inputs, **generate_kwargs)
+        stage_runtime["stage2_wall_clock_seconds"] += time.perf_counter() - stage2_start
         
         # 解码
         generated_ids = outputs[:, inputs.input_ids.shape[1]:]
+        token_usage["stage2_completion_tokens"] += count_non_pad_tokens(
+            generated_ids,
+            tokenizer.pad_token_id,
+        )
+        token_usage["stage2_total_tokens"] = (
+            token_usage["stage2_prompt_tokens"] + token_usage["stage2_completion_tokens"]
+        )
         decoded_responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 
         # 处理每个样本
         for j, response in enumerate(decoded_responses):
             sample = batch_samples[j]
+            stage2_schema_event_types = list((stage2_schema_by_sample[j] or {}).keys()) if isinstance(stage2_schema_by_sample[j], dict) else []
             
             pred_events, parse_diagnostics = parse_event_list_strict_with_diagnostics(response)
             parse_success = parse_diagnostics.get("success", False)
@@ -755,6 +967,18 @@ def main(argv=None):
                 "prediction": pred_events,
                 "prediction_canonical": canonical_pred_events if canonical_enabled else None,
                 "canonical_role_rewrites": rewrite_count if canonical_enabled else 0,
+                "prompt_meta": {
+                    "fewshot_selection_mode": batch_prompt_meta[j].get("fewshot_selection_mode", "none"),
+                    "fewshot_example_ids": batch_prompt_meta[j].get("fewshot_example_ids", []),
+                    "fewshot_count": batch_prompt_meta[j].get("fewshot_count", 0),
+                },
+                "stage_meta": {
+                    "stage_mode": args.stage_mode,
+                    "stage1_predicted_event_types": stage1_event_types_by_sample[j],
+                    "stage1_parse_success": stage1_parse_successes[j],
+                    "stage1_parse_error": stage1_parse_errors[j],
+                    "stage2_schema_event_types": stage2_schema_event_types,
+                },
                 "pipeline_mode": args.pipeline_mode,
                 "cat_lite_kept_events": (cat_result.kept_events if cat_result else None),
                 "cat_lite_dropped_events": (cat_result.dropped_events if cat_result else None),
@@ -961,27 +1185,18 @@ def main(argv=None):
 
     prompt_schema = getattr(adapter, "schema", None)
     prompt_schema_block = ChinesePromptBuilder.build_schema_constraints(prompt_schema)
-    selected_fewshot_examples = (
-        ChinesePromptBuilder.select_fewshot_examples(num_examples=fewshot_num_examples)
-        if use_fewshot else []
-    )
     prompt_hashes = {
         "system_prompt_sha256": hash_text(ChinesePromptBuilder.build_system_prompt(schema=prompt_schema)),
         "schema_constraints_sha256": hash_text(prompt_schema_block) if prompt_schema_block else None,
-        "fewshot_example_indices": (
-            list(range(min(fewshot_num_examples, len(ChinesePromptBuilder.FEW_SHOT_EXAMPLES))))
-            if use_fewshot else []
+        "research_split_manifest_sha256": (
+            safe_compute_file_sha256(args.research_split_manifest)
+            if args.research_split_manifest
+            else None
         ),
-        "fewshot_examples_sha256": (
-            [
-                {
-                    "user": hash_text(ex["user"]),
-                    "assistant": hash_text(ex["assistant"]),
-                }
-                for ex in selected_fewshot_examples
-            ]
-            if use_fewshot else []
-        ),
+        "fewshot_selection_mode": args.fewshot_selection_mode if use_fewshot else "none",
+        "fewshot_retrieval_pool_size": len(fewshot_example_pool or []) if use_fewshot else 0,
+        "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
+        "stage_mode": args.stage_mode,
     }
 
     # 新版统一摘要结构（与 evaluate_api.py 对齐）
@@ -1000,6 +1215,15 @@ def main(argv=None):
             "has_gold_labels": True,
             "use_fewshot": use_fewshot,
             "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
+            "fewshot_selection_mode": args.fewshot_selection_mode if use_fewshot else "none",
+            "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
+            "train_tune_ratio": float(args.train_tune_ratio),
+            "fewshot_split_manifest": fewshot_split_manifest if use_fewshot else None,
+            "research_split_manifest_path": (
+                os.path.abspath(args.research_split_manifest)
+                if args.research_split_manifest
+                else None
+            ),
             "prompt_style": "profile_contract",
             "json_mode": "off",
             "seed": args.seed,
@@ -1018,6 +1242,7 @@ def main(argv=None):
             "canonical_metric_mode": args.canonical_metric_mode,
             "cot_eval_mode": args.cot_eval_mode,
             "pipeline_mode": args.pipeline_mode,
+            "stage_mode": args.stage_mode,
             "role_alias_map_path": os.path.abspath(args.role_alias_map) if args.role_alias_map else None,
             "role_alias_map_hash_sha256": safe_compute_file_sha256(args.role_alias_map),
             "role_alias_path": os.path.abspath(args.role_alias_map) if args.role_alias_map else None,
@@ -1112,10 +1337,22 @@ def main(argv=None):
             ),
         },
         "token_usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "avg_tokens_per_sample": 0.0,
+            "prompt_tokens": token_usage["stage1_prompt_tokens"] + token_usage["stage2_prompt_tokens"],
+            "completion_tokens": token_usage["stage1_completion_tokens"] + token_usage["stage2_completion_tokens"],
+            "total_tokens": token_usage["stage1_total_tokens"] + token_usage["stage2_total_tokens"],
+            "avg_tokens_per_sample": (
+                (token_usage["stage1_total_tokens"] + token_usage["stage2_total_tokens"]) / report.total_samples
+                if report.total_samples else 0.0
+            ),
+            "prompt_tokens_estimated": token_usage["stage1_prompt_tokens"] + token_usage["stage2_prompt_tokens"],
+            "completion_tokens_estimated": token_usage["stage1_completion_tokens"] + token_usage["stage2_completion_tokens"],
+            "total_tokens_estimated": token_usage["stage1_total_tokens"] + token_usage["stage2_total_tokens"],
+            "stage1_prompt_tokens": token_usage["stage1_prompt_tokens"],
+            "stage1_completion_tokens": token_usage["stage1_completion_tokens"],
+            "stage1_total_tokens": token_usage["stage1_total_tokens"],
+            "stage2_prompt_tokens": token_usage["stage2_prompt_tokens"],
+            "stage2_completion_tokens": token_usage["stage2_completion_tokens"],
+            "stage2_total_tokens": token_usage["stage2_total_tokens"],
         },
         "api_stats": {
             "failed_calls": 0,
@@ -1123,6 +1360,11 @@ def main(argv=None):
         },
         "runtime": {
             "wall_clock_seconds": wall_clock_seconds,
+            "samples_per_second": (report.total_samples / wall_clock_seconds) if wall_clock_seconds > 0 else 0.0,
+            "seconds_per_100_samples": (wall_clock_seconds * 100.0 / report.total_samples) if report.total_samples else 0.0,
+            "stage1_wall_clock_seconds": round(stage_runtime["stage1_wall_clock_seconds"], 6),
+            "stage2_wall_clock_seconds": round(stage_runtime["stage2_wall_clock_seconds"], 6),
+            "end_to_end_wall_clock_seconds": wall_clock_seconds,
         },
         "runtime_manifest": runtime_manifest,
         "analysis": {

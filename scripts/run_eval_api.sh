@@ -50,6 +50,11 @@ CONCURRENCY="8"
 NUM_SAMPLES=""
 SEED=""
 FEWSHOT="0"                     # 0 | 1
+STAGE_MODE="single_pass"        # single_pass | two_stage
+FEWSHOT_SELECTION_MODE="dynamic" # static | dynamic
+FEWSHOT_POOL_SPLIT="train_fit"  # train | train_fit
+TRAIN_TUNE_RATIO=""             # optional, default from config
+RESEARCH_SPLIT_MANIFEST=""      # optional frozen split manifest path
 JSON_MODE="auto"                # auto | on | off
 COT_EVAL_MODE="self_consistency" # self_consistency | counterfactual
 PIPELINE_MODE="e2e"             # e2e | cat_lite
@@ -105,6 +110,11 @@ Core options:
       --seed <int>             Random seed (run action)
   -f, --fewshot                Enable few-shot
   -z, --zeroshot               Force zero-shot
+      --stage-mode <single_pass|two_stage>
+      --fewshot-selection-mode <static|dynamic>
+      --fewshot-pool-split <train|train_fit>
+      --train-tune-ratio <float>
+      --research-split-manifest <path>
       --json-mode <auto|on|off>
       --cot-eval-mode <self_consistency|counterfactual>
       --pipeline-mode <e2e|cat_lite>
@@ -238,6 +248,21 @@ build_run_cmd() {
   if [[ "$FEWSHOT" == "1" ]]; then
     cmd+=(--use_fewshot)
   fi
+  if [[ -n "$STAGE_MODE" ]]; then
+    cmd+=(--stage_mode "$STAGE_MODE")
+  fi
+  if [[ -n "$FEWSHOT_SELECTION_MODE" ]]; then
+    cmd+=(--fewshot_selection_mode "$FEWSHOT_SELECTION_MODE")
+  fi
+  if [[ -n "$FEWSHOT_POOL_SPLIT" ]]; then
+    cmd+=(--fewshot_pool_split "$FEWSHOT_POOL_SPLIT")
+  fi
+  if [[ -n "$TRAIN_TUNE_RATIO" ]]; then
+    cmd+=(--train_tune_ratio "$TRAIN_TUNE_RATIO")
+  fi
+  if [[ -n "$RESEARCH_SPLIT_MANIFEST" ]]; then
+    cmd+=(--research_split_manifest "$RESEARCH_SPLIT_MANIFEST")
+  fi
   if [[ "$COMPUTE_CI" == "0" ]]; then
     cmd+=(--no-compute_ci)
   fi
@@ -366,6 +391,16 @@ while [[ $# -gt 0 ]]; do
       FEWSHOT="1"; shift ;;
     -z|--zeroshot)
       FEWSHOT="0"; shift ;;
+    --stage-mode|--stage_mode)
+      STAGE_MODE="${2:-}"; shift 2 ;;
+    --fewshot-selection-mode|--fewshot_selection_mode)
+      FEWSHOT_SELECTION_MODE="${2:-}"; shift 2 ;;
+    --fewshot-pool-split|--fewshot_pool_split)
+      FEWSHOT_POOL_SPLIT="${2:-}"; shift 2 ;;
+    --train-tune-ratio|--train_tune_ratio)
+      TRAIN_TUNE_RATIO="${2:-}"; shift 2 ;;
+    --research-split-manifest|--research_split_manifest)
+      RESEARCH_SPLIT_MANIFEST="${2:-}"; shift 2 ;;
     --json-mode)
       JSON_MODE="${2:-}"; shift 2 ;;
     --cot-eval-mode)

@@ -125,6 +125,30 @@ class ChinesePromptBuilder:
 ]
 """
 
+    EVENT_TYPE_SYSTEM_PROMPT = """你是一位专业的中文金融事件抽取专家。你的任务是先判断文本中出现了哪些事件类型。
+
+## 输出格式要求【必须严格遵守】
+1. 严格输出 JSON 数组，禁止输出任何解释、分析、标签或额外文本
+2. 每个元素必须是事件对象，且只包含两个字段：event_type 和 arguments
+3. arguments 必须固定输出为空列表 []
+4. 不要输出 trigger、role、argument 等详细抽取结果
+5. 如果没有检测到任何事件，直接输出 []
+
+## 类型识别约束
+1. 只能输出文本中明确存在的事件类型
+2. 只能从给定 schema 中选择事件类型
+3. 同一事件类型最多输出一次
+4. 不确定时宁可省略，不要猜测
+"""
+
+    EVENT_TYPE_USER_TEMPLATE = """请识别以下金融文本中出现的事件类型。
+
+【文本内容】
+{text}
+
+【输出要求】
+请直接输出 JSON 数组，每个元素格式为 {{"event_type": "<事件类型>", "arguments": []}}。如果没有事件，输出 []。"""
+
     # ========================================
     # 用户输入模板
     # ========================================
@@ -315,6 +339,19 @@ class ChinesePromptBuilder:
         return base
 
     @classmethod
+    def build_event_type_system_prompt(cls, schema: Optional[Dict] = None) -> str:
+        base = cls.EVENT_TYPE_SYSTEM_PROMPT
+        normalized = cls._normalize_schema(schema)
+        if not normalized:
+            return base
+        lines = [
+            "## 可选事件类型",
+            "只能从以下事件类型中选择：",
+            ", ".join(sorted(normalized.keys())),
+        ]
+        return f"{base}\n\n" + "\n".join(lines)
+
+    @classmethod
     def build_user_prompt(cls, text: str, max_length: int = 3500) -> str:
         """
         构建用户输入提示词
@@ -331,6 +368,12 @@ class ChinesePromptBuilder:
             text = text[:max_length] + "...[文本已截断]"
         
         return cls.USER_TEMPLATE.format(text=text)
+
+    @classmethod
+    def build_event_type_user_prompt(cls, text: str, max_length: int = 3500) -> str:
+        if len(text) > max_length:
+            text = text[:max_length] + "...[文本已截断]"
+        return cls.EVENT_TYPE_USER_TEMPLATE.format(text=text)
 
     @classmethod
     def build_cot_response(cls, event_list: List[Dict], schema: Optional[Dict] = None) -> str:
@@ -412,6 +455,32 @@ class ChinesePromptBuilder:
             use_oneshot=False,
         )
         return payload["messages"]
+
+    @classmethod
+    def build_event_type_payload(
+        cls,
+        text: str,
+        schema: Optional[Dict] = None,
+        *,
+        tokenizer: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": cls.build_event_type_system_prompt(schema=schema)},
+            {"role": "user", "content": cls.build_event_type_user_prompt(text)},
+        ]
+        formatted_text: Optional[str] = None
+        if tokenizer is not None:
+            formatted_text = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        return {
+            "messages": messages,
+            "formatted_text": formatted_text,
+            "stage_mode": "event_type_detection",
+            "schema_enabled": bool(schema),
+        }
 
     @classmethod
     def _normalize_retrieval_text(cls, text: str) -> str:

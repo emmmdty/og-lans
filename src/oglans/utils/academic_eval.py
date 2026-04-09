@@ -36,11 +36,27 @@ API_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + (
     "strict_f1",
     "relaxed_f1",
     "type_f1",
+    "schema_compliance_rate",
+    "hallucination_rate",
 )
 OPTIONAL_REPORT_METRICS = (
     "parse_error_rate",
     "parse_success_rate",
     "cot_faithfulness",
+    "avg_tokens_per_sample",
+    "total_tokens",
+    "wall_clock_seconds",
+    "samples_per_second",
+)
+COST_REPORT_METRICS = (
+    "avg_tokens_per_sample",
+    "total_tokens",
+    "wall_clock_seconds",
+    "samples_per_second",
+)
+EFFICIENCY_REPORT_METRICS = (
+    "f1_per_1k_tokens",
+    "f1_per_minute",
 )
 
 
@@ -85,6 +101,8 @@ def extract_report_metrics(
     metrics_obj = payload
     if isinstance(payload.get("metrics"), Mapping):
         metrics_obj = payload["metrics"]  # type: ignore[index]
+    token_usage = _mapping_get(payload, "token_usage") or {}
+    runtime = _mapping_get(payload, "runtime") or {}
 
     if not isinstance(metrics_obj, Mapping):
         raise TypeError("metrics payload must be a mapping.")
@@ -143,6 +161,10 @@ def extract_report_metrics(
             metrics_obj.get("parse_success_rate", parse_statistics.get("parse_success_rate"))
         ),
         "cot_faithfulness": _to_float_or_none(cot_faithfulness),
+        "avg_tokens_per_sample": _to_float_or_none(token_usage.get("avg_tokens_per_sample")),
+        "total_tokens": _to_float_or_none(token_usage.get("total_tokens")),
+        "wall_clock_seconds": _to_float_or_none(runtime.get("wall_clock_seconds")),
+        "samples_per_second": _to_float_or_none(runtime.get("samples_per_second")),
     }
 
     requested_required = tuple(required_metrics or ())
@@ -169,6 +191,22 @@ def extract_report_metrics(
             flat[metric_name] = float(value)
 
     return flat
+
+
+def append_efficiency_metrics(
+    metric_row: Mapping[str, float],
+    *,
+    primary_metric: str = "doc_role_micro_f1",
+) -> Dict[str, float]:
+    row = {str(key): float(value) for key, value in metric_row.items()}
+    primary_value = row.get(primary_metric)
+    total_tokens = row.get("total_tokens")
+    wall_clock_seconds = row.get("wall_clock_seconds")
+    if primary_value is not None and total_tokens is not None and total_tokens > 0:
+        row["f1_per_1k_tokens"] = (primary_value * 1000.0) / total_tokens
+    if primary_value is not None and wall_clock_seconds is not None and wall_clock_seconds > 0:
+        row["f1_per_minute"] = (primary_value * 60.0) / wall_clock_seconds
+    return row
 
 
 def build_significance_metadata(

@@ -164,3 +164,42 @@ def test_build_cmd_forwards_base_url():
 
     assert "--base_url" in cmd
     assert "https://provider.example/v1" in cmd
+
+
+def test_build_cmd_forwards_stage_and_pool_controls():
+    cmd = mod.build_cmd(
+        evaluate_api_path=Path("/tmp/evaluate_api.py"),
+        config="configs/config.yaml",
+        protocol="configs/eval_protocol.yaml",
+        mode="fewshot",
+        split="dev",
+        seed=3407,
+        output_file=Path("/tmp/out.jsonl"),
+        summary_file=Path("/tmp/summary.json"),
+        concurrency=8,
+        json_mode="auto",
+        model="provider-model",
+        base_url=None,
+        num_samples=32,
+        bootstrap_samples=1000,
+        role_alias_map="configs/role_aliases_duee_fin.yaml",
+        canonical_metric_mode="analysis_only",
+        report_primary_metric="doc_role_micro_f1",
+        fewshot_num_examples=3,
+        stage_mode="two_stage",
+        fewshot_selection_mode="dynamic",
+        fewshot_pool_split="train_fit",
+        train_tune_ratio=0.1,
+        research_split_manifest="configs/research_splits/frozen.json",
+    )
+
+    assert "--stage_mode" in cmd
+    assert "two_stage" in cmd
+    assert "--fewshot_selection_mode" in cmd
+    assert "dynamic" in cmd
+    assert "--fewshot_pool_split" in cmd
+    assert "train_fit" in cmd
+    assert "--train_tune_ratio" in cmd
+    assert "0.1" in cmd
+    assert "--research_split_manifest" in cmd
+    assert "configs/research_splits/frozen.json" in cmd

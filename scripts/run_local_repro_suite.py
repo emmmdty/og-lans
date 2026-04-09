@@ -31,7 +31,11 @@ if spec is None or spec.loader is None:
 academic_eval = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(academic_eval)
 aggregate_runs = academic_eval.aggregate_runs
+append_efficiency_metrics = academic_eval.append_efficiency_metrics
+ACADEMIC_MAIN_TABLE_METRICS = academic_eval.ACADEMIC_MAIN_TABLE_METRICS
 build_significance_metadata = academic_eval.build_significance_metadata
+EFFICIENCY_REPORT_METRICS = academic_eval.EFFICIENCY_REPORT_METRICS
+COST_REPORT_METRICS = academic_eval.COST_REPORT_METRICS
 extract_report_metrics = academic_eval.extract_report_metrics
 MIN_SIGNIFICANCE_PAIRS = academic_eval.MIN_SIGNIFICANCE_PAIRS
 paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
@@ -67,6 +71,7 @@ TARGET_METRICS = (
     "schema_compliance_rate",
     "hallucination_rate",
 )
+COST_METRICS = COST_REPORT_METRICS + EFFICIENCY_REPORT_METRICS
 
 
 # Keep this import-safe for tests that load the script via exec_module without
@@ -161,6 +166,11 @@ def build_eval_command(
     checkpoint_path: Optional[str],
     prompt_variant: Optional[str] = None,
     fewshot_num_examples: Optional[int] = None,
+    stage_mode: str = "single_pass",
+    fewshot_selection_mode: str = "dynamic",
+    fewshot_pool_split: str = "train_fit",
+    train_tune_ratio: Optional[float] = None,
+    research_split_manifest: Optional[str] = None,
 ) -> List[str]:
     cmd = [
         sys.executable,
@@ -183,6 +193,12 @@ def build_eval_command(
         canonical_metric_mode,
         "--report_primary_metric",
         report_primary_metric,
+        "--stage_mode",
+        stage_mode,
+        "--fewshot_selection_mode",
+        fewshot_selection_mode,
+        "--fewshot_pool_split",
+        fewshot_pool_split,
     ]
     if model_name_or_path:
         cmd.extend(["--model_name_or_path", model_name_or_path])
@@ -190,6 +206,10 @@ def build_eval_command(
         cmd.extend(["--prompt_variant", prompt_variant])
     if fewshot_num_examples is not None and str(prompt_variant).lower() == "fewshot":
         cmd.extend(["--fewshot_num_examples", str(fewshot_num_examples)])
+    if train_tune_ratio is not None:
+        cmd.extend(["--train_tune_ratio", str(train_tune_ratio)])
+    if research_split_manifest:
+        cmd.extend(["--research_split_manifest", research_split_manifest])
     if run_key == "base":
         cmd.append("--base_only")
     else:
@@ -314,7 +334,12 @@ def markdown_table(agg: Dict[str, Dict], metrics: Sequence[str]) -> str:
 
 
 def _build_run_metrics(summary: Dict, seed: int) -> Dict[str, float]:
-    row = extract_report_metrics(summary, required_metrics=TARGET_METRICS)
+    row = extract_report_metrics(
+        summary,
+        required_metrics=TARGET_METRICS,
+        optional_metrics=COST_METRICS,
+    )
+    row = append_efficiency_metrics(row)
     row["seed"] = float(seed)
     return row
 
@@ -388,6 +413,11 @@ def main() -> None:
     parser.add_argument("--role_alias_map", type=str, default="configs/role_aliases_duee_fin.yaml")
     parser.add_argument("--prompt_variant", type=str, default=None, choices=["zeroshot", "fewshot"])
     parser.add_argument("--fewshot_num_examples", type=int, default=3)
+    parser.add_argument("--stage_mode", type=str, default="single_pass", choices=["single_pass", "two_stage"])
+    parser.add_argument("--fewshot_selection_mode", type=str, default="dynamic", choices=["static", "dynamic"])
+    parser.add_argument("--fewshot_pool_split", type=str, default="train_fit", choices=["train", "train_fit"])
+    parser.add_argument("--train_tune_ratio", type=float, default=None)
+    parser.add_argument("--research_split_manifest", type=str, default=None)
     parser.add_argument(
         "--canonical_metric_mode",
         type=str,
@@ -451,6 +481,11 @@ def main() -> None:
                 checkpoint_path=checkpoint_path,
                 prompt_variant=args.prompt_variant,
                 fewshot_num_examples=args.fewshot_num_examples,
+                stage_mode=args.stage_mode,
+                fewshot_selection_mode=args.fewshot_selection_mode,
+                fewshot_pool_split=args.fewshot_pool_split,
+                train_tune_ratio=args.train_tune_ratio,
+                research_split_manifest=args.research_split_manifest,
             )
 
             print(f"[RUN] run={run_key} seed={seed}")
@@ -498,10 +533,12 @@ def main() -> None:
     for run_key, per_seed in validated_by_run.items():
         metric_rows = [_build_run_metrics(summary, seed) for seed, summary in sorted(per_seed.items())]
         metric_keys = [metric for metric in TARGET_METRICS if metric_rows and all(metric in row for row in metric_rows)]
+        cost_metric_keys = [metric for metric in COST_METRICS if metric_rows and all(metric in row for row in metric_rows)]
         first_summary = next(iter(per_seed.values())) if per_seed else None
         aggregated[run_key] = {
             "n_success_runs": len(metric_rows),
             "metrics": aggregate_runs(metric_rows, metric_keys),
+            "cost_metrics": aggregate_runs(metric_rows, cost_metric_keys),
             "shared_meta": (
                 {key: first_summary["meta"][key] for key in REQUIRED_SHARED_META}
                 if first_summary is not None
@@ -525,6 +562,11 @@ def main() -> None:
         "canonical_metric_mode": canonical_metric_mode,
         "prompt_variant": args.prompt_variant or "zeroshot",
         "fewshot_num_examples": args.fewshot_num_examples if args.prompt_variant == "fewshot" else 0,
+        "stage_mode": args.stage_mode,
+        "fewshot_selection_mode": args.fewshot_selection_mode,
+        "fewshot_pool_split": args.fewshot_pool_split,
+        "train_tune_ratio": args.train_tune_ratio,
+        "research_split_manifest": args.research_split_manifest,
         "runs": [record._asdict() for record in records],
         "aggregated": aggregated,
         "significance": significance,
@@ -539,7 +581,13 @@ def main() -> None:
     md_lines = [f"# Local Reproducibility Suite ({ts})", ""]
     for run_key in run_targets.keys():
         md_lines.append(f"## {run_key}")
+        md_lines.append("### Main Metrics")
         md_lines.append(markdown_table(aggregated.get(run_key, {}).get("metrics", {}), TARGET_METRICS))
+        cost_agg = aggregated.get(run_key, {}).get("cost_metrics", {})
+        if cost_agg:
+            md_lines.append("")
+            md_lines.append("### Cost And Efficiency")
+            md_lines.append(markdown_table(cost_agg, COST_METRICS))
         md_lines.append("")
     if significance:
         md_lines.append("## Significance")

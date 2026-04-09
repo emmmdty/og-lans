@@ -29,6 +29,36 @@ def test_parse_args_supports_base_only_without_checkpoint():
     assert args.checkpoint is None
 
 
+def test_parse_args_supports_stage_mode_and_fewshot_pool_split():
+    args = evaluate_module.parse_args(
+        [
+            "--base_only",
+            "--stage_mode",
+            "two_stage",
+            "--fewshot_selection_mode",
+            "dynamic",
+            "--fewshot_pool_split",
+            "train_fit",
+        ]
+    )
+
+    assert args.stage_mode == "two_stage"
+    assert args.fewshot_selection_mode == "dynamic"
+    assert args.fewshot_pool_split == "train_fit"
+
+
+def test_parse_args_supports_research_split_manifest():
+    args = evaluate_module.parse_args(
+        [
+            "--base_only",
+            "--research_split_manifest",
+            "configs/research_splits/frozen.json",
+        ]
+    )
+
+    assert args.research_split_manifest == "configs/research_splits/frozen.json"
+
+
 def test_parse_args_with_unknown_preserves_cli_overrides():
     args, unknown = evaluate_module.parse_args_with_unknown(
         [

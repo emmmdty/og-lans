@@ -170,3 +170,16 @@ def test_build_api_fewshot_example_pool_extracts_sample_metadata():
     assert example["triggers"] == ["中标"]
     assert "中标公司" in example["roles"]
     assert "【文本内容】" in example["user"]
+
+
+def test_resolve_stage_settings_prefers_cli_overrides():
+    resolved = mod.resolve_stage_settings(
+        stage_mode="two_stage",
+        fewshot_selection_mode="dynamic",
+        fewshot_pool_split="train_fit",
+        comparison_cfg={"stage_mode": "single_pass"},
+    )
+
+    assert resolved["stage_mode"] == "two_stage"
+    assert resolved["fewshot_selection_mode"] == "dynamic"
+    assert resolved["fewshot_pool_split"] == "train_fit"

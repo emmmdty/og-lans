@@ -11,6 +11,7 @@ academic_eval = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(academic_eval)
 
 aggregate_sample_counts = academic_eval.aggregate_sample_counts
+append_efficiency_metrics = academic_eval.append_efficiency_metrics
 bootstrap_confidence_intervals = academic_eval.bootstrap_confidence_intervals
 extract_report_metrics = academic_eval.extract_report_metrics
 metrics_from_sample_counts = academic_eval.metrics_from_sample_counts
@@ -190,6 +191,52 @@ def test_extract_report_metrics_rejects_missing_required_metric():
         )
 
 
+def test_extract_report_metrics_reads_cost_fields_when_requested():
+    payload = {
+        "metrics": {
+            "doc_role_micro_f1": 0.61,
+        },
+        "token_usage": {
+            "avg_tokens_per_sample": 1234.0,
+            "total_tokens": 5678,
+        },
+        "runtime": {
+            "wall_clock_seconds": 12.5,
+            "samples_per_second": 8.0,
+        },
+    }
+
+    metrics = extract_report_metrics(
+        payload,
+        required_metrics=("doc_role_micro_f1",),
+        optional_metrics=(
+            "avg_tokens_per_sample",
+            "total_tokens",
+            "wall_clock_seconds",
+            "samples_per_second",
+        ),
+    )
+
+    assert metrics["doc_role_micro_f1"] == 0.61
+    assert metrics["avg_tokens_per_sample"] == 1234.0
+    assert metrics["total_tokens"] == 5678.0
+    assert metrics["wall_clock_seconds"] == 12.5
+    assert metrics["samples_per_second"] == 8.0
+
+
 def test_paired_permutation_pvalue_rejects_single_pair():
     with pytest.raises(ValueError, match="at least 2"):
         paired_permutation_pvalue([0.4], [0.5])
+
+
+def test_append_efficiency_metrics_computes_cost_normalized_scores():
+    row = append_efficiency_metrics(
+        {
+            "doc_role_micro_f1": 0.5,
+            "total_tokens": 2000.0,
+            "wall_clock_seconds": 30.0,
+        }
+    )
+
+    assert row["f1_per_1k_tokens"] == 0.25
+    assert row["f1_per_minute"] == 1.0
