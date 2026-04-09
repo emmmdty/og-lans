@@ -60,7 +60,7 @@
 - 本地训练、本地评测与 API 评测现在共享同一套 `prompt_variant + fewshot_num_examples` 语义；`use_oneshot/use_fewshot` 仅作为兼容旧 CLI 的别名存在。
 - 当前 summary / metrics 文件已经区分 `academic_metrics` 与 `legacy_metrics`，前者用于论文口径，后者用于兼容旧脚本和旧汇总逻辑。
 - 对 dev 集等带金标场景，当前代码已支持 bootstrap 置信区间；多 seed 复现实验脚本还支持聚合统计和 paired permutation 显著性比较。
-- API 评测场景下，应记录请求模型名与实际返回的 `response_model`；这一点很重要，因为上游 API 别名可能漂移。
+- API 评测场景下，应记录请求模型名、实际返回的 `response_model`，以及实际命中的 `base_url`；这一点很重要，因为上游 API 别名和代理路由都可能漂移。
 - 自动指标不能替代人工误差分析。当前代码已经保留 error breakdown、hallucination、CoT 一致性与反事实检查，但论文或报告仍应补充人工案例分析。
 - 为保证透明性，运行时环境、token usage、wall-clock 等信息也值得保留；这部分当前已经进入 summary 或 manifest，而不是额外依赖手工记录。
 

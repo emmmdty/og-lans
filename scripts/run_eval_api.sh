@@ -45,6 +45,7 @@ CONFIG="configs/config.yaml"
 PROTOCOL="configs/eval_protocol.yaml"
 SPLIT="dev"
 MODEL="deepseek-chat"
+BASE_URL=""
 CONCURRENCY="8"
 NUM_SAMPLES=""
 SEED=""
@@ -98,6 +99,7 @@ Core options:
       --protocol <path>        Eval protocol path. Default: configs/eval_protocol.yaml
   -s, --split <dev|test|train> Dataset split. Default: dev
   -m, --model <name>           Model name. Default: deepseek-chat
+      --base-url <url>         Override API base URL
   -j, --concurrency <int>      API concurrency. Default: 8
   -n, --num-samples <int>      Evaluate first N samples
       --seed <int>             Random seed (run action)
@@ -225,6 +227,9 @@ build_run_cmd() {
   if [[ -n "$NUM_SAMPLES" ]]; then
     cmd+=(--num_samples "$NUM_SAMPLES")
   fi
+  if [[ -n "$BASE_URL" ]]; then
+    cmd+=(--base_url "$BASE_URL")
+  fi
   if [[ -n "$SEED" ]]; then
     cmd+=(--seed "$SEED")
   fi
@@ -347,6 +352,8 @@ while [[ $# -gt 0 ]]; do
       SPLIT="${2:-}"; shift 2 ;;
     -m|--model)
       MODEL="${2:-}"; shift 2 ;;
+    --base-url|--base_url)
+      BASE_URL="${2:-}"; shift 2 ;;
     -j|--concurrency)
       CONCURRENCY="${2:-}"; shift 2 ;;
     -n|--num-samples)

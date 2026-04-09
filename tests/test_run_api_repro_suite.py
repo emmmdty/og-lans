@@ -138,3 +138,29 @@ def test_compute_significance_rejects_incomplete_seed_coverage():
         assert "incomplete seed coverage for significance" in str(exc)
     else:
         raise AssertionError("Expected ValueError for incomplete seed coverage")
+
+
+def test_build_cmd_forwards_base_url():
+    cmd = mod.build_cmd(
+        evaluate_api_path=Path("/tmp/evaluate_api.py"),
+        config="configs/config.yaml",
+        protocol="configs/eval_protocol.yaml",
+        mode="zeroshot",
+        split="dev",
+        seed=3407,
+        output_file=Path("/tmp/out.jsonl"),
+        summary_file=Path("/tmp/summary.json"),
+        concurrency=8,
+        json_mode="auto",
+        model="provider-model",
+        base_url="https://provider.example/v1",
+        num_samples=32,
+        bootstrap_samples=1000,
+        role_alias_map="configs/role_aliases_duee_fin.yaml",
+        canonical_metric_mode="analysis_only",
+        report_primary_metric="doc_role_micro_f1",
+        fewshot_num_examples=None,
+    )
+
+    assert "--base_url" in cmd
+    assert "https://provider.example/v1" in cmd

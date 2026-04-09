@@ -96,6 +96,14 @@ def test_eval_shell_wrappers_expose_prompt_variant_controls():
     assert "--fewshot-num-examples" in academic_text
 
 
+def test_run_eval_api_wrapper_exposes_base_url_controls():
+    text = _read_script("run_eval_api.sh")
+
+    assert "--base-url" in text
+    assert "--base_url" in text
+    assert '--base_url "$BASE_URL"' in text
+
+
 def test_removed_auxiliary_shell_scripts_are_absent():
     removed = [
         ROOT / "scripts" / "run_debug.sh",

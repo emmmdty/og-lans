@@ -50,7 +50,7 @@ from pathlib import Path
 from dataclasses import asdict
 from tqdm import tqdm
 from openai import OpenAI
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 
@@ -254,6 +254,65 @@ def compute_file_hash(path: Optional[str]) -> Optional[str]:
 
 def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def resolve_api_runtime_config(
+    *,
+    base_url_override: Optional[str],
+    model_override: Optional[str],
+    api_cfg: Dict[str, Any],
+    environ: Optional[Mapping[str, str]] = None,
+) -> Dict[str, Optional[str]]:
+    """Resolve effective API endpoint/model settings with explicit provenance."""
+    env = environ or os.environ
+
+    if model_override:
+        model_name = str(model_override)
+        model_source = "cli"
+    elif api_cfg.get("model"):
+        model_name = str(api_cfg["model"])
+        model_source = "config"
+    else:
+        model_name = "deepseek-chat"
+        model_source = "default"
+
+    if base_url_override:
+        base_url = str(base_url_override)
+        base_url_source = "cli"
+    elif env.get("DEEPSEEK_BASE_URL"):
+        base_url = str(env["DEEPSEEK_BASE_URL"])
+        base_url_source = "env:DEEPSEEK_BASE_URL"
+    elif env.get("OPENAI_BASE_URL"):
+        base_url = str(env["OPENAI_BASE_URL"])
+        base_url_source = "env:OPENAI_BASE_URL"
+    elif api_cfg.get("base_url"):
+        base_url = str(api_cfg["base_url"])
+        base_url_source = "config"
+    else:
+        base_url = "https://api.deepseek.com"
+        base_url_source = "default"
+
+    if env.get("DEEPSEEK_API_KEY"):
+        api_key = str(env["DEEPSEEK_API_KEY"])
+        api_key_source = "env:DEEPSEEK_API_KEY"
+    elif env.get("OPENAI_API_KEY"):
+        api_key = str(env["OPENAI_API_KEY"])
+        api_key_source = "env:OPENAI_API_KEY"
+    elif api_cfg.get("api_key"):
+        api_key = str(api_cfg["api_key"])
+        api_key_source = "config"
+    else:
+        api_key = None
+        api_key_source = None
+
+    return {
+        "model_name": model_name,
+        "model_source": model_source,
+        "base_url": base_url,
+        "base_url_source": base_url_source,
+        "api_key": api_key,
+        "api_key_source": api_key_source,
+    }
 
 
 def load_eval_protocol(path: Optional[str]) -> Dict[str, Any]:
@@ -512,6 +571,7 @@ def main():
         help="评估协议文件（主指标、种子、并发、统计设置）",
     )
     parser.add_argument("--model", type=str, default=None, help="覆盖配置文件中的 api_evaluation.model")
+    parser.add_argument("--base_url", type=str, default=None, help="覆盖配置文件或环境变量中的 API Base URL")
     parser.add_argument("--split", type=str, default="dev", choices=["dev", "test", "train"])
     parser.add_argument("--seed", type=int, default=None, help="随机种子，默认读取 config.project.seed")
     parser.add_argument("--num_samples", type=int, default=None)
@@ -646,16 +706,15 @@ def main():
 
     # Initialize Client
     # 优先使用环境变量，配置文件中不应包含明文 API Key
-    api_key = (
-        os.getenv("DEEPSEEK_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or api_cfg.get('api_key')
+    api_runtime = resolve_api_runtime_config(
+        base_url_override=args.base_url,
+        model_override=args.model,
+        api_cfg=api_cfg,
+        environ=os.environ,
     )
-    base_url = (
-        os.getenv("DEEPSEEK_BASE_URL")
-        or os.getenv("OPENAI_BASE_URL")
-        or api_cfg.get('base_url', "https://api.deepseek.com")
-    )
+    api_key = api_runtime["api_key"]
+    base_url = str(api_runtime["base_url"])
+    model_name = str(api_runtime["model_name"])
     if not api_key:
         raise ValueError(
             "❌ API Key 未配置！请设置 DEEPSEEK_API_KEY（推荐）或 OPENAI_API_KEY。"
@@ -670,7 +729,6 @@ def main():
     dataset_name = infer_dataset_name(config)
     eval_api_root = infer_eval_api_root(config, dataset_name)
     dataset_name_lower = dataset_name.lower().replace("-", "_")
-    model_name = args.model or api_cfg.get('model', 'deepseek-chat')
     shot_tag = prompt_variant
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     run_id = f"{timestamp}_{args.split}_seed{args.seed}_{shot_tag}_{sanitize_tag(model_name)}_p{os.getpid()}"
@@ -709,14 +767,14 @@ def main():
     logger.info(f"🆔 Run ID: {run_id}")
     logger.info(f"📁 Run Dir: {run_dir}")
     logger.info(f"📂 Output File: {args.output_file}")
-    logger.info(f"⚙️ Config: Split={args.split}, Model={args.model or api_cfg.get('model')}, Seed={args.seed}")
+    logger.info(f"⚙️ Config: Split={args.split}, Model={model_name}, Seed={args.seed}")
     logger.info(f"📜 Protocol: {args.protocol}")
     logger.info(f"🎯 Primary Metric: {args.report_primary_metric}")
     logger.info(f"🧪 Metric Spec Version: {metric_settings.get('version', '2.0')}")
     logger.info(f"🧭 Canonical Metric Mode: {args.canonical_metric_mode}")
     logger.info(f"🧠 CoT Eval Mode: {args.cot_eval_mode}")
     logger.info(f"🧩 Pipeline Mode: {args.pipeline_mode}")
-    logger.info(f"🌐 API Base URL: {base_url}")
+    logger.info(f"🌐 API Base URL: {base_url} (source={api_runtime['base_url_source']})")
 
     evaluation_mode = str(config.get("evaluation", {}).get("mode", "")).strip().lower()
     if evaluation_mode not in {"scored", "prediction_only"}:
@@ -1099,6 +1157,9 @@ def main():
             "run_dir": os.path.abspath(run_dir),
             "timestamp": timestamp,
             "model": model_name,
+            "model_source": api_runtime["model_source"],
+            "api_base_url": base_url,
+            "api_base_url_source": api_runtime["base_url_source"],
             "api_response_models": api_response_models,
             "dataset": dataset_name,
             "num_samples": len(samples),

@@ -197,6 +197,7 @@ def build_cmd(
     concurrency: int,
     json_mode: str,
     model: Optional[str],
+    base_url: Optional[str],
     num_samples: Optional[int],
     bootstrap_samples: Optional[int],
     role_alias_map: str,
@@ -221,6 +222,8 @@ def build_cmd(
     ]
     if model:
         cmd.extend(["--model", model])
+    if base_url:
+        cmd.extend(["--base_url", base_url])
     if num_samples is not None:
         cmd.extend(["--num_samples", str(num_samples)])
     if bootstrap_samples is not None:
@@ -295,6 +298,7 @@ def main():
     parser.add_argument("--seeds", type=str, default="3407,3408,3409")
     parser.add_argument("--modes", type=str, default="zeroshot,fewshot")
     parser.add_argument("--model", type=str, default=None)
+    parser.add_argument("--base_url", type=str, default=None)
     parser.add_argument("--num_samples", type=int, default=None)
     parser.add_argument("--concurrency", type=int, default=None)
     parser.add_argument("--json_mode", type=str, default="auto", choices=["auto", "on", "off"])
@@ -371,6 +375,7 @@ def main():
                 concurrency=args.concurrency,
                 json_mode=args.json_mode,
                 model=args.model,
+                base_url=args.base_url,
                 num_samples=args.num_samples,
                 bootstrap_samples=args.bootstrap_samples,
                 role_alias_map=args.role_alias_map,
@@ -438,6 +443,7 @@ def main():
         "seeds": seeds,
         "modes": modes,
         "model": args.model,
+        "base_url": args.base_url,
         "num_samples": args.num_samples,
         "concurrency": args.concurrency,
         "json_mode": args.json_mode,
