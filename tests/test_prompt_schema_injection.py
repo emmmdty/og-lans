@@ -215,3 +215,35 @@ def test_build_inference_prompt_payload_records_dynamic_fewshot_example_ids():
     assert payload["fewshot_count"] == 1
     assert payload["fewshot_selection_mode"] == "dynamic"
     assert payload["fewshot_example_ids"] == ["bid-example"]
+
+
+def test_dynamic_selection_reranks_acquisition_queries_toward_focused_examples():
+    example_pool = [
+        {
+            "id": "mixed-acquisition-example",
+            "user": "u1",
+            "assistant": "a1",
+            "source_text": "国家电网公司签署股权购买协议推进并购贷款安排，拟全资收购目标公司100%股权并以相关股权质押给银行。",
+            "event_types": ["企业收购", "质押"],
+            "triggers": ["收购", "质押"],
+            "keywords": ["国家电网公司", "签署", "股权", "购买", "协议", "并购", "贷款", "收购", "100%股权", "质押"],
+        },
+        {
+            "id": "focused-acquisition-example",
+            "user": "u2",
+            "assistant": "a2",
+            "source_text": "公司收购目标公司。",
+            "event_types": ["企业收购"],
+            "triggers": ["收购"],
+            "keywords": ["收购"],
+        },
+    ]
+
+    selected = ChinesePromptBuilder.select_fewshot_examples(
+        num_examples=1,
+        text="国家电网公司与卖方签署股权购买协议，拟全资收购目标公司100%股权并完成交割。",
+        selection_mode="dynamic",
+        example_pool=example_pool,
+    )
+
+    assert selected[0]["id"] == "focused-acquisition-example"

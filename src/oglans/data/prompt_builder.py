@@ -246,6 +246,17 @@ class ChinesePromptBuilder:
         "项目",
         "股份",
     }
+    _EVENT_TYPE_RETRIEVAL_CUES = {
+        "企业收购": (
+            "收购",
+            "并购",
+            "交割",
+            "全资收购",
+            "股权购买协议",
+            "购买协议",
+            "并购贷款",
+        ),
+    }
 
     @classmethod
     def _normalize_schema(cls, schema: Optional[Dict]) -> Dict[str, List[str]]:
@@ -494,6 +505,52 @@ class ChinesePromptBuilder:
         )
 
     @classmethod
+    def _infer_target_event_types(
+        cls,
+        text: str,
+        example_pool: Iterable[Dict[str, Any]],
+    ) -> Set[str]:
+        query_text = str(text or "")
+        inferred: Set[str] = set()
+        available_event_types = {
+            str(event_type)
+            for example in example_pool
+            for event_type in example.get("event_types", [])
+            if event_type
+        }
+        for event_type in available_event_types:
+            if event_type in query_text:
+                inferred.add(event_type)
+        for event_type, cues in cls._EVENT_TYPE_RETRIEVAL_CUES.items():
+            if event_type not in available_event_types:
+                continue
+            if any(cue in query_text for cue in cues):
+                inferred.add(event_type)
+        return inferred
+
+    @classmethod
+    def _event_type_focus_key(
+        cls,
+        example: Dict[str, Any],
+        target_event_types: Set[str],
+    ) -> Tuple[int, int, int, int]:
+        example_types = {
+            str(event_type)
+            for event_type in example.get("event_types", [])
+            if event_type
+        }
+        overlap = len(example_types & target_event_types)
+        extra = len(example_types - target_event_types)
+        focused = 1 if overlap > 0 and extra == 0 else 0
+        exact_single = 1 if len(target_event_types) == 1 and example_types == target_event_types else 0
+        return (
+            exact_single,
+            focused,
+            overlap,
+            -extra,
+        )
+
+    @classmethod
     def select_dynamic_fewshot_examples(
         cls,
         *,
@@ -509,9 +566,27 @@ class ChinesePromptBuilder:
         if not normalized_pool:
             return []
 
+        target_event_types = cls._infer_target_event_types(text, normalized_pool)
+        candidate_pool = normalized_pool
+        if target_event_types:
+            constrained_pool = [
+                example for example in normalized_pool
+                if {
+                    str(event_type)
+                    for event_type in example.get("event_types", [])
+                    if event_type
+                } & target_event_types
+            ]
+            if constrained_pool:
+                candidate_pool = constrained_pool
+
         ranked = sorted(
-            normalized_pool,
-            key=lambda example: cls._score_fewshot_example(text, example, schema=schema),
+            candidate_pool,
+            key=lambda example: (
+                cls._event_type_focus_key(example, target_event_types)
+                if target_event_types else (0, 0, 0, 0),
+                cls._score_fewshot_example(text, example, schema=schema),
+            ),
             reverse=True,
         )
         selected: List[Dict[str, Any]] = []
