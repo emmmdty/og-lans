@@ -38,6 +38,8 @@ def test_resolve_api_runtime_config_cli_base_url_overrides_env_and_config(monkey
 def test_resolve_api_runtime_config_env_base_url_overrides_config(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_BASE_URL", "https://env.openai.example/v1")
+    monkeypatch.delenv("DEEPSEEK_DEFAULT_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_DEFAULT_MODEL", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
 
@@ -63,6 +65,8 @@ def test_resolve_api_runtime_config_env_base_url_overrides_config(monkeypatch):
 def test_resolve_api_runtime_config_falls_back_to_config(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_DEFAULT_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_DEFAULT_MODEL", raising=False)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
