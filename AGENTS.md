@@ -43,6 +43,8 @@
 - `uv run python scripts/run_local_repro_suite.py --config configs/config.yaml --base-model Qwen/Qwen3-4B-Instruct-2507 --split dev --checkpoints full=logs/DuEE-Fin/checkpoints/exp1`：汇总本地基座模型与 checkpoint 的多 seed 复现实验。
 - `uv run python scripts/ablation_study.py --config configs/config.yaml --experiments A1,A2`：运行指定消融实验。
 - `uv run python scripts/run_mini_matrix.py --config configs/config.yaml --base_model ./data/cache/modelscope/Qwen/Qwen3-4B-Instruct-2507 --seeds 3407,3408,3409`：运行 mini 全链路对比矩阵（base/full/A1-A7，可配 zeroshot/fewshot）。
+- `uv run python scripts/audit_baseline_matrix.py --suite-summary <suite_summary.json>`：审查本地 baseline 四行矩阵，分析 `single_pass/two_stage` 与 `zeroshot/fewshot` 的差异。
+- `uv run python scripts/audit_training_signal.py --checkpoint-manifest <run_manifest.json>`：审查训练侧 `LANS/SCV` 负样本统计与导出口径。
 - `bash scripts/run_eval_api.sh --preflight`：检查 API 评测运行前置条件。
 - `bash scripts/run_eval_academic.sh --help`：查看多 seed 学术口径评测入口。
 - `uv run python scripts/build_graph.py --dataset_name DuEE-Fin`：从 schema 构建本体图缓存。

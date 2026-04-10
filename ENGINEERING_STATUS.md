@@ -80,6 +80,8 @@
 - `run_api_repro_suite.py`：多 seed、多模式 API 复现实验汇总。
 - `run_local_repro_suite.py`：本地 checkpoint 多 seed 复现实验汇总。
 - `run_mini_matrix.py`：在小样本子集上串起 base/full/A1-A7、zeroshot/fewshot 与多 seed 的 mini 对比矩阵。
+- `audit_baseline_matrix.py`：对本地 baseline 四行矩阵做协议审查，输出 `single_pass / two_stage` 与 `zeroshot / fewshot` 的差异分析。
+- `audit_training_signal.py`：审查训练侧 `LANS / SCV` 统计、导出样本口径与负样本难度分布。
 - `validate_academic_artifacts.py`：检查评测摘要字段完整性。
 - `build_graph.py`：从 schema 构建事件本体图。
 - `ablation_study.py`：按配置覆盖组织消融实验。
