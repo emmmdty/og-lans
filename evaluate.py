@@ -1136,6 +1136,13 @@ def main(argv=None):
     }
     academic_metrics_block = {
         "doc_ee": report.doc_ee,
+        "legacy_dueefin": {
+            "overall": {
+                "precision": round(report.strict_precision, 4),
+                "recall": round(report.strict_recall, 4),
+                "f1": round(report.strict_f1, 4),
+            }
+        },
         "ee_text_proxy": report.ee_text_proxy,
         "primary_metric": args.report_primary_metric,
         "primary_metric_value": round(

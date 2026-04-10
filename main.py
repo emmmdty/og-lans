@@ -79,6 +79,11 @@ except Exception:  # pragma: no cover - compatibility for tests stubbing utils p
             "tune_count": 0,
             "pool_split": "train_fit",
         }
+try:
+    from oglans.utils.teacher_silver import load_teacher_silver_samples
+except Exception:  # pragma: no cover - compatibility for tests stubbing utils package
+    def load_teacher_silver_samples(*args, **kwargs):
+        raise RuntimeError("teacher_silver support is unavailable in the current test stub environment")
 from oglans.data.prompt_builder import (
     PROMPT_BUILDER_VERSION,
     build_inference_prompt_payload,
@@ -277,6 +282,34 @@ def main():
         len(effective_train_samples),
         len(samples),
     )
+    teacher_silver_cfg = config.get("training", {}).get("teacher_silver", {}) or {}
+    teacher_silver_enabled = bool(teacher_silver_cfg.get("enabled", False))
+    teacher_silver_path = teacher_silver_cfg.get("path")
+    teacher_silver_max_samples = teacher_silver_cfg.get("max_samples")
+    teacher_silver_id_prefix = str(teacher_silver_cfg.get("id_prefix", "teacher"))
+    teacher_silver_samples = []
+    if teacher_silver_enabled:
+        if not teacher_silver_path:
+            raise ValueError("training.teacher_silver.enabled=true requires training.teacher_silver.path")
+        teacher_silver_samples = load_teacher_silver_samples(
+            teacher_silver_path,
+            schema=getattr(adapter, "schema", None),
+            max_text_length=int(getattr(adapter, "max_text_length", 3500)),
+            max_samples=teacher_silver_max_samples,
+            id_prefix=teacher_silver_id_prefix,
+        )
+        logger.info(
+            "🪙 Teacher silver loaded: count=%s, path=%s",
+            len(teacher_silver_samples),
+            os.path.abspath(str(teacher_silver_path)),
+        )
+    training_input_samples = list(effective_train_samples) + list(teacher_silver_samples)
+    logger.info(
+        "📦 Training input summary: gold_train_fit=%s, teacher_silver=%s, total=%s",
+        len(effective_train_samples),
+        len(teacher_silver_samples),
+        len(training_input_samples),
+    )
 
     protocol_path = comparison_cfg.get("eval_protocol_path")
     role_alias_path = comparison_cfg.get("role_alias_map_path")
@@ -289,7 +322,7 @@ def main():
     # 训练
     logger.info(">>> Stage 2: Training")
     try:
-        trainer = create_trainer(config, samples)
+        trainer = create_trainer(config, training_input_samples)
         trainer.load_model()
         prompt_payload = build_inference_prompt_payload(
             text=samples[0].text if samples else "",
@@ -358,9 +391,20 @@ def main():
                 ),
                 "research_split_manifest_hash": training_split_manifest_hash,
                 "configured_train_count": len(samples),
+                "effective_gold_train_count": len(effective_train_samples),
+                "teacher_silver_enabled": teacher_silver_enabled,
+                "teacher_silver_path": (
+                    os.path.abspath(str(teacher_silver_path))
+                    if teacher_silver_path
+                    else None
+                ),
+                "teacher_silver_hash": optional_file_sha256(str(teacher_silver_path)) if teacher_silver_path else None,
+                "teacher_silver_count": len(teacher_silver_samples),
+                "teacher_silver_max_samples": teacher_silver_max_samples,
+                "total_training_input_count": len(training_input_samples),
                 "effective_train_count": trainer_runtime_stats.get("training_protocol", {}).get(
                     "effective_train_count",
-                    len(effective_train_samples),
+                    len(training_input_samples),
                 ),
                 "training_stage_breakdown": trainer_runtime_stats.get("training_protocol", {}).get(
                     "training_stage_breakdown",

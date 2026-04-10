@@ -57,6 +57,7 @@ SUPPORTED_PRIMARY_METRICS = (
     "doc_event_type_macro_f1",
     "doc_instance_micro_f1",
     "doc_combination_micro_f1",
+    "legacy_dueefin_overall_f1",
     "strict_f1",
     "relaxed_f1",
     "type_f1",

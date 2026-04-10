@@ -96,6 +96,10 @@ model:
   source: modelscope
 training:
   mode: preference
+  teacher_silver:
+    enabled: true
+    path: ./logs/DuEE-Fin/silver/train_fit_teacher.jsonl
+    max_samples: 128
 algorithms:
   lans:
     enabled: true
@@ -142,6 +146,9 @@ evaluation:
     assert meta["fewshot_selection_mode"] == "dynamic"
     assert meta["train_tune_ratio"] == 0.1
     assert meta["research_split_manifest_path"].endswith("duee_fin_train_seed3407_tune0.1.json")
+    assert meta["teacher_silver_enabled"] is True
+    assert meta["teacher_silver_path"].endswith("train_fit_teacher.jsonl")
+    assert meta["teacher_silver_max_samples"] == 128
     assert isinstance(meta["config_hash_sha256"], str)
     assert len(meta["config_hash_sha256"]) == 64
 

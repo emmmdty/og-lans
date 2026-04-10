@@ -1329,6 +1329,9 @@ def build_primary_metric_map(report: MetricsReport) -> Dict[str, float]:
     instance = doc_ee.get("instance", {})
     combination = doc_ee.get("combination", {})
     return {
+        "legacy_dueefin_overall_precision": float(report.strict_precision),
+        "legacy_dueefin_overall_recall": float(report.strict_recall),
+        "legacy_dueefin_overall_f1": float(report.strict_f1),
         "strict_f1": float(report.strict_f1),
         "relaxed_f1": float(report.relaxed_f1),
         "type_f1": float(report.type_f1),

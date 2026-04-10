@@ -30,6 +30,14 @@ def test_validate_primary_metric_accepts_doc_level_primary_metric():
     assert resolve_primary_metric_value({"doc_role_micro_f1": 0.42}, "doc_role_micro_f1") == 0.42
 
 
+def test_validate_primary_metric_accepts_legacy_dueefin_track():
+    assert validate_primary_metric("legacy_dueefin_overall_f1") == "legacy_dueefin_overall_f1"
+    assert resolve_primary_metric_value(
+        {"legacy_dueefin_overall_f1": 0.75},
+        "legacy_dueefin_overall_f1",
+    ) == 0.75
+
+
 def test_resolve_primary_metric_value_requires_explicit_metric_presence():
     with pytest.raises(ValueError, match="Primary metric missing"):
         resolve_primary_metric_value({"strict_f1": 0.42}, "type_f1")

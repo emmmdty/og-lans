@@ -1322,6 +1322,9 @@ def main():
             "strict_f1": report.strict_f1,
             "relaxed_f1": report.relaxed_f1,
             "type_f1": report.type_f1,
+            "legacy_dueefin_overall_precision": report.strict_precision,
+            "legacy_dueefin_overall_recall": report.strict_recall,
+            "legacy_dueefin_overall_f1": report.strict_f1,
             "parse_error_rate": round(report.parse_error_rate, 4),
             "parse_success_rate": round(
                 parse_stats["success"] / len(samples) if samples else 0.0,
@@ -1332,6 +1335,13 @@ def main():
         }
         metrics_dict["academic_metrics"] = {
             "doc_ee": report.doc_ee,
+            "legacy_dueefin": {
+                "overall": {
+                    "precision": report.strict_precision,
+                    "recall": report.strict_recall,
+                    "f1": report.strict_f1,
+                }
+            },
             "ee_text_proxy": report.ee_text_proxy,
             "primary_metric": args.report_primary_metric,
             "primary_metric_value": resolve_primary_metric_value(

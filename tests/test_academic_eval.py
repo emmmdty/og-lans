@@ -299,3 +299,42 @@ def test_extract_report_metrics_prefers_new_diagnostics_and_cost_blocks():
     assert metrics["roles_rewritten_count"] == 1.0
     assert metrics["roles_added_count"] == 2.0
     assert metrics["events_dropped_after_correction"] == 1.0
+
+
+def test_extract_report_metrics_reads_legacy_dueefin_track():
+    payload = {
+        "metrics": {
+            "doc_role_micro_f1": 0.61,
+            "strict_f1": 0.41,
+            "legacy_dueefin_overall_precision": 0.75,
+            "legacy_dueefin_overall_recall": 0.77,
+            "legacy_dueefin_overall_f1": 0.76,
+            "academic_metrics": {
+                "doc_ee": {
+                    "overall": {"MicroF1": 0.61},
+                    "instance": {"MicroF1": 0.55},
+                    "combination": {"MicroF1": 0.57},
+                    "classification": {"MicroF1": 0.72},
+                },
+                "legacy_dueefin": {
+                    "overall": {"precision": 0.75, "recall": 0.77, "f1": 0.76},
+                },
+            },
+        },
+        "diagnostics": {
+            "parse_success_rate": 1.0,
+        },
+    }
+
+    metrics = extract_report_metrics(
+        payload,
+        required_metrics=("legacy_dueefin_overall_f1",),
+        optional_metrics=(
+            "legacy_dueefin_overall_precision",
+            "legacy_dueefin_overall_recall",
+        ),
+    )
+
+    assert metrics["legacy_dueefin_overall_precision"] == 0.75
+    assert metrics["legacy_dueefin_overall_recall"] == 0.77
+    assert metrics["legacy_dueefin_overall_f1"] == 0.76

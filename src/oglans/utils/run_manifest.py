@@ -202,6 +202,7 @@ def load_effective_config_metadata(
     config = ConfigManager.load_config(str(config_path), overrides)
     training_cfg = config.get("training", {}) or {}
     algorithms = config.get("algorithms", {}) or {}
+    teacher_silver_cfg = training_cfg.get("teacher_silver", {}) or {}
     return {
         "config": config,
         "config_hash_sha256": compute_json_sha256(config),
@@ -216,6 +217,9 @@ def load_effective_config_metadata(
         "fewshot_pool_split": str(config.get("comparison", {}).get("fewshot_pool_split", "train_fit")),
         "train_tune_ratio": float(config.get("comparison", {}).get("train_tune_ratio", 0.1)),
         "research_split_manifest_path": config.get("comparison", {}).get("research_split_manifest_path"),
+        "teacher_silver_enabled": bool(teacher_silver_cfg.get("enabled", False)),
+        "teacher_silver_path": teacher_silver_cfg.get("path"),
+        "teacher_silver_max_samples": teacher_silver_cfg.get("max_samples"),
     }
 
 

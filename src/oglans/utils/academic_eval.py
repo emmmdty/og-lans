@@ -23,6 +23,9 @@ ACADEMIC_MAIN_TABLE_METRICS = (
     "doc_event_type_micro_f1",
 )
 CORE_DIAGNOSTIC_REPORT_METRICS = (
+    "legacy_dueefin_overall_precision",
+    "legacy_dueefin_overall_recall",
+    "legacy_dueefin_overall_f1",
     "strict_precision",
     "strict_recall",
     "strict_f1",
@@ -129,6 +132,8 @@ def extract_report_metrics(
 
     academic_metrics = _mapping_get(metrics_obj, "academic_metrics") or {}
     doc_ee = _mapping_get(academic_metrics, "doc_ee") or {}
+    legacy_dueefin = _mapping_get(academic_metrics, "legacy_dueefin") or {}
+    legacy_dueefin_overall = _mapping_get(legacy_dueefin, "overall") or {}
     overall = _mapping_get(doc_ee, "overall") or {}
     instance = _mapping_get(doc_ee, "instance") or {}
     combination = _mapping_get(doc_ee, "combination") or {}
@@ -164,6 +169,24 @@ def extract_report_metrics(
         ),
         "doc_event_type_micro_f1": _to_float_or_none(
             metrics_obj.get("doc_event_type_micro_f1", classification.get("MicroF1"))
+        ),
+        "legacy_dueefin_overall_precision": _to_float_or_none(
+            metrics_obj.get(
+                "legacy_dueefin_overall_precision",
+                legacy_dueefin_overall.get("precision"),
+            )
+        ),
+        "legacy_dueefin_overall_recall": _to_float_or_none(
+            metrics_obj.get(
+                "legacy_dueefin_overall_recall",
+                legacy_dueefin_overall.get("recall"),
+            )
+        ),
+        "legacy_dueefin_overall_f1": _to_float_or_none(
+            metrics_obj.get(
+                "legacy_dueefin_overall_f1",
+                legacy_dueefin_overall.get("f1"),
+            )
         ),
         "strict_precision": _to_float_or_none(metrics_obj.get("strict_precision", strict.get("precision"))),
         "strict_recall": _to_float_or_none(metrics_obj.get("strict_recall", strict.get("recall"))),

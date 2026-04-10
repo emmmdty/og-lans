@@ -23,6 +23,7 @@ evaluate_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(evaluate_module)
 
 AcademicEventEvaluator = evaluate_module.AcademicEventEvaluator
+build_primary_metric_map = evaluate_module.build_primary_metric_map
 
 
 def test_parse_diagnostics_split_raw_vs_repair_vs_extraction_fail():
@@ -148,3 +149,23 @@ def test_text_proxy_metrics_and_grounding_coverage_are_reported():
     assert report.ee_text_proxy["trigger_text_cls"]["f1"] == pytest.approx(1.0)
     assert report.ee_text_proxy["argument_attached_text_cls"]["f1"] == pytest.approx(1.0)
     assert report.ee_text_proxy["grounding_coverage"] == pytest.approx(1.0)
+
+
+def test_primary_metric_map_exposes_legacy_dueefin_track():
+    evaluator = AcademicEventEvaluator()
+    pred = [
+        {
+            "event_type": "企业融资",
+            "arguments": [{"role": "融资金额", "argument": "10亿元"}],
+        }
+    ]
+    gold = pred
+
+    evaluator.update(pred, gold)
+    report = evaluator.compute_metrics()
+    metric_map = build_primary_metric_map(report)
+
+    assert metric_map["legacy_dueefin_overall_precision"] == pytest.approx(1.0)
+    assert metric_map["legacy_dueefin_overall_recall"] == pytest.approx(1.0)
+    assert metric_map["legacy_dueefin_overall_f1"] == pytest.approx(1.0)
+    assert metric_map["legacy_dueefin_overall_f1"] == pytest.approx(metric_map["strict_f1"])

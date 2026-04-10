@@ -238,6 +238,9 @@ fewshot_selection_mode = None
 fewshot_pool_split = None
 train_tune_ratio = None
 research_split_manifest_path = None
+teacher_silver_enabled = None
+teacher_silver_path = None
+teacher_silver_max_samples = None
 try:
     config_meta = load_effective_config_metadata(config_path, cli_args=forwarded_args)
     config_hash = config_meta["config_hash_sha256"]
@@ -250,6 +253,9 @@ try:
     fewshot_pool_split = config_meta["fewshot_pool_split"]
     train_tune_ratio = config_meta["train_tune_ratio"]
     research_split_manifest_path = config_meta["research_split_manifest_path"]
+    teacher_silver_enabled = config_meta["teacher_silver_enabled"]
+    teacher_silver_path = config_meta["teacher_silver_path"]
+    teacher_silver_max_samples = config_meta["teacher_silver_max_samples"]
 except Exception:
     pass
 
@@ -273,6 +279,9 @@ manifest = {
     "fewshot_pool_split": fewshot_pool_split,
     "train_tune_ratio": train_tune_ratio,
     "research_split_manifest_path": research_split_manifest_path,
+    "teacher_silver_enabled": teacher_silver_enabled,
+    "teacher_silver_path": teacher_silver_path,
+    "teacher_silver_max_samples": teacher_silver_max_samples,
     "artifacts": {
         "run_dir": os.path.abspath(run_dir),
         "log_file": os.path.abspath(os.path.join(run_dir, "run.log")),
@@ -344,6 +353,12 @@ print(
 print(
     "  Research split manifest="
     f"{cfg.get('comparison', {}).get('research_split_manifest_path')}"
+)
+print(
+    "  Teacher silver="
+    f"{cfg.get('training', {}).get('teacher_silver', {}).get('enabled', False)} "
+    f"| path={cfg.get('training', {}).get('teacher_silver', {}).get('path')} "
+    f"| max_samples={cfg.get('training', {}).get('teacher_silver', {}).get('max_samples')}"
 )
 PY
 

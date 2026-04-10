@@ -9,7 +9,7 @@
 | 模块 | 当前状态 | 已实现内容 | 后续可补充 |
 | --- | --- | --- | --- |
 | 数据适配与提示构造 | 已实现 | `DuEEFinAdapter` 支持读取 DuEE-Fin JSONL、保留事件类型信息、构造中文 prompt 与 chosen 响应；`ChinesePromptBuilder` 支持 system prompt、few-shot、单阶段/两阶段推理输入负载构造 | 增加更多 prompt 版本管理、样例版本化与自动对比 |
-| 训练主线 | 已实现 | `main.py` 支持配置解析、数据/Schema 路径推断、运行清单写入；`UnslothDPOTrainerWrapper` 与 `UnslothSFTTrainerWrapper` 分别覆盖偏好训练与 plain SFT 基线；训练侧当前已真实接入 `single_pass / two_stage`、`train_fit / train_tune` 固定划分、动态 few-shot exemplar pool，以及 `algorithms.lans.enabled` 的有效开关与 provenance 记录 | 增加更稳定的依赖锁定、训练恢复与更明确的 checkpoint 管理说明 |
+| 训练主线 | 已实现 | `main.py` 支持配置解析、数据/Schema 路径推断、运行清单写入；`UnslothDPOTrainerWrapper` 与 `UnslothSFTTrainerWrapper` 分别覆盖偏好训练与 plain SFT 基线；训练侧当前已真实接入 `single_pass / two_stage`、`train_fit / train_tune` 固定划分、动态 few-shot exemplar pool，以及 `algorithms.lans.enabled` 的有效开关与 provenance 记录；并已支持可选的 `teacher_silver` 训练增强输入 | 增加更稳定的依赖锁定、训练恢复与更明确的 checkpoint 管理说明 |
 | 负样本与课程机制 | 已实现 | `src/oglans/utils/ds_cns.py` 提供基于 schema 图的采样、LANS 能力调度、CGA 权重、多粒度扰动；支持图缓存 | 增加更系统的消融记录、图统计导出和更细粒度可视化 |
 | SCV 语义校验 | 已实现 | `src/oglans/utils/scv.py` 提供 NLI 驱动的语义一致性验证、缓存与长文档滑窗检查 | 将当前部分硬编码窗口策略进一步配置化，并补充更多真实模型验证 |
 | 本地评测 | 已实现 | `evaluate.py` 支持 strict/relaxed/type 指标、解析诊断、schema compliance、hallucination、CoT 一致性、CAT-lite 与反事实扰动评估；当前已支持 `single_pass / two_stage`、动态 few-shot 检索和固定 `train_fit/train_tune` 划分清单 | 补充统一的结果汇总模板和更明确的论文表格导出约束 |
@@ -56,12 +56,14 @@
 虽然仓库已删除独立的 metrics / protocol / ethics 文档，但相关有效信息仍需要保留在工程说明中。就当前实现而言，较稳妥的论文汇报口径如下：
 
 - 默认论文主指标已经切换为 `doc_role_micro_f1`；`doc_instance_micro_f1`、`doc_combination_micro_f1`、`doc_event_type_micro_f1` 构成当前推荐的主表指标组。
+- 当前 summary 同时支持 legacy DuEE-Fin 可比轨道：`legacy_dueefin_overall_precision/recall/f1`；该轨道用于与旧式 DuEE-Fin 文献表格对齐，不替代 record-aware 主表。
 - `strict_f1`、`relaxed_f1`、`type_f1` 仍保留，用于兼容旧结果和工程侧诊断，但不再默认代表最接近 DuEE-Fin / DocEE 文献的主表口径。
 - `evaluate.py` 与 `evaluate_api.py` 都会输出结构化 `summary` / `run_manifest` 信息，适合记录 `config hash`、`prompt hash`、`parser version`、`normalization version`、命令行与时间戳。
 - 本地训练、本地评测与 API 评测现在共享同一套 `prompt_variant + fewshot_num_examples` 语义；`use_oneshot/use_fewshot` 仅作为兼容旧 CLI 的别名存在。
 - 为保证 baseline 与后续自研方法可比，仓库当前默认采用 `train_fit / train_tune / dev_final` 研究协议：`train_fit` 用于训练与 few-shot exemplar pool，`train_tune` 仅用于方法选择，`dev` 只作为冻结后的最终报告集。
 - 当前 `comparison.research_split_manifest_path` 已指向固定的 `train_fit/train_tune` 划分清单；这避免了不同入口在运行时重算 split 导致的隐式漂移。
 - 当前 summary / metrics 文件已经区分 `academic_metrics` 与 `legacy_metrics`，前者用于论文口径，后者用于兼容旧脚本和旧汇总逻辑。
+- `scripts/build_teacher_silver.py` 现已支持从本地/API 评测 JSONL 构建高置信 teacher silver JSONL，并可选地结合冻结的 `train_fit` manifest 做样本过滤。
 - 对 dev 集等带金标场景，当前代码已支持 bootstrap 置信区间；多 seed 复现实验脚本还支持聚合统计和 paired permutation 显著性比较。
 - `run_api_repro_suite.py` 与 `run_local_repro_suite.py` 现在都会同时导出主指标和成本/效率指标，包括 `total_tokens`、`avg_tokens_per_sample`、`wall_clock_seconds`、`samples_per_second`、`f1_per_1k_tokens` 与 `f1_per_minute`。
 - API 评测场景下，应记录请求模型名、实际返回的 `response_model`，以及实际命中的 `base_url`；这一点很重要，因为上游 API 别名和代理路由都可能漂移。
