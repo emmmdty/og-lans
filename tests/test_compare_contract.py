@@ -63,6 +63,14 @@ def test_build_result_diagnostics_reports_two_stage_metrics():
                 "stage1_predicted_event_types": ["公司上市"],
                 "stage2_schema_event_types": ["公司上市"],
             },
+            "correction_stats": {
+                "applied": True,
+                "records_split_count": 1,
+                "roles_rewritten_count": 0,
+                "roles_added_count": 2,
+                "events_dropped_after_correction": 0,
+                "correction_trigger_breakdown": {"split_record:公司上市": 1},
+            },
         },
         {
             "parse_success": False,
@@ -74,6 +82,14 @@ def test_build_result_diagnostics_reports_two_stage_metrics():
                 "stage1_predicted_event_types": [],
                 "stage2_schema_event_types": [],
             },
+            "correction_stats": {
+                "applied": False,
+                "records_split_count": 0,
+                "roles_rewritten_count": 1,
+                "roles_added_count": 0,
+                "events_dropped_after_correction": 1,
+                "correction_trigger_breakdown": {"drop:no_arguments_after_correction:企业融资": 1},
+            },
         },
     ]
 
@@ -84,4 +100,8 @@ def test_build_result_diagnostics_reports_two_stage_metrics():
     assert diagnostics["stage1_miss_rate"] == pytest.approx(0.5)
     assert diagnostics["fewshot_unique_example_ids"] == 5
     assert diagnostics["fewshot_unique_combinations"] == 2
-
+    assert diagnostics["correction_applied_rate"] == pytest.approx(0.5)
+    assert diagnostics["records_split_count"] == 1
+    assert diagnostics["roles_rewritten_count"] == 1
+    assert diagnostics["roles_added_count"] == 2
+    assert diagnostics["events_dropped_after_correction"] == 1

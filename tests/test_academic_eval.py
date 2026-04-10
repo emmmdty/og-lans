@@ -260,6 +260,11 @@ def test_extract_report_metrics_prefers_new_diagnostics_and_cost_blocks():
             "parse_error_rate": 0.02,
             "avg_gold_events": 1.3,
             "avg_predicted_events": 1.1,
+            "correction_applied_rate": 0.4,
+            "records_split_count": 3,
+            "roles_rewritten_count": 1,
+            "roles_added_count": 2,
+            "events_dropped_after_correction": 1,
         },
         "cost": {
             "total_tokens": 1234,
@@ -273,9 +278,24 @@ def test_extract_report_metrics_prefers_new_diagnostics_and_cost_blocks():
 
     metrics = extract_report_metrics(
         payload,
-        required_metrics=("doc_role_micro_f1", "parse_success_rate", "total_tokens", "wall_clock_seconds"),
+        required_metrics=(
+            "doc_role_micro_f1",
+            "parse_success_rate",
+            "total_tokens",
+            "wall_clock_seconds",
+            "correction_applied_rate",
+            "records_split_count",
+            "roles_rewritten_count",
+            "roles_added_count",
+            "events_dropped_after_correction",
+        ),
     )
 
     assert metrics["parse_success_rate"] == 0.98
     assert metrics["total_tokens"] == 1234.0
     assert metrics["wall_clock_seconds"] == 45.6
+    assert metrics["correction_applied_rate"] == 0.4
+    assert metrics["records_split_count"] == 3.0
+    assert metrics["roles_rewritten_count"] == 1.0
+    assert metrics["roles_added_count"] == 2.0
+    assert metrics["events_dropped_after_correction"] == 1.0

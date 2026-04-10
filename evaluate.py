@@ -72,7 +72,8 @@ from oglans.utils.research_protocol import (
     select_fewshot_pool_samples,
     validate_stage_mode,
 )
-from oglans.inference.cat_lite import apply_cat_lite_pipeline, perturb_text_for_counterfactual
+from oglans.inference import apply_structured_event_pipeline, validate_pipeline_mode
+from oglans.inference.cat_lite import perturb_text_for_counterfactual
 from oglans.utils.eval_protocol import (
     canonicalize_pred_roles as shared_canonicalize_pred_roles,
     load_eval_protocol as shared_load_eval_protocol,
@@ -216,7 +217,7 @@ def _build_arg_parser():
         "--pipeline_mode",
         type=str,
         default=None,
-        choices=["e2e", "cat_lite"],
+        choices=["e2e", "cat_lite", "record_corrector", "record_corrector+cat_lite"],
         help="推理流水线模式（默认读取 config.inference.pipeline_mode）",
     )
     parser.add_argument(
@@ -464,8 +465,7 @@ def main(argv=None):
         raise ValueError(f"Unsupported cot_eval_mode: {args.cot_eval_mode}")
     if args.pipeline_mode is None:
         args.pipeline_mode = str(config.get("inference", {}).get("pipeline_mode", "e2e"))
-    if args.pipeline_mode not in {"e2e", "cat_lite"}:
-        raise ValueError(f"Unsupported pipeline_mode: {args.pipeline_mode}")
+    args.pipeline_mode = validate_pipeline_mode(args.pipeline_mode)
     metric_settings.setdefault("cot", {})
     metric_settings["cot"]["eval_mode"] = args.cot_eval_mode
 
@@ -874,15 +874,16 @@ def main(argv=None):
             postprocess_diagnostics["scv_lite_triggered"] = scv_lite_decision.triggered
             postprocess_diagnostics["scv_lite_reasons"] = list(scv_lite_decision.reasons)
 
-            cat_result = None
-            if args.pipeline_mode == "cat_lite":
-                cat_result = apply_cat_lite_pipeline(
-                    pred_events=pred_events,
-                    source_text=sample.text,
-                    schema=getattr(adapter, "schema", None),
-                    require_argument_in_text=True,
-                )
-                pred_events = cat_result.events
+            pipeline_result = apply_structured_event_pipeline(
+                pred_events,
+                source_text=sample.text,
+                schema=getattr(adapter, "schema", None),
+                role_alias_map=role_alias_map,
+                pipeline_mode=args.pipeline_mode,
+            )
+            pred_events = pipeline_result.events
+            cat_result = pipeline_result.cat_result
+            correction_result = pipeline_result.correction_result
             
             # 解析 Ground Truth
             # [修复] 优先使用已解析的 events 字段，避免解析失败影响指标
@@ -949,14 +950,14 @@ def main(argv=None):
                     cf_ids = cf_outputs[:, cf_inputs.input_ids.shape[1]:]
                     cf_response = tokenizer.batch_decode(cf_ids, skip_special_tokens=True)[0]
                     cf_events, _ = parse_event_list_strict_with_diagnostics(cf_response)
-                    if args.pipeline_mode == "cat_lite":
-                        cf_cat_result = apply_cat_lite_pipeline(
-                            pred_events=cf_events,
-                            source_text=perturbed_text,
-                            schema=getattr(adapter, "schema", None),
-                            require_argument_in_text=True,
-                        )
-                        cf_events = cf_cat_result.events
+                    cf_pipeline_result = apply_structured_event_pipeline(
+                        cf_events,
+                        source_text=perturbed_text,
+                        schema=getattr(adapter, "schema", None),
+                        role_alias_map=role_alias_map,
+                        pipeline_mode=args.pipeline_mode,
+                    )
+                    cf_events = cf_pipeline_result.events
                     if evaluation_mode == "scored":
                         evaluator.update_counterfactual_consistency(cf_events, perturbation)
                     if canonical_evaluator is not None and evaluation_mode == "scored":
@@ -989,6 +990,16 @@ def main(argv=None):
                 "pipeline_mode": args.pipeline_mode,
                 "cat_lite_kept_events": (cat_result.kept_events if cat_result else None),
                 "cat_lite_dropped_events": (cat_result.dropped_events if cat_result else None),
+                "correction_stats": {
+                    "applied": bool(correction_result.applied) if correction_result else False,
+                    "records_split_count": int(correction_result.records_split_count) if correction_result else 0,
+                    "roles_rewritten_count": int(correction_result.roles_rewritten_count) if correction_result else 0,
+                    "roles_added_count": int(correction_result.roles_added_count) if correction_result else 0,
+                    "events_dropped_after_correction": int(correction_result.events_dropped_after_correction) if correction_result else 0,
+                    "correction_trigger_breakdown": (
+                        dict(correction_result.trigger_breakdown) if correction_result else {}
+                    ),
+                },
                 "cot_eval_mode": args.cot_eval_mode,
                 "raw_response": response[:1000] if len(response) > 1000 else response,
                 "parse_success": parse_success,
@@ -1008,6 +1019,16 @@ def main(argv=None):
                 "pipeline_mode": args.pipeline_mode,
                 "parse_success": parse_success,
                 "parse_diagnostics": parse_diagnostics,
+                "correction_stats": {
+                    "applied": bool(correction_result.applied) if correction_result else False,
+                    "records_split_count": int(correction_result.records_split_count) if correction_result else 0,
+                    "roles_rewritten_count": int(correction_result.roles_rewritten_count) if correction_result else 0,
+                    "roles_added_count": int(correction_result.roles_added_count) if correction_result else 0,
+                    "events_dropped_after_correction": int(correction_result.events_dropped_after_correction) if correction_result else 0,
+                    "correction_trigger_breakdown": (
+                        dict(correction_result.trigger_breakdown) if correction_result else {}
+                    ),
+                },
                 "postprocess_diagnostics": postprocess_diagnostics,
                 "argument_diagnostics": postprocess_diagnostics.get("argument_diagnostics", []),
                 "event_diagnostics": postprocess_diagnostics.get("event_diagnostics", []),
@@ -1335,6 +1356,16 @@ def main(argv=None):
             "postprocess_enabled": bool(postprocess_cfg.get("enabled", False)),
             "postprocess_version": POSTPROCESS_VERSION if postprocess_cfg.get("enabled", False) else None,
             "postprocess_diagnostics_file": os.path.abspath(diagnostics_sidecar_path) if diagnostics_sidecar_path else None,
+            "correction_mode": (
+                "deterministic_record_corrector"
+                if "record_corrector" in args.pipeline_mode
+                else "off"
+            ),
+            "correction_profile": (
+                "v1_fin_record_repair"
+                if "record_corrector" in args.pipeline_mode
+                else None
+            ),
             "scv_lite_mode": str(scv_lite_cfg.get("mode", "off")),
             "training_mode": str(config.get("training", {}).get("mode", "preference")),
             "checkpoint": optional_abspath(args.checkpoint),
@@ -1422,6 +1453,12 @@ def main(argv=None):
         "runtime_manifest": runtime_manifest,
         "analysis": {
             "primary_metric": args.report_primary_metric,
+            "pipeline_mode": args.pipeline_mode,
+            "correction_mode": (
+                "deterministic_record_corrector"
+                if "record_corrector" in args.pipeline_mode
+                else "off"
+            ),
             "canonical_metric_mode": args.canonical_metric_mode,
             "canonical_metrics_available": canonical_report is not None,
             "metric_version": metric_settings.get("version", "2.0"),

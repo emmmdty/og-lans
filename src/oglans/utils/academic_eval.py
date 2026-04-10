@@ -43,6 +43,11 @@ SUMMARY_DIAGNOSTIC_REPORT_METRICS = (
     "stage1_miss_rate",
     "stage1_overprediction_rate",
     "avg_stage1_predicted_types",
+    "correction_applied_rate",
+    "records_split_count",
+    "roles_rewritten_count",
+    "roles_added_count",
+    "events_dropped_after_correction",
 )
 LOCAL_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + CORE_DIAGNOSTIC_REPORT_METRICS
 API_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + (
@@ -192,6 +197,13 @@ def extract_report_metrics(
         "stage1_miss_rate": _to_float_or_none(diagnostics.get("stage1_miss_rate")),
         "stage1_overprediction_rate": _to_float_or_none(diagnostics.get("stage1_overprediction_rate")),
         "avg_stage1_predicted_types": _to_float_or_none(diagnostics.get("avg_stage1_predicted_types")),
+        "correction_applied_rate": _to_float_or_none(diagnostics.get("correction_applied_rate")),
+        "records_split_count": _to_float_or_none(diagnostics.get("records_split_count")),
+        "roles_rewritten_count": _to_float_or_none(diagnostics.get("roles_rewritten_count")),
+        "roles_added_count": _to_float_or_none(diagnostics.get("roles_added_count")),
+        "events_dropped_after_correction": _to_float_or_none(
+            diagnostics.get("events_dropped_after_correction")
+        ),
         "cot_faithfulness": _to_float_or_none(cot_faithfulness),
         "avg_tokens_per_sample": _to_float_or_none(
             cost.get("avg_tokens_per_sample", token_usage.get("avg_tokens_per_sample"))

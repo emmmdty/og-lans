@@ -111,6 +111,13 @@ def build_result_diagnostics(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any
     stage1_overpredicted = 0
     fewshot_example_counter: Counter[str] = Counter()
     fewshot_combo_counter: Counter[str] = Counter()
+    correction_rows = 0
+    correction_applied = 0
+    records_split_count = 0
+    roles_rewritten_count = 0
+    roles_added_count = 0
+    events_dropped_after_correction = 0
+    correction_trigger_counter: Counter[str] = Counter()
 
     for row in rows:
         if bool(row.get("parse_success")):
@@ -135,6 +142,20 @@ def build_result_diagnostics(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any
             fewshot_example_counter[example_id] += 1
         if example_ids:
             fewshot_combo_counter[" | ".join(example_ids)] += 1
+
+        correction_stats = row.get("correction_stats") or {}
+        if isinstance(correction_stats, Mapping):
+            correction_rows += 1
+            if bool(correction_stats.get("applied")):
+                correction_applied += 1
+            records_split_count += int(correction_stats.get("records_split_count", 0) or 0)
+            roles_rewritten_count += int(correction_stats.get("roles_rewritten_count", 0) or 0)
+            roles_added_count += int(correction_stats.get("roles_added_count", 0) or 0)
+            events_dropped_after_correction += int(
+                correction_stats.get("events_dropped_after_correction", 0) or 0
+            )
+            for key, value in (correction_stats.get("correction_trigger_breakdown") or {}).items():
+                correction_trigger_counter[str(key)] += int(value or 0)
 
         stage_meta = row.get("stage_meta") or {}
         schema_types = [str(item) for item in stage_meta.get("stage2_schema_event_types", []) if str(item)]
@@ -181,4 +202,10 @@ def build_result_diagnostics(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any
             {"example_ids": combo.split(" | "), "count": count}
             for combo, count in fewshot_combo_counter.most_common(10)
         ],
+        "correction_applied_rate": _safe_div(correction_applied, correction_rows) if correction_rows else None,
+        "records_split_count": records_split_count,
+        "roles_rewritten_count": roles_rewritten_count,
+        "roles_added_count": roles_added_count,
+        "events_dropped_after_correction": events_dropped_after_correction,
+        "correction_trigger_breakdown": dict(sorted(correction_trigger_counter.items())),
     }

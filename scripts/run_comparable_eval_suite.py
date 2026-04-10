@@ -49,6 +49,11 @@ DIAGNOSTIC_METRICS = (
     "stage1_miss_rate",
     "stage1_overprediction_rate",
     "avg_stage1_predicted_types",
+    "correction_applied_rate",
+    "records_split_count",
+    "roles_rewritten_count",
+    "roles_added_count",
+    "events_dropped_after_correction",
 )
 
 

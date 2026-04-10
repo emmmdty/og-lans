@@ -112,7 +112,8 @@ from oglans.utils.research_protocol import (
     select_fewshot_pool_samples,
     validate_stage_mode,
 )
-from oglans.inference.cat_lite import apply_cat_lite_pipeline, perturb_text_for_counterfactual
+from oglans.inference import apply_structured_event_pipeline, validate_pipeline_mode
+from oglans.inference.cat_lite import perturb_text_for_counterfactual
 from oglans.utils.academic_eval import bootstrap_confidence_intervals
 from oglans.utils.run_manifest import (
     build_contract_record,
@@ -599,6 +600,7 @@ def process_single_sample(
     schema: Optional[Dict[str, List[str]]] = None,
     pipeline_mode: str = "e2e",
     stage_mode: str = "single_pass",
+    role_alias_map: Optional[Dict[str, Dict[str, str]]] = None,
 ):
     """
     样本推理与解析。支持 few-shot、prompt 风格和 JSON 模式。
@@ -683,21 +685,38 @@ def process_single_sample(
     # Parse: 使用带诊断的解析器，区分 "[] 成功" 和 "解析失败"
     pred_events, parse_diagnostics = parse_event_list_strict_with_diagnostics(response_text)
     parse_success = bool(parse_diagnostics.get("success", False))
+    pipeline_result = apply_structured_event_pipeline(
+        pred_events,
+        source_text=text,
+        schema=schema,
+        role_alias_map=role_alias_map,
+        pipeline_mode=pipeline_mode,
+    )
+    pred_events = pipeline_result.events
     cat_stats = {}
-    if pipeline_mode == "cat_lite":
-        cat_result = apply_cat_lite_pipeline(
-            pred_events=pred_events,
-            source_text=text,
-            schema=schema,
-            require_argument_in_text=True,
-        )
-        pred_events = cat_result.events
+    if pipeline_result.cat_result is not None:
         cat_stats = {
-            "kept_events": cat_result.kept_events,
-            "dropped_events": cat_result.dropped_events,
-            "kept_arguments": cat_result.kept_arguments,
-            "dropped_arguments": cat_result.dropped_arguments,
+            "kept_events": pipeline_result.cat_result.kept_events,
+            "dropped_events": pipeline_result.cat_result.dropped_events,
+            "kept_arguments": pipeline_result.cat_result.kept_arguments,
+            "dropped_arguments": pipeline_result.cat_result.dropped_arguments,
         }
+    correction_stats = {
+        "applied": bool(pipeline_result.correction_result.applied) if pipeline_result.correction_result else False,
+        "records_split_count": int(pipeline_result.correction_result.records_split_count) if pipeline_result.correction_result else 0,
+        "roles_rewritten_count": int(pipeline_result.correction_result.roles_rewritten_count) if pipeline_result.correction_result else 0,
+        "roles_added_count": int(pipeline_result.correction_result.roles_added_count) if pipeline_result.correction_result else 0,
+        "events_dropped_after_correction": (
+            int(pipeline_result.correction_result.events_dropped_after_correction)
+            if pipeline_result.correction_result
+            else 0
+        ),
+        "correction_trigger_breakdown": (
+            dict(pipeline_result.correction_result.trigger_breakdown)
+            if pipeline_result.correction_result
+            else {}
+        ),
+    }
 
     return {
         "sample": sample,
@@ -715,6 +734,7 @@ def process_single_sample(
         "api_error": api_error,
         "response_meta": response_meta,
         "cat_stats": cat_stats,
+        "correction_stats": correction_stats,
         "stage_meta": {
             "stage_mode": stage_mode,
             "stage1_predicted_event_types": stage1_predicted_event_types,
@@ -846,7 +866,7 @@ def main():
         "--pipeline_mode",
         type=str,
         default=None,
-        choices=["e2e", "cat_lite"],
+        choices=["e2e", "cat_lite", "record_corrector", "record_corrector+cat_lite"],
         help="推理流水线模式（默认读取 config.inference.pipeline_mode）",
     )
     args = parser.parse_args()
@@ -874,8 +894,7 @@ def main():
         raise ValueError(f"Unsupported cot_eval_mode: {args.cot_eval_mode}")
     if args.pipeline_mode is None:
         args.pipeline_mode = str(config.get("inference", {}).get("pipeline_mode", "e2e"))
-    if args.pipeline_mode not in {"e2e", "cat_lite"}:
-        raise ValueError(f"Unsupported pipeline_mode: {args.pipeline_mode}")
+    args.pipeline_mode = validate_pipeline_mode(args.pipeline_mode)
     prompt_settings = resolve_prompt_settings(
         prompt_variant=args.prompt_variant,
         fewshot_num_examples=args.fewshot_num_examples,
@@ -1113,10 +1132,10 @@ def main():
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_sample = {
             executor.submit(
-                process_single_sample,
-                client,
-                model_name,
-                max_retries,
+            process_single_sample,
+            client,
+            model_name,
+            max_retries,
                 idx,
                 sample,
                 use_fewshot,
@@ -1124,10 +1143,11 @@ def main():
                 args.fewshot_selection_mode if use_fewshot else "static",
                 fewshot_example_pool if use_fewshot else None,
                 args.json_mode,
-                prompt_schema,
-                args.pipeline_mode,
-                args.stage_mode,
-            ): idx
+            prompt_schema,
+            args.pipeline_mode,
+            args.stage_mode,
+            role_alias_map,
+        ): idx
             for idx, sample in enumerate(samples)
         }
         
@@ -1215,14 +1235,14 @@ def main():
                         token_stats_counterfactual["completion_tokens"] += cf_usage.get("completion_tokens", 0)
                         token_stats_counterfactual["total_tokens"] += cf_usage.get("total_tokens", 0)
                         cf_events, _ = parse_event_list_strict_with_diagnostics(cf_text)
-                        if args.pipeline_mode == "cat_lite":
-                            cf_cat_result = apply_cat_lite_pipeline(
-                                pred_events=cf_events,
-                                source_text=perturbed_text,
-                                schema=prompt_schema,
-                                require_argument_in_text=True,
-                            )
-                            cf_events = cf_cat_result.events
+                        cf_pipeline_result = apply_structured_event_pipeline(
+                            cf_events,
+                            source_text=perturbed_text,
+                            schema=prompt_schema,
+                            role_alias_map=role_alias_map,
+                            pipeline_mode=args.pipeline_mode,
+                        )
+                        cf_events = cf_pipeline_result.events
                         evaluator.update_counterfactual_consistency(cf_events, perturbation)
                         if canonical_evaluator is not None:
                             cf_events_canonical, _ = canonicalize_pred_roles(cf_events, role_alias_map)
@@ -1249,6 +1269,7 @@ def main():
                     "response_meta": res["response_meta"],
                     "pipeline_mode": args.pipeline_mode,
                     "cat_stats": res.get("cat_stats", {}),
+                    "correction_stats": res.get("correction_stats", {}),
                     "cot_eval_mode": args.cot_eval_mode,
                     "prompt_meta": res.get("prompt_meta", {}),
                     "stage_meta": res.get("stage_meta", {}),
@@ -1513,6 +1534,16 @@ def main():
             "json_mode": args.json_mode,
             "cot_eval_mode": args.cot_eval_mode,
             "pipeline_mode": args.pipeline_mode,
+            "correction_mode": (
+                "deterministic_record_corrector"
+                if "record_corrector" in args.pipeline_mode
+                else "off"
+            ),
+            "correction_profile": (
+                "v1_fin_record_repair"
+                if "record_corrector" in args.pipeline_mode
+                else None
+            ),
             "stage_mode": args.stage_mode,
             "seed": args.seed,
             "model_profile": model_profile,
@@ -1589,6 +1620,12 @@ def main():
         "analysis": {
             "primary_metric": args.report_primary_metric,
             "primary_metric_value": primary_metric_value,
+            "pipeline_mode": args.pipeline_mode,
+            "correction_mode": (
+                "deterministic_record_corrector"
+                if "record_corrector" in args.pipeline_mode
+                else "off"
+            ),
             "canonical_metric_mode": args.canonical_metric_mode,
             "canonical_metrics_available": canonical_metrics_block is not None,
             "metric_version": metric_settings.get("version", "2.0"),
