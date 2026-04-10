@@ -40,6 +40,28 @@ def build_valid_summary():
             "prompt_hashes": {},
             "has_gold_labels": True,
         },
+        "compare": {
+            "model_family": "api",
+            "model_kind": "api_model",
+            "split": "dev",
+            "primary_metric": "doc_role_micro_f1",
+            "stage_mode": "single_pass",
+            "prompt_variant": "zeroshot",
+            "fewshot_num_examples": 0,
+            "fewshot_selection_mode": "none",
+            "fewshot_pool_split": "none",
+            "train_tune_ratio": 0.1,
+            "research_split_manifest_path": "/tmp/frozen.json",
+            "research_split_manifest_hash": "e" * 64,
+            "pipeline_mode": "e2e",
+            "canonical_metric_mode": "analysis_only",
+            "protocol_hash": "b" * 64,
+            "role_alias_hash": "d" * 64,
+            "seed": 3407,
+            "seed_effective": False,
+            "token_usage_kind": "actual",
+            "comparable_contract_hash": "f" * 64,
+        },
         "metrics": {
             "doc_role_micro_f1": 0.61,
             "doc_instance_micro_f1": 0.55,
@@ -66,6 +88,31 @@ def build_valid_summary():
                 },
                 "ee_text_proxy": {},
             },
+        },
+        "diagnostics": {
+            "parse_success_rate": 1.0,
+            "parse_error_rate": 0.0,
+            "avg_gold_events": 1.1,
+            "avg_predicted_events": 1.1,
+            "avg_gold_event_types": 1.0,
+            "avg_schema_event_types": 13.0,
+            "stage1_gold_coverage_rate": None,
+            "stage1_exact_match_rate": None,
+            "stage1_miss_rate": None,
+            "stage1_overprediction_rate": None,
+            "avg_stage1_predicted_types": None,
+            "fewshot_unique_example_ids": 0,
+            "fewshot_unique_combinations": 0,
+            "fewshot_top_examples": [],
+            "fewshot_top_combinations": [],
+        },
+        "cost": {
+            "prompt_tokens": 4,
+            "completion_tokens": 6,
+            "total_tokens": 10,
+            "avg_tokens_per_sample": 1.0,
+            "token_usage_kind": "actual",
+            "f1_per_1k_tokens": 61.0,
         },
         "token_usage": {
             "total_tokens": 10,
@@ -95,11 +142,11 @@ def test_validate_summary_accepts_compare_metadata():
 
 def test_validate_summary_rejects_missing_compare_metadata():
     summary = build_valid_summary()
-    del summary["meta"]["prompt_variant"]
+    del summary["compare"]["prompt_variant"]
 
     errors = validate_mod.validate_summary(summary)
 
-    assert "Missing required field: meta.prompt_variant" in errors
+    assert "Missing required field: compare.prompt_variant" in errors
 
 
 def build_valid_suite_summary(tmp_path: Path):

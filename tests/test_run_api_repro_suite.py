@@ -1,6 +1,10 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
+from oglans.utils.compare_contract import build_compare_contract
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_api_repro_suite.py"
 spec = importlib.util.spec_from_file_location("run_api_repro_suite", str(SCRIPT_PATH))
@@ -95,8 +99,31 @@ project:
     assert mod.infer_dataset_name_from_config(str(child_cfg)) == "DuEE-Fin"
 
 
-def _summary(metric_value: float) -> dict:
+def _summary(metric_value: float, *, prompt_variant: str = "zeroshot", stage_mode: str = "single_pass", seed: int = 3407) -> dict:
     return {
+        "compare": build_compare_contract(
+            {
+                "model_family": "api",
+                "model_kind": "api_model",
+                "split": "dev",
+                "primary_metric": "doc_role_micro_f1",
+                "stage_mode": stage_mode,
+                "prompt_variant": prompt_variant,
+                "fewshot_num_examples": 0 if prompt_variant == "zeroshot" else 3,
+                "fewshot_selection_mode": "none" if prompt_variant == "zeroshot" else "dynamic",
+                "fewshot_pool_split": "none" if prompt_variant == "zeroshot" else "train_fit",
+                "train_tune_ratio": 0.1,
+                "research_split_manifest_path": "/tmp/frozen.json",
+                "research_split_manifest_hash": "a" * 64,
+                "pipeline_mode": "e2e",
+                "canonical_metric_mode": "analysis_only",
+                "protocol_hash": "b" * 64,
+                "role_alias_hash": "c" * 64,
+                "seed": seed,
+                "seed_effective": False,
+                "token_usage_kind": "actual",
+            }
+        ),
         "metrics": {
             "doc_role_micro_f1": metric_value,
             "doc_instance_micro_f1": 0.11,
@@ -122,6 +149,30 @@ def test_compute_significance_skips_single_seed_and_sets_metadata():
     assert significance == {}
     assert metadata["significance_status"] == "skipped_insufficient_pairs"
     assert metadata["significance_min_pairs"] == 2
+
+
+def test_validate_mode_contracts_returns_hash_per_mode():
+    hashes = mod.validate_mode_contracts(
+        {
+            "zeroshot": {3407: _summary(0.2, prompt_variant="zeroshot")},
+            "fewshot": {3407: _summary(0.25, prompt_variant="fewshot")},
+        }
+    )
+
+    assert set(hashes) == {"zeroshot", "fewshot"}
+    assert hashes["zeroshot"] != hashes["fewshot"]
+
+
+def test_validate_mode_contracts_rejects_mismatch_within_mode():
+    with pytest.raises(ValueError, match="comparable contract mismatch"):
+        mod.validate_mode_contracts(
+            {
+                "fewshot": {
+                    3407: _summary(0.25, prompt_variant="fewshot", stage_mode="single_pass", seed=3407),
+                    3408: _summary(0.26, prompt_variant="fewshot", stage_mode="two_stage", seed=3408),
+                }
+            }
+        )
 
 
 def test_compute_significance_rejects_incomplete_seed_coverage():

@@ -31,6 +31,19 @@ CORE_DIAGNOSTIC_REPORT_METRICS = (
     "schema_compliance_rate",
     "hallucination_rate",
 )
+SUMMARY_DIAGNOSTIC_REPORT_METRICS = (
+    "parse_success_rate",
+    "parse_error_rate",
+    "avg_gold_events",
+    "avg_predicted_events",
+    "avg_gold_event_types",
+    "avg_schema_event_types",
+    "stage1_gold_coverage_rate",
+    "stage1_exact_match_rate",
+    "stage1_miss_rate",
+    "stage1_overprediction_rate",
+    "avg_stage1_predicted_types",
+)
 LOCAL_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + CORE_DIAGNOSTIC_REPORT_METRICS
 API_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + (
     "strict_f1",
@@ -101,6 +114,8 @@ def extract_report_metrics(
     metrics_obj = payload
     if isinstance(payload.get("metrics"), Mapping):
         metrics_obj = payload["metrics"]  # type: ignore[index]
+    diagnostics = _mapping_get(payload, "diagnostics") or {}
+    cost = _mapping_get(payload, "cost") or {}
     token_usage = _mapping_get(payload, "token_usage") or {}
     runtime = _mapping_get(payload, "runtime") or {}
 
@@ -154,15 +169,34 @@ def extract_report_metrics(
             metrics_obj.get("schema_compliance_rate", legacy_metrics.get("schema_compliance_rate"))
         ),
         "hallucination_rate": _to_float_or_none(
-            metrics_obj.get("hallucination_rate", hallucination.get("sample_rate"))
+            diagnostics.get(
+                "hallucination_rate",
+                metrics_obj.get("hallucination_rate", hallucination.get("sample_rate")),
+            )
         ),
-        "parse_error_rate": _to_float_or_none(metrics_obj.get("parse_error_rate", parse_statistics.get("parse_error_rate"))),
+        "parse_error_rate": _to_float_or_none(
+            diagnostics.get("parse_error_rate", metrics_obj.get("parse_error_rate", parse_statistics.get("parse_error_rate")))
+        ),
         "parse_success_rate": _to_float_or_none(
-            metrics_obj.get("parse_success_rate", parse_statistics.get("parse_success_rate"))
+            diagnostics.get(
+                "parse_success_rate",
+                metrics_obj.get("parse_success_rate", parse_statistics.get("parse_success_rate")),
+            )
         ),
+        "avg_gold_events": _to_float_or_none(diagnostics.get("avg_gold_events")),
+        "avg_predicted_events": _to_float_or_none(diagnostics.get("avg_predicted_events")),
+        "avg_gold_event_types": _to_float_or_none(diagnostics.get("avg_gold_event_types")),
+        "avg_schema_event_types": _to_float_or_none(diagnostics.get("avg_schema_event_types")),
+        "stage1_gold_coverage_rate": _to_float_or_none(diagnostics.get("stage1_gold_coverage_rate")),
+        "stage1_exact_match_rate": _to_float_or_none(diagnostics.get("stage1_exact_match_rate")),
+        "stage1_miss_rate": _to_float_or_none(diagnostics.get("stage1_miss_rate")),
+        "stage1_overprediction_rate": _to_float_or_none(diagnostics.get("stage1_overprediction_rate")),
+        "avg_stage1_predicted_types": _to_float_or_none(diagnostics.get("avg_stage1_predicted_types")),
         "cot_faithfulness": _to_float_or_none(cot_faithfulness),
-        "avg_tokens_per_sample": _to_float_or_none(token_usage.get("avg_tokens_per_sample")),
-        "total_tokens": _to_float_or_none(token_usage.get("total_tokens")),
+        "avg_tokens_per_sample": _to_float_or_none(
+            cost.get("avg_tokens_per_sample", token_usage.get("avg_tokens_per_sample"))
+        ),
+        "total_tokens": _to_float_or_none(cost.get("total_tokens", token_usage.get("total_tokens"))),
         "wall_clock_seconds": _to_float_or_none(runtime.get("wall_clock_seconds")),
         "samples_per_second": _to_float_or_none(runtime.get("samples_per_second")),
     }

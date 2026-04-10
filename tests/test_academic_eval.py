@@ -240,3 +240,42 @@ def test_append_efficiency_metrics_computes_cost_normalized_scores():
 
     assert row["f1_per_1k_tokens"] == 0.25
     assert row["f1_per_minute"] == 1.0
+
+
+def test_extract_report_metrics_prefers_new_diagnostics_and_cost_blocks():
+    payload = {
+        "metrics": {
+            "doc_role_micro_f1": 0.31,
+            "doc_instance_micro_f1": 0.21,
+            "doc_combination_micro_f1": 0.22,
+            "doc_event_type_micro_f1": 0.71,
+            "strict_f1": 0.41,
+            "relaxed_f1": 0.51,
+            "type_f1": 0.61,
+            "schema_compliance_rate": 0.81,
+            "hallucination_rate": 0.09,
+        },
+        "diagnostics": {
+            "parse_success_rate": 0.98,
+            "parse_error_rate": 0.02,
+            "avg_gold_events": 1.3,
+            "avg_predicted_events": 1.1,
+        },
+        "cost": {
+            "total_tokens": 1234,
+            "avg_tokens_per_sample": 12.34,
+        },
+        "runtime": {
+            "wall_clock_seconds": 45.6,
+            "samples_per_second": 2.5,
+        },
+    }
+
+    metrics = extract_report_metrics(
+        payload,
+        required_metrics=("doc_role_micro_f1", "parse_success_rate", "total_tokens", "wall_clock_seconds"),
+    )
+
+    assert metrics["parse_success_rate"] == 0.98
+    assert metrics["total_tokens"] == 1234.0
+    assert metrics["wall_clock_seconds"] == 45.6

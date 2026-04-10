@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 from oglans.utils.academic_eval import API_SUITE_REPORT_METRICS, extract_report_metrics
+from oglans.utils.compare_contract import COMPARABLE_CONTRACT_FIELDS
 
 
 MINI_SUITE_REPORT_METRICS = (
@@ -54,7 +55,6 @@ def validate_eval_summary(summary: Dict[str, Any]) -> List[str]:
         "meta.eval_protocol_hash",
         "meta.role_alias_path",
         "meta.role_alias_hash",
-        "meta.prompt_variant",
         "meta.prompt_builder_version",
         "meta.parser_version",
         "meta.normalization_version",
@@ -76,6 +76,22 @@ def validate_eval_summary(summary: Dict[str, Any]) -> List[str]:
         value = get_nested(summary, path)
         if value is None:
             errors.append(f"Missing required field: {path}")
+
+    compare = summary.get("compare")
+    if not isinstance(compare, dict):
+        errors.append("Missing compare block")
+    else:
+        for field_name in COMPARABLE_CONTRACT_FIELDS:
+            if compare.get(field_name) is None:
+                errors.append(f"Missing required field: compare.{field_name}")
+
+    diagnostics = summary.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        errors.append("Missing diagnostics block")
+
+    cost = summary.get("cost")
+    if not isinstance(cost, dict):
+        errors.append("Missing cost block")
 
     has_gold = bool(get_nested(summary, "meta.has_gold_labels"))
     metrics = get_nested(summary, "metrics")

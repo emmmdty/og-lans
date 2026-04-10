@@ -59,6 +59,18 @@ def test_parse_args_supports_research_split_manifest():
     assert args.research_split_manifest == "configs/research_splits/frozen.json"
 
 
+def test_parse_args_supports_summary_file_override():
+    args = evaluate_module.parse_args(
+        [
+            "--base_only",
+            "--summary_file",
+            "logs/DuEE-Fin/eval_base/custom_summary.json",
+        ]
+    )
+
+    assert args.summary_file == "logs/DuEE-Fin/eval_base/custom_summary.json"
+
+
 def test_parse_args_with_unknown_preserves_cli_overrides():
     args, unknown = evaluate_module.parse_args_with_unknown(
         [

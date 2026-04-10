@@ -80,6 +80,7 @@ from oglans.utils.eval_protocol import (
     resolve_primary_metric_value,
     validate_primary_metric,
 )
+from oglans.utils.compare_contract import build_compare_contract, build_result_diagnostics
 from oglans.utils.run_manifest import (
     build_contract_record,
     build_run_manifest,
@@ -141,6 +142,12 @@ def _build_arg_parser():
     parser.add_argument("--batch_size", type=int, default=4, help="推理批次大小")
     parser.add_argument("--split", type=str, default="dev", help="数据集划分 (train/dev/test)")
     parser.add_argument("--output_file", type=str, default="eval_results.jsonl", help="结果输出文件")
+    parser.add_argument(
+        "--summary_file",
+        type=str,
+        default=None,
+        help="评估摘要输出文件（默认与 output_file 同目录自动命名）",
+    )
     parser.add_argument("--eval_mode", type=str, default="both", choices=["strict", "relaxed", "both"], 
                         help="评估模式: strict/relaxed/both")
     parser.add_argument(
@@ -1198,9 +1205,58 @@ def main(argv=None):
         "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
         "stage_mode": args.stage_mode,
     }
+    primary_metric_value = round(
+        resolve_primary_metric_value(primary_metric_values, args.report_primary_metric),
+        4,
+    )
+    diagnostics_block = build_result_diagnostics(results_to_save)
+    diagnostics_block.update(
+        {
+            "schema_compliance_rate": round(report.schema_compliance_rate, 4),
+            "hallucination_rate": round(report.hallucination_rate, 4),
+            "hallucination_entity_rate": round(report.hallucination_entity_rate, 4),
+        }
+    )
+    total_tokens = token_usage["stage1_total_tokens"] + token_usage["stage2_total_tokens"]
+    avg_tokens_per_sample = (total_tokens / report.total_samples) if report.total_samples else 0.0
+    cost_block = {
+        "prompt_tokens": token_usage["stage1_prompt_tokens"] + token_usage["stage2_prompt_tokens"],
+        "completion_tokens": token_usage["stage1_completion_tokens"] + token_usage["stage2_completion_tokens"],
+        "total_tokens": total_tokens,
+        "avg_tokens_per_sample": avg_tokens_per_sample,
+        "token_usage_kind": "estimated",
+        "f1_per_1k_tokens": ((primary_metric_value * 1000.0) / total_tokens) if total_tokens else None,
+    }
+    compare_block = build_compare_contract(
+        {
+            "model_family": "local_base" if args.base_only else "local_checkpoint",
+            "model_kind": "base_only" if args.base_only else "adapter_checkpoint",
+            "split": args.split,
+            "primary_metric": args.report_primary_metric,
+            "stage_mode": args.stage_mode,
+            "prompt_variant": prompt_variant,
+            "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
+            "fewshot_selection_mode": args.fewshot_selection_mode if use_fewshot else "none",
+            "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
+            "train_tune_ratio": float(args.train_tune_ratio),
+            "research_split_manifest_path": (
+                os.path.abspath(args.research_split_manifest) if args.research_split_manifest else "none"
+            ),
+            "research_split_manifest_hash": (
+                safe_compute_file_sha256(args.research_split_manifest) if args.research_split_manifest else "none"
+            ),
+            "pipeline_mode": args.pipeline_mode,
+            "canonical_metric_mode": args.canonical_metric_mode,
+            "protocol_hash": safe_compute_file_sha256(args.protocol) or "none",
+            "role_alias_hash": safe_compute_file_sha256(args.role_alias_map) or "none",
+            "seed": args.seed,
+            "seed_effective": bool(args.do_sample),
+            "token_usage_kind": "estimated",
+        }
+    )
 
     # 新版统一摘要结构（与 evaluate_api.py 对齐）
-    summary_file = final_output_path.replace(".jsonl", "_summary.json")
+    summary_file = args.summary_file or final_output_path.replace(".jsonl", "_summary.json")
     eval_summary = {
         "meta": {
             "run_id": run_id,
@@ -1283,6 +1339,7 @@ def main(argv=None):
             "training_mode": str(config.get("training", {}).get("mode", "preference")),
             "checkpoint": optional_abspath(args.checkpoint),
         },
+        "compare": compare_block,
         "metrics": {
             **rounded_primary_metric_values,
             "strict_precision": round(report.strict_precision, 4),
@@ -1331,22 +1388,18 @@ def main(argv=None):
             "legacy_metrics": legacy_metrics_block,
             "academic_metrics": academic_metrics_block,
             "primary_metric": args.report_primary_metric,
-            "primary_metric_value": round(
-                resolve_primary_metric_value(primary_metric_values, args.report_primary_metric),
-                4,
-            ),
+            "primary_metric_value": primary_metric_value,
         },
+        "diagnostics": diagnostics_block,
+        "cost": cost_block,
         "token_usage": {
             "prompt_tokens": token_usage["stage1_prompt_tokens"] + token_usage["stage2_prompt_tokens"],
             "completion_tokens": token_usage["stage1_completion_tokens"] + token_usage["stage2_completion_tokens"],
-            "total_tokens": token_usage["stage1_total_tokens"] + token_usage["stage2_total_tokens"],
-            "avg_tokens_per_sample": (
-                (token_usage["stage1_total_tokens"] + token_usage["stage2_total_tokens"]) / report.total_samples
-                if report.total_samples else 0.0
-            ),
+            "total_tokens": total_tokens,
+            "avg_tokens_per_sample": avg_tokens_per_sample,
             "prompt_tokens_estimated": token_usage["stage1_prompt_tokens"] + token_usage["stage2_prompt_tokens"],
             "completion_tokens_estimated": token_usage["stage1_completion_tokens"] + token_usage["stage2_completion_tokens"],
-            "total_tokens_estimated": token_usage["stage1_total_tokens"] + token_usage["stage2_total_tokens"],
+            "total_tokens_estimated": total_tokens,
             "stage1_prompt_tokens": token_usage["stage1_prompt_tokens"],
             "stage1_completion_tokens": token_usage["stage1_completion_tokens"],
             "stage1_total_tokens": token_usage["stage1_total_tokens"],

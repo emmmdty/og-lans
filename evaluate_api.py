@@ -127,6 +127,7 @@ from oglans.utils.eval_protocol import (
     load_role_alias_map as shared_load_role_alias_map,
     canonicalize_pred_roles as shared_canonicalize_pred_roles,
 )
+from oglans.utils.compare_contract import build_compare_contract, build_result_diagnostics
 
 # 日志设置保持不变
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -1387,6 +1388,27 @@ def main():
         token_stats_counterfactual["total_tokens"] / counterfactual_api_calls
         if counterfactual_api_calls > 0 else 0
     )
+    primary_metric_value = metrics_dict.get(args.report_primary_metric)
+    diagnostics_block = build_result_diagnostics(results)
+    diagnostics_block.update(
+        {
+            "schema_compliance_rate": metrics_dict.get("schema_compliance_rate"),
+            "hallucination_rate": metrics_dict.get("hallucination_rate"),
+            "hallucination_entity_rate": metrics_dict.get("hallucination_entity_rate"),
+        }
+    )
+    cost_block = {
+        "prompt_tokens": token_stats["prompt_tokens"],
+        "completion_tokens": token_stats["completion_tokens"],
+        "total_tokens": token_stats["total_tokens"],
+        "avg_tokens_per_sample": avg_tokens,
+        "token_usage_kind": "actual",
+        "f1_per_1k_tokens": (
+            (float(primary_metric_value) * 1000.0) / token_stats["total_tokens"]
+            if token_stats["total_tokens"] and primary_metric_value is not None
+            else None
+        ),
+    }
     api_response_models = sorted({
         item.get("response_meta", {}).get("response_model")
         for item in results
@@ -1420,6 +1442,35 @@ def main():
     }
     protocol_hash = compute_file_hash(args.protocol)
     role_alias_map_hash = compute_file_hash(args.role_alias_map)
+    compare_block = build_compare_contract(
+        {
+            "model_family": "api",
+            "model_kind": "api_model",
+            "split": args.split,
+            "primary_metric": args.report_primary_metric,
+            "stage_mode": args.stage_mode,
+            "prompt_variant": prompt_variant,
+            "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
+            "fewshot_selection_mode": args.fewshot_selection_mode if use_fewshot else "none",
+            "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
+            "train_tune_ratio": float(args.train_tune_ratio),
+            "research_split_manifest_path": (
+                os.path.abspath(args.research_split_manifest) if args.research_split_manifest else "none"
+            ),
+            "research_split_manifest_hash": (
+                compute_file_hash(args.research_split_manifest)
+                if args.research_split_manifest and os.path.exists(args.research_split_manifest)
+                else "none"
+            ),
+            "pipeline_mode": args.pipeline_mode,
+            "canonical_metric_mode": args.canonical_metric_mode,
+            "protocol_hash": protocol_hash or "none",
+            "role_alias_hash": role_alias_map_hash or "none",
+            "seed": args.seed,
+            "seed_effective": False,
+            "token_usage_kind": "actual",
+        }
+    )
     
     stage1_prompt_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage1", {}).get("prompt_tokens", 0)) for item in results)
     stage1_completion_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage1", {}).get("completion_tokens", 0)) for item in results)
@@ -1502,7 +1553,10 @@ def main():
             "training_mode": "api_inference",
             "evaluation_mode": evaluation_mode,
         },
+        "compare": compare_block,
         "metrics": metrics_dict,
+        "diagnostics": diagnostics_block,
+        "cost": cost_block,
         "token_usage": {
             **token_stats,
             "avg_tokens_per_sample": avg_tokens,
@@ -1534,7 +1588,7 @@ def main():
         "runtime_manifest": manifest,
         "analysis": {
             "primary_metric": args.report_primary_metric,
-            "primary_metric_value": metrics_dict.get(args.report_primary_metric),
+            "primary_metric_value": primary_metric_value,
             "canonical_metric_mode": args.canonical_metric_mode,
             "canonical_metrics_available": canonical_metrics_block is not None,
             "metric_version": metric_settings.get("version", "2.0"),

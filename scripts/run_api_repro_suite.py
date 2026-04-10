@@ -20,6 +20,7 @@ from oglans.utils.pathing import (
     infer_dataset_name_from_config as infer_dataset_name_from_loaded_config,
     infer_eval_root_from_config,
 )
+from oglans.utils.compare_contract import extract_compare_contract, validate_compare_contract_match
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ACADEMIC_EVAL_PATH = PROJECT_ROOT / "src" / "oglans" / "utils" / "academic_eval.py"
@@ -123,6 +124,14 @@ def build_metric_row(summary: Dict, target_metrics: List[str], seed: int) -> Dic
     row = append_efficiency_metrics(row)
     row["seed"] = float(seed)
     return row
+
+
+def validate_mode_contracts(by_mode_seed: Dict[str, Dict[int, Dict]]) -> Dict[str, str]:
+    hashes: Dict[str, str] = {}
+    for mode, seed_map in by_mode_seed.items():
+        compare_blocks = [extract_compare_contract(summary) for _, summary in sorted(seed_map.items())]
+        hashes[mode] = validate_compare_contract_match(compare_blocks)
+    return hashes
 
 
 def deep_merge(base: Dict, override: Dict) -> Dict:
@@ -441,6 +450,7 @@ def main():
     by_mode_seed: Dict[str, Dict[int, Dict]] = {}
     for rec in successful:
         by_mode_seed.setdefault(rec.mode, {})[rec.seed] = load_json(Path(rec.summary_file))
+    comparable_contract_hashes = validate_mode_contracts(by_mode_seed) if by_mode_seed else {}
 
     target_metrics = list(ACADEMIC_MAIN_TABLE_METRICS) + [
         metric for metric in API_SUITE_REPORT_METRICS if metric not in ACADEMIC_MAIN_TABLE_METRICS
@@ -489,6 +499,7 @@ def main():
         "protocol": protocol,
         "primary_metric": args.report_primary_metric,
         "canonical_metric_mode": args.canonical_metric_mode,
+        "comparable_contract_hashes": comparable_contract_hashes,
         "runs": [asdict(r) for r in records],
         "aggregated": aggregated,
         "significance": significance,

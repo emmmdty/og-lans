@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from oglans.config import ConfigManager
+from oglans.utils.compare_contract import extract_compare_contract, validate_compare_contract_match
 from oglans.utils.pathing import (
     infer_dataset_name_from_config as infer_dataset_name_from_loaded_config,
     infer_eval_root_from_config,
@@ -257,8 +258,14 @@ def validate_eval_artifacts(
     if run_key != "base" and summary_meta.get("checkpoint") != manifest_meta.get("checkpoint"):
         raise ValueError("metadata mismatch between summary and manifest: checkpoint")
 
+    try:
+        validated_compare = extract_compare_contract(summary)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
     validated = dict(summary)
     validated["manifest_meta"] = manifest_meta
+    validated["compare"] = validated_compare
     return validated
 
 
@@ -529,6 +536,12 @@ def main() -> None:
         seeds=seeds,
     )
 
+    compare_contract_hashes = []
+    for per_seed in validated_by_run.values():
+        for summary in per_seed.values():
+            compare_contract_hashes.append(summary["compare"])
+    comparable_contract_hash = validate_compare_contract_match(compare_contract_hashes)
+
     aggregated: Dict[str, Dict[str, object]] = {}
     for run_key, per_seed in validated_by_run.items():
         metric_rows = [_build_run_metrics(summary, seed) for seed, summary in sorted(per_seed.items())]
@@ -567,6 +580,7 @@ def main() -> None:
         "fewshot_pool_split": args.fewshot_pool_split,
         "train_tune_ratio": args.train_tune_ratio,
         "research_split_manifest": args.research_split_manifest,
+        "comparable_contract_hash": comparable_contract_hash,
         "runs": [record._asdict() for record in records],
         "aggregated": aggregated,
         "significance": significance,

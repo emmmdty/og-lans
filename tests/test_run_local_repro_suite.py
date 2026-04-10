@@ -33,6 +33,28 @@ def test_validate_eval_artifacts_requires_protocol_and_version_metadata(tmp_path
                     "parser_version": "route_a_compare_v1",
                     "normalization_version": "route_a_compare_v1",
                 },
+                "compare": {
+                    "model_family": "local_checkpoint",
+                    "model_kind": "adapter_checkpoint",
+                    "split": "dev",
+                    "primary_metric": "doc_role_micro_f1",
+                    "stage_mode": "single_pass",
+                    "prompt_variant": "zeroshot",
+                    "fewshot_num_examples": 0,
+                    "fewshot_selection_mode": "none",
+                    "fewshot_pool_split": "none",
+                    "train_tune_ratio": 0.1,
+                    "research_split_manifest_path": "/tmp/frozen.json",
+                    "research_split_manifest_hash": "a" * 64,
+                    "pipeline_mode": "e2e",
+                    "canonical_metric_mode": "analysis_only",
+                    "protocol_hash": "abc123",
+                    "role_alias_hash": "alias123",
+                    "seed": 3407,
+                    "seed_effective": False,
+                    "token_usage_kind": "estimated",
+                    "comparable_contract_hash": "z" * 64,
+                },
                 "metrics": {"strict_f1": 0.4},
             },
             ensure_ascii=False,
@@ -104,6 +126,49 @@ def test_validate_eval_artifacts_rejects_missing_checkpoint_for_adapter_runs(tmp
             summary_file=summary,
             run_manifest_file=manifest,
             run_key="full",
+        )
+
+
+def test_validate_eval_artifacts_requires_compare_block(tmp_path):
+    summary = tmp_path / "summary.json"
+    manifest = tmp_path / "run_manifest.json"
+
+    summary.write_text(
+        json.dumps(
+            {
+                "meta": {
+                    "run_id": "base_seed3407",
+                    "protocol_hash_sha256": "abc123",
+                    "prompt_builder_version": "route_a_compare_v1",
+                    "parser_version": "route_a_compare_v1",
+                    "normalization_version": "route_a_compare_v1",
+                },
+                "metrics": {"strict_f1": 0.4},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        json.dumps(
+            {
+                "meta": {
+                    "protocol_hash_sha256": "abc123",
+                    "prompt_builder_version": "route_a_compare_v1",
+                    "parser_version": "route_a_compare_v1",
+                    "normalization_version": "route_a_compare_v1",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Missing compare block"):
+        mod.validate_eval_artifacts(
+            summary_file=summary,
+            run_manifest_file=manifest,
+            run_key="base",
         )
 
 
