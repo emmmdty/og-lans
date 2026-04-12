@@ -499,7 +499,10 @@ def main(argv=None):
         repo_dir,
         package_names=["torch", "transformers", "trl", "unsloth", "dirtyjson", "PyYAML"],
     )
-    runtime_manifest["model_runtime"] = get_model_download_runtime_snapshot(source=model_source)
+    runtime_manifest["model_runtime"] = get_model_download_runtime_snapshot(
+        repo_dir,
+        source=model_source,
+    )
     config_hash = compute_file_sha256(args.config)
 
     print(f"📊 数据集: {dataset_name} | 划分: {args.split}")
@@ -516,18 +519,10 @@ def main(argv=None):
     if args.research_split_manifest:
         print(f"🧪 Research Split Manifest: {args.research_split_manifest}")
     print(f"🧪 Metric Spec Version: {metric_settings.get('version', '2.0')}")
-    print(
-        f"📦 Model Runtime: source={model_source} "
-        + (
-            f"cache={model_runtime.get('MODELSCOPE_CACHE')}"
-            if model_source == "modelscope"
-            else (
-                f"disable_xet={model_runtime.get('HF_HUB_DISABLE_XET')} "
-                f"download_timeout={model_runtime.get('HF_HUB_DOWNLOAD_TIMEOUT')} "
-                f"etag_timeout={model_runtime.get('HF_HUB_ETAG_TIMEOUT')}"
-            )
-        )
-    )
+    runtime_bits = [f"source={model_source}"]
+    if model_runtime.get("MODELSCOPE_CACHE"):
+        runtime_bits.append(f"cache={model_runtime.get('MODELSCOPE_CACHE')}")
+    print(f"📦 Model Runtime: {' '.join(runtime_bits)}")
 
     # 3. 加载模型
     print("\n🔄 加载模型...")

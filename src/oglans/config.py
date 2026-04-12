@@ -257,16 +257,16 @@ class ConfigManager:
                 "Missing required semantic config fields: " + ", ".join(missing)
             )
         model_source = str(cls._get_nested(config, "model.source") or "").strip().lower()
-        if model_source not in {"local", "modelscope", "huggingface"}:
+        if model_source not in {"local", "modelscope"}:
             raise ValueError(
                 f"Unsupported model.source: {model_source}. "
-                "Expected one of local, modelscope, huggingface."
+                "Expected one of local, modelscope."
             )
         scv_source = str(cls._get_nested(config, "algorithms.scv.source") or "").strip().lower()
-        if scv_source and scv_source not in {"local", "modelscope", "huggingface"}:
+        if scv_source and scv_source not in {"local", "modelscope"}:
             raise ValueError(
                 f"Unsupported algorithms.scv.source: {scv_source}. "
-                "Expected one of local, modelscope, huggingface."
+                "Expected one of local, modelscope."
             )
         evaluation_mode = str(cls._get_nested(config, "evaluation.mode") or "").strip().lower()
         if evaluation_mode not in {"scored", "prediction_only"}:

@@ -155,7 +155,7 @@ class SemanticConsistencyVerifier:
             self.model = AutoModelForSequenceClassification.from_pretrained(model_path).to(self.device)
             self.model.eval() # 开启评估模式
         except Exception as e:
-            model_runtime = get_model_download_runtime_snapshot(source=self.source)
+            model_runtime = get_model_download_runtime_snapshot(project_root, source=self.source)
             logger.error(
                 "Failed to load SCV model: "
                 f"model_name={model_name}, resolved_path={model_path}, "

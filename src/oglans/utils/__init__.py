@@ -18,10 +18,8 @@ from .run_manifest import (
 from .hub_runtime import (
     configure_model_download_runtime,
     configure_modelscope_runtime,
-    configure_hf_hub_runtime,
     get_model_download_runtime_snapshot,
     get_modelscope_runtime_snapshot,
-    get_hf_runtime_snapshot,
     resolve_model_name_or_path,
 )
 from .model_profile import (
@@ -82,10 +80,8 @@ __all__ = [
     "save_json",
     "configure_model_download_runtime",
     "configure_modelscope_runtime",
-    "configure_hf_hub_runtime",
     "get_model_download_runtime_snapshot",
     "get_modelscope_runtime_snapshot",
-    "get_hf_runtime_snapshot",
     "resolve_model_name_or_path",
     "DEFAULT_LOCAL_MODEL_PROFILE",
     "LOCAL_MODEL_PROFILES",

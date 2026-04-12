@@ -17,7 +17,11 @@ def test_shell_wrappers_export_modelscope_runtime_defaults():
     ]
     for name in targets:
         text = _read_script(name)
-        assert "MODELSCOPE_CACHE" in text, name
+        assert 'MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-${PROJECT_ROOT}/models}"' in text, name
+        assert "HF_HOME" not in text, name
+        assert "HF_HUB_CACHE" not in text, name
+        assert "HF_ASSETS_CACHE" not in text, name
+        assert "HF_XET_CACHE" not in text, name
 
 
 def test_shell_wrappers_do_not_parse_config_with_yaml_safe_load():

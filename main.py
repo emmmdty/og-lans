@@ -238,7 +238,10 @@ def main():
         repo_dir,
         package_names=["torch", "transformers", "trl", "unsloth", "datasets", "PyYAML"],
     )
-    runtime_manifest["model_runtime"] = get_model_download_runtime_snapshot(source=model_source)
+    runtime_manifest["model_runtime"] = get_model_download_runtime_snapshot(
+        repo_dir,
+        source=model_source,
+    )
     config_hash_sha256 = compute_json_sha256(config)
     run_manifest_path = os.path.join(config['project']['output_dir'], "run_manifest.json")
     effective_model_path = str(config.get("model", {}).get("base_model"))

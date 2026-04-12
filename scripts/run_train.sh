@@ -15,15 +15,7 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"  # 确保 Python 输出不缓存，实时写入日志
-export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-${PROJECT_ROOT}/data/cache/modelscope}"
-export HF_HOME="${HF_HOME:-${PROJECT_ROOT}/data/cache/huggingface}"
-export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
-export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
-export HF_ASSETS_CACHE="${HF_ASSETS_CACHE:-${HF_HOME}/assets}"
-export HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}"
-export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
-export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}"
-export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-30}"
+export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-${PROJECT_ROOT}/models}"
 usage() {
   cat <<'EOF'
 Usage:
@@ -136,9 +128,9 @@ if [[ ${#PYTHON_CMD[@]} -eq 0 ]]; then
   exit 1
 fi
 # 手动创建目录，防止报错
-mkdir -p "$MODELSCOPE_CACHE" "$HF_HOME" "$HF_DATASETS_CACHE" "$HF_HUB_CACHE" "$HF_ASSETS_CACHE" "$HF_XET_CACHE"
+mkdir -p "$MODELSCOPE_CACHE"
 
-echo "📦 ModelScope Cache Dir: $MODELSCOPE_CACHE"
+echo "📦 Model Root Dir: $MODELSCOPE_CACHE"
 
 CONFIG_PATH="${PROJECT_ROOT}/configs/config.yaml"
 # 默认数据目录

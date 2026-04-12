@@ -10,14 +10,7 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"
-export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-${PROJECT_ROOT}/data/cache/modelscope}"
-export HF_HOME="${HF_HOME:-${PROJECT_ROOT}/data/cache/huggingface}"
-export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
-export HF_ASSETS_CACHE="${HF_ASSETS_CACHE:-${HF_HOME}/assets}"
-export HF_XET_CACHE="${HF_XET_CACHE:-${HF_HOME}/xet}"
-export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
-export HF_HUB_DOWNLOAD_TIMEOUT="${HF_HUB_DOWNLOAD_TIMEOUT:-120}"
-export HF_HUB_ETAG_TIMEOUT="${HF_HUB_ETAG_TIMEOUT:-30}"
+export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-${PROJECT_ROOT}/models}"
 
 resolve_python_bin() {
   if command -v python >/dev/null 2>&1; then
@@ -35,7 +28,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
   echo "ERROR: neither python nor python3 found in PATH."
   exit 1
 fi
-mkdir -p "$MODELSCOPE_CACHE" "$HF_HOME" "$HF_HUB_CACHE" "$HF_ASSETS_CACHE" "$HF_XET_CACHE"
+mkdir -p "$MODELSCOPE_CACHE"
 
 config_fields() {
   "$PYTHON_BIN" scripts/resolve_config_context.py --config "$CONFIG" --project-root "$PROJECT_ROOT" "$@"

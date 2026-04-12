@@ -4,63 +4,22 @@ Shared model download runtime helpers.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
-import importlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 
-DEFAULT_HF_HUB_DISABLE_XET = "1"
-DEFAULT_HF_HUB_DOWNLOAD_TIMEOUT = "120"
-DEFAULT_HF_HUB_ETAG_TIMEOUT = "30"
-DEFAULT_MODELSCOPE_CACHE_DIRNAME = "modelscope"
-
-
-def _default_hf_paths(project_root: str | os.PathLike[str]) -> Dict[str, str]:
-    root = Path(project_root).resolve()
-    hf_home = root / "data" / "cache" / "huggingface"
-    return {
-        "HF_HOME": str(hf_home),
-        "HF_HUB_CACHE": str(hf_home / "hub"),
-        "HF_ASSETS_CACHE": str(hf_home / "assets"),
-        "HF_XET_CACHE": str(hf_home / "xet"),
-        "HF_HUB_DISABLE_XET": DEFAULT_HF_HUB_DISABLE_XET,
-        "HF_HUB_DOWNLOAD_TIMEOUT": DEFAULT_HF_HUB_DOWNLOAD_TIMEOUT,
-        "HF_HUB_ETAG_TIMEOUT": DEFAULT_HF_HUB_ETAG_TIMEOUT,
-    }
+DEFAULT_MODEL_ROOT_DIRNAME = "models"
 
 
 def _default_modelscope_paths(project_root: str | os.PathLike[str]) -> Dict[str, str]:
     root = Path(project_root).resolve()
-    cache_dir = root / "data" / "cache" / DEFAULT_MODELSCOPE_CACHE_DIRNAME
+    cache_dir = root / DEFAULT_MODEL_ROOT_DIRNAME
     return {
         "MODELSCOPE_CACHE": str(cache_dir),
     }
-
-
-def configure_hf_hub_runtime(
-    project_root: str | os.PathLike[str],
-    *,
-    force: bool = False,
-) -> Dict[str, str]:
-    """
-    Populate a stable Hugging Face runtime environment.
-
-    Existing environment variables win unless force=True.
-    """
-    defaults = _default_hf_paths(project_root)
-    snapshot: Dict[str, str] = {}
-
-    for key, value in defaults.items():
-        if force or not os.environ.get(key):
-            os.environ[key] = value
-        snapshot[key] = os.environ[key]
-
-    for key in ("HF_HOME", "HF_HUB_CACHE", "HF_ASSETS_CACHE", "HF_XET_CACHE"):
-        Path(snapshot[key]).mkdir(parents=True, exist_ok=True)
-
-    return snapshot
 
 
 def configure_modelscope_runtime(
@@ -97,29 +56,7 @@ def configure_model_download_runtime(
         return {}
     if source_name == "modelscope":
         return configure_modelscope_runtime(project_root, force=force)
-    if source_name == "huggingface":
-        return configure_hf_hub_runtime(project_root, force=force)
     raise ValueError(f"Unsupported model source: {source}")
-
-
-def get_hf_runtime_snapshot(project_root: Optional[str | os.PathLike[str]] = None) -> Dict[str, str]:
-    """
-    Return the active HF runtime values, filling defaults if needed.
-    """
-    if project_root is not None:
-        return configure_hf_hub_runtime(project_root)
-    snapshot: Dict[str, str] = {}
-    for key in (
-        "HF_HOME",
-        "HF_HUB_CACHE",
-        "HF_ASSETS_CACHE",
-        "HF_XET_CACHE",
-        "HF_HUB_DISABLE_XET",
-        "HF_HUB_DOWNLOAD_TIMEOUT",
-        "HF_HUB_ETAG_TIMEOUT",
-    ):
-        snapshot[key] = os.environ.get(key, "")
-    return snapshot
 
 
 def get_modelscope_runtime_snapshot(
@@ -148,8 +85,6 @@ def get_model_download_runtime_snapshot(
         return {}
     if source_name == "modelscope":
         return get_modelscope_runtime_snapshot(project_root)
-    if source_name == "huggingface":
-        return get_hf_runtime_snapshot(project_root)
     raise ValueError(f"Unsupported model source: {source}")
 
 
@@ -195,44 +130,31 @@ def resolve_model_name_or_path(
             "model.source=local requires an existing local filesystem path. "
             f"Got: {model_name_or_path}"
         )
-    if source_name in {"modelscope", "huggingface"}:
-        runtime = configure_modelscope_runtime(project_root or Path.cwd())
-        cache_dir = modelscope_cache_dir or runtime["MODELSCOPE_CACHE"]
-        cached_path = _resolve_modelscope_cache_path(
-            model_name_or_path,
-            cache_dir=cache_dir,
-        )
-        if cached_path is not None:
-            _log(logger, "info", f"Using cached ModelScope model path: {cached_path}")
-            return cached_path
-    if source_name == "modelscope":
-        runtime = configure_modelscope_runtime(project_root or Path.cwd())
-        cache_dir = modelscope_cache_dir or runtime["MODELSCOPE_CACHE"]
-        try:
-            from modelscope import snapshot_download
+    if source_name != "modelscope":
+        raise ValueError(f"Unsupported model source: {source}")
 
-            resolved = snapshot_download(model_name_or_path, cache_dir=cache_dir)
-            _log(logger, "info", f"ModelScope resolved model to: {resolved}")
-            return resolved
-        except Exception as exc:  # pragma: no cover - network/backend failure path
-            _log(
-                logger,
-                "warning",
-                "ModelScope download failed; falling back to HuggingFace: "
-                f"model={model_name_or_path}, cache_dir={cache_dir}, "
-                f"error_type={type(exc).__name__}, error={exc}",
-            )
-            if project_root is not None:
-                configure_hf_hub_runtime(project_root)
-            return model_name_or_path
+    runtime = configure_modelscope_runtime(project_root or Path.cwd())
+    cache_dir = modelscope_cache_dir or runtime["MODELSCOPE_CACHE"]
+    cached_path = _resolve_modelscope_cache_path(
+        model_name_or_path,
+        cache_dir=cache_dir,
+    )
+    if cached_path is not None:
+        _log(logger, "info", f"Using cached ModelScope model path: {cached_path}")
+        return cached_path
 
-    if source_name == "huggingface":
-        if project_root is not None:
-            configure_hf_hub_runtime(project_root)
-        _log(logger, "info", f"Using HuggingFace model source for: {model_name_or_path}")
-        return model_name_or_path
+    try:
+        from modelscope import snapshot_download
 
-    raise ValueError(f"Unsupported model source: {source}")
+        resolved = snapshot_download(model_name_or_path, cache_dir=cache_dir)
+        _log(logger, "info", f"ModelScope resolved model to: {resolved}")
+        return resolved
+    except Exception as exc:  # pragma: no cover - network/backend failure path
+        raise RuntimeError(
+            "ModelScope download failed: "
+            f"model={model_name_or_path}, cache_dir={cache_dir}, "
+            f"error_type={type(exc).__name__}, error={exc}"
+        ) from exc
 
 
 def validate_attention_implementation(attn_implementation: Optional[str]) -> Optional[str]:
@@ -272,7 +194,7 @@ def build_unsloth_from_pretrained_kwargs(
     Build a strict Unsloth loading contract.
 
     Local model sources must stay fully offline so Unsloth does not attempt
-    remote Hugging Face statistics checks or hub lookups.
+    remote hub lookups.
     """
     source_name = str(source or "modelscope").lower()
     resolved_candidate = Path(model_name).expanduser()

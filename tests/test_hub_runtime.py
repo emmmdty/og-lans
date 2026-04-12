@@ -1,5 +1,4 @@
 import importlib.util
-import logging
 import os
 import sys
 import types
@@ -26,22 +25,16 @@ def test_configure_modelscope_runtime_sets_expected_defaults(monkeypatch, tmp_pa
     hub_runtime = _load_module()
     snapshot = hub_runtime.configure_modelscope_runtime(str(tmp_path))
 
-    expected_cache = tmp_path / "data" / "cache" / "modelscope"
+    expected_cache = tmp_path / "models"
     assert snapshot["MODELSCOPE_CACHE"] == str(expected_cache)
-    assert os.environ["MODELSCOPE_CACHE"].endswith(str(Path("data") / "cache" / "modelscope"))
+    assert os.environ["MODELSCOPE_CACHE"].endswith("models")
 
 
-def test_configure_hf_hub_runtime_preserves_existing_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
-    monkeypatch.setenv("HF_HUB_DOWNLOAD_TIMEOUT", "45")
-    monkeypatch.setenv("HF_HUB_ETAG_TIMEOUT", "15")
-
+def test_configure_model_download_runtime_rejects_huggingface(tmp_path):
     hub_runtime = _load_module()
-    snapshot = hub_runtime.configure_hf_hub_runtime(str(tmp_path))
 
-    assert snapshot["HF_HUB_DISABLE_XET"] == "0"
-    assert snapshot["HF_HUB_DOWNLOAD_TIMEOUT"] == "45"
-    assert snapshot["HF_HUB_ETAG_TIMEOUT"] == "15"
+    with pytest.raises(ValueError, match="Unsupported model source"):
+        hub_runtime.configure_model_download_runtime(str(tmp_path), source="huggingface")
 
 
 def test_resolve_model_name_or_path_prefers_existing_local_path(tmp_path):
@@ -60,7 +53,7 @@ def test_resolve_model_name_or_path_uses_modelscope_when_available(monkeypatch, 
     hub_runtime = _load_module()
 
     fake_modelscope = types.ModuleType("modelscope")
-    expected_cache = tmp_path / "data" / "cache" / "modelscope"
+    expected_cache = tmp_path / "models"
 
     def snapshot_download(model_name_or_path, cache_dir=None):
         assert model_name_or_path == "Qwen/Qwen3-4B-Instruct-2507"
@@ -84,9 +77,7 @@ def test_resolve_model_name_or_path_prefers_existing_modelscope_cache(monkeypatc
     monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
     cached_model_dir = (
         tmp_path
-        / "data"
-        / "cache"
-        / "modelscope"
+        / "models"
         / "Qwen"
         / "Qwen3-4B-Instruct-2507"
     )
@@ -111,40 +102,13 @@ def test_resolve_model_name_or_path_prefers_existing_modelscope_cache(monkeypatc
     assert resolved == str(cached_model_dir.resolve())
 
 
-def test_resolve_model_name_or_path_huggingface_prefers_existing_modelscope_cache(monkeypatch, tmp_path):
-    monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
-    cached_model_dir = (
-        tmp_path
-        / "data"
-        / "cache"
-        / "modelscope"
-        / "Qwen"
-        / "Qwen3-4B-Instruct-2507"
-    )
-    cached_model_dir.mkdir(parents=True)
-
-    hub_runtime = _load_module()
-
-    resolved = hub_runtime.resolve_model_name_or_path(
-        "Qwen/Qwen3-4B-Instruct-2507",
-        source="huggingface",
-        project_root=str(tmp_path),
-    )
-
-    assert resolved == str(cached_model_dir.resolve())
-
-
-def test_resolve_model_name_or_path_falls_back_to_huggingface_when_modelscope_fails(
-    monkeypatch,
-    caplog,
-    tmp_path,
-):
+def test_resolve_model_name_or_path_download_failure_raises_runtime_error(monkeypatch, tmp_path):
     monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
 
     hub_runtime = _load_module()
 
     fake_modelscope = types.ModuleType("modelscope")
-    expected_cache = tmp_path / "data" / "cache" / "modelscope"
+    expected_cache = tmp_path / "models"
 
     def snapshot_download(model_name_or_path, cache_dir=None):
         raise RuntimeError("network timeout")
@@ -152,39 +116,24 @@ def test_resolve_model_name_or_path_falls_back_to_huggingface_when_modelscope_fa
     fake_modelscope.snapshot_download = snapshot_download
     monkeypatch.setitem(sys.modules, "modelscope", fake_modelscope)
 
-    with caplog.at_level(logging.WARNING):
-        resolved = hub_runtime.resolve_model_name_or_path(
+    with pytest.raises(RuntimeError, match="ModelScope download failed"):
+        hub_runtime.resolve_model_name_or_path(
             "Qwen/Qwen3-4B-Instruct-2507",
             source="modelscope",
             modelscope_cache_dir=str(expected_cache),
             project_root=str(tmp_path),
         )
 
-    assert resolved == "Qwen/Qwen3-4B-Instruct-2507"
-    assert "falling back to HuggingFace" in caplog.text
 
-
-def test_resolve_model_name_or_path_allows_explicit_huggingface(monkeypatch, tmp_path):
+def test_resolve_model_name_or_path_rejects_explicit_huggingface(tmp_path):
     hub_runtime = _load_module()
-    for key in [
-        "HF_HOME",
-        "HF_HUB_CACHE",
-        "HF_ASSETS_CACHE",
-        "HF_XET_CACHE",
-        "HF_HUB_DISABLE_XET",
-        "HF_HUB_DOWNLOAD_TIMEOUT",
-        "HF_HUB_ETAG_TIMEOUT",
-    ]:
-        monkeypatch.delenv(key, raising=False)
 
-    resolved = hub_runtime.resolve_model_name_or_path(
-        "Qwen/Qwen3-4B-Instruct-2507",
-        source="huggingface",
-        project_root=str(tmp_path),
-    )
-
-    assert resolved == "Qwen/Qwen3-4B-Instruct-2507"
-    assert os.environ["HF_HOME"].endswith(str(Path("data") / "cache" / "huggingface"))
+    with pytest.raises(ValueError, match="Unsupported model source"):
+        hub_runtime.resolve_model_name_or_path(
+            "Qwen/Qwen3-4B-Instruct-2507",
+            source="huggingface",
+            project_root=str(tmp_path),
+        )
 
 
 def test_local_model_source_requires_existing_local_path(tmp_path):

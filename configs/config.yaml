@@ -25,7 +25,7 @@ project:
 model:
   base_model: "Qwen/Qwen3-4B-Instruct-2507"
   profile: "qwen3_instruct"
-  source: "modelscope"  # 国内环境使用 modelscope，海外改为 huggingface
+  source: "modelscope"  # 本地优先，缺失时从 og-lans/models 触发 ModelScope 下载
   
   # 4-bit 量化配置 (QLoRA)
   # 理论显存占用: ~6GB base + ~2GB LoRA adapters + ~8GB activations ≈ 16GB

@@ -26,6 +26,7 @@
 - 可对外部 API 模型做零样本或 few-shot 基线评测。
 - 可围绕论文式实验组织复现实验、学术摘要和消融配置。
 - 训练 wrapper 当前优先使用 `uv run python`，并保证 preflight、manifest 写入与真实训练进程使用同一解释器命令。
+- 当前模型解析口径已经统一为“本地路径优先，其次仓库根目录 `models/`，缺失时仅允许通过 ModelScope 下载到 `models/`”；仓库不再保留 Hugging Face 作为模型拉取后备源。
 
 但它也仍然有明确边界：
 
