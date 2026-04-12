@@ -299,6 +299,8 @@ def _summary(metric_value: float) -> dict:
             "doc_instance_micro_f1": 0.11,
             "doc_combination_micro_f1": 0.12,
             "doc_event_type_micro_f1": 0.91,
+            "single_event_doc_role_micro_f1": 0.33,
+            "multi_event_doc_role_micro_f1": 0.22,
             "strict_f1": 0.41,
             "relaxed_f1": 0.51,
             "type_f1": 0.61,

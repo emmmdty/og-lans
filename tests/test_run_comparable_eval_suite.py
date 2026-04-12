@@ -171,6 +171,8 @@ def test_build_table_sections_splits_main_diagnostic_and_cost_rows():
                     "doc_instance_micro_f1": 0.02,
                     "doc_combination_micro_f1": 0.02,
                     "doc_event_type_micro_f1": 0.81,
+                    "single_event_doc_role_micro_f1": 0.36,
+                    "multi_event_doc_role_micro_f1": 0.24,
                     "strict_f1": 0.41,
                     "relaxed_f1": 0.51,
                     "type_f1": 0.61,
@@ -202,6 +204,8 @@ def test_build_table_sections_splits_main_diagnostic_and_cost_rows():
     assert len(sections["main_table"]) == 1
     assert len(sections["diagnostic_table"]) == 1
     assert len(sections["cost_table"]) == 1
+    assert sections["diagnostic_table"][0]["single_event_doc_role_micro_f1"] == 0.36
+    assert sections["diagnostic_table"][0]["multi_event_doc_role_micro_f1"] == 0.24
     assert sections["cost_table"][0]["token_usage_kind"] == "actual"
 
 

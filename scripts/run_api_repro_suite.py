@@ -177,6 +177,8 @@ def compute_significance(
             "doc_instance_micro_f1",
             "doc_combination_micro_f1",
             "doc_event_type_micro_f1",
+            "single_event_doc_role_micro_f1",
+            "multi_event_doc_role_micro_f1",
             "strict_f1",
             "relaxed_f1",
             "type_f1",

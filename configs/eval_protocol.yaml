@@ -25,6 +25,8 @@ reporting:
     - "doc_instance_micro_f1"
     - "doc_combination_micro_f1"
     - "doc_event_type_micro_f1"
+    - "single_event_doc_role_micro_f1"
+    - "multi_event_doc_role_micro_f1"
 
 research_design:
   dev_usage: "final_report_only"

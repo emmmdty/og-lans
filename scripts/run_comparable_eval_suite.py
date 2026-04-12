@@ -38,6 +38,8 @@ DIAGNOSTIC_METRICS = (
     "type_f1",
     "schema_compliance_rate",
     "hallucination_rate",
+    "single_event_doc_role_micro_f1",
+    "multi_event_doc_role_micro_f1",
     "parse_success_rate",
     "parse_error_rate",
     "avg_gold_events",

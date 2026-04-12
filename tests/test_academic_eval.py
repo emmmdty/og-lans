@@ -79,6 +79,35 @@ def test_metrics_from_sample_counts_supports_doc_level_primary_metrics():
     assert metrics["doc_combination_micro_f1"] == 2.0 / 3.0
 
 
+def test_metrics_from_sample_counts_supports_gold_event_multiplicity_breakdown():
+    rows = [
+        {
+            "gold_event_count": 1,
+            "doc_role_tp": 1,
+            "doc_role_pred_total": 1,
+            "doc_role_gold_total": 1,
+        },
+        {
+            "gold_event_count": 2,
+            "doc_role_tp": 1,
+            "doc_role_pred_total": 2,
+            "doc_role_gold_total": 2,
+        },
+        {
+            "gold_event_count": 0,
+            "doc_role_tp": 0,
+            "doc_role_pred_total": 1,
+            "doc_role_gold_total": 0,
+        },
+    ]
+
+    metrics = metrics_from_sample_counts(rows)
+
+    assert metrics["single_event_doc_role_micro_f1"] == pytest.approx(1.0)
+    assert metrics["multi_event_doc_role_micro_f1"] == pytest.approx(0.5)
+    assert metrics["zero_gold_samples"] == 1.0
+
+
 def test_bootstrap_confidence_intervals_shape():
     rows = [
         {
@@ -144,6 +173,10 @@ def test_extract_report_metrics_reads_nested_summary_fields():
                     "instance": {"MicroF1": 0.55},
                     "combination": {"MicroF1": 0.57},
                     "classification": {"MicroF1": 0.72},
+                    "gold_event_multiplicity_breakdown": {
+                        "single_event": {"doc_role": {"MicroF1": 0.64}},
+                        "multi_event": {"doc_role": {"MicroF1": 0.42}},
+                    },
                 }
             },
             "strict": {"precision": 0.51, "recall": 0.49, "f1": 0.5},
@@ -163,6 +196,8 @@ def test_extract_report_metrics_reads_nested_summary_fields():
             "doc_instance_micro_f1",
             "doc_combination_micro_f1",
             "doc_event_type_micro_f1",
+            "single_event_doc_role_micro_f1",
+            "multi_event_doc_role_micro_f1",
             "strict_precision",
             "strict_recall",
             "strict_f1",
@@ -175,6 +210,8 @@ def test_extract_report_metrics_reads_nested_summary_fields():
     )
 
     assert metrics["doc_role_micro_f1"] == 0.61
+    assert metrics["single_event_doc_role_micro_f1"] == 0.64
+    assert metrics["multi_event_doc_role_micro_f1"] == 0.42
     assert metrics["relaxed_f1"] == 0.63
     assert metrics["type_f1"] == 0.74
     assert metrics["schema_compliance_rate"] == 0.81

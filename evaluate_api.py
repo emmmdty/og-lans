@@ -457,6 +457,7 @@ def compute_sample_metric_row(
     gold_types = evaluator.extract_event_types(gold_events)
     doc_sample = evaluator._compute_doc_ee_sample_stats(pred_events, gold_events)
     return {
+        "gold_event_count": sum(1 for event in (gold_events or []) if isinstance(event, dict)),
         "strict_tp": len(pred_strict & gold_strict),
         "strict_pred_total": len(pred_strict),
         "strict_gold_total": len(gold_strict),

@@ -183,3 +183,21 @@ def test_resolve_stage_settings_prefers_cli_overrides():
     assert resolved["stage_mode"] == "two_stage"
     assert resolved["fewshot_selection_mode"] == "dynamic"
     assert resolved["fewshot_pool_split"] == "train_fit"
+
+
+def test_compute_sample_metric_row_records_gold_event_count_for_multiplicity_ci():
+    evaluator = mod.AcademicEventEvaluator()
+    gold = [
+        {
+            "event_type": "企业收购",
+            "arguments": [{"role": "收购方", "argument": "甲公司"}],
+        },
+        {
+            "event_type": "企业融资",
+            "arguments": [{"role": "融资金额", "argument": "10亿元"}],
+        },
+    ]
+
+    row = mod.compute_sample_metric_row(evaluator, pred_events=gold[:1], gold_events=gold)
+
+    assert row["gold_event_count"] == 2

@@ -38,6 +38,36 @@ def _metric_block(tp: int, fp: int, fn: int) -> Dict[str, float | int]:
     }
 
 
+def _empty_multiplicity_bucket() -> Dict[str, int]:
+    return {
+        "support_samples": 0,
+        "support_gold_events": 0,
+        "doc_role_tp": 0,
+        "doc_role_fp": 0,
+        "doc_role_fn": 0,
+    }
+
+
+def _multiplicity_metric_payload(bucket: Dict[str, int]) -> Dict[str, Any]:
+    precision, recall, f1 = _compute_prf(
+        int(bucket.get("doc_role_tp", 0)),
+        int(bucket.get("doc_role_fp", 0)),
+        int(bucket.get("doc_role_fn", 0)),
+    )
+    return {
+        "support_samples": int(bucket.get("support_samples", 0)),
+        "support_gold_events": int(bucket.get("support_gold_events", 0)),
+        "doc_role": {
+            "MicroPrecision": precision,
+            "MicroRecall": recall,
+            "MicroF1": f1,
+            "TP": int(bucket.get("doc_role_tp", 0)),
+            "FP": int(bucket.get("doc_role_fp", 0)),
+            "FN": int(bucket.get("doc_role_fn", 0)),
+        },
+    }
+
+
 def _counter_overlap_count(pred_items: List[Tuple[Any, ...]], gold_items: List[Tuple[Any, ...]]) -> int:
     pred_counter = Counter(pred_items)
     gold_counter = Counter(gold_items)
@@ -107,6 +137,7 @@ class MetricsReport:
     schema_violation_breakdown: Dict = field(default_factory=dict)
     doc_ee: Dict[str, Any] = field(default_factory=dict)
     ee_text_proxy: Dict[str, Any] = field(default_factory=dict)
+    gold_event_multiplicity_breakdown: Dict[str, Any] = field(default_factory=dict)
 
 
 class AcademicEventEvaluator:
@@ -215,6 +246,11 @@ class AcademicEventEvaluator:
             "doc_role_stats": defaultdict(lambda: defaultdict(lambda: [0, 0, 0])),
             "doc_event_type_stats": defaultdict(lambda: [0, 0, 0]),
             "doc_role_orders": defaultdict(list),
+            "gold_event_multiplicity": {
+                "single_event": _empty_multiplicity_bucket(),
+                "multi_event": _empty_multiplicity_bucket(),
+                "zero_gold": _empty_multiplicity_bucket(),
+            },
             "text_proxy_trigger_text_id": [0, 0, 0],
             "text_proxy_trigger_text_cls": [0, 0, 0],
             "text_proxy_argument_text_id": [0, 0, 0],
@@ -556,6 +592,30 @@ class AcademicEventEvaluator:
         ]
         return sample_stats
 
+    @staticmethod
+    def _gold_event_multiplicity_bucket(gold_events: List[Dict[str, Any]]) -> Tuple[str, int]:
+        if not isinstance(gold_events, list):
+            return "zero_gold", 0
+        gold_event_count = sum(1 for event in gold_events if isinstance(event, dict))
+        if gold_event_count == 1:
+            return "single_event", gold_event_count
+        if gold_event_count >= 2:
+            return "multi_event", gold_event_count
+        return "zero_gold", gold_event_count
+
+    def _update_gold_event_multiplicity_stats(
+        self,
+        gold_events: List[Dict[str, Any]],
+        doc_sample: Dict[str, Any],
+    ) -> None:
+        bucket_name, gold_event_count = self._gold_event_multiplicity_bucket(gold_events)
+        bucket = self.stats["gold_event_multiplicity"][bucket_name]
+        bucket["support_samples"] += 1
+        bucket["support_gold_events"] += int(gold_event_count)
+        bucket["doc_role_tp"] += int(doc_sample["overall"][0])
+        bucket["doc_role_fp"] += int(doc_sample["overall"][1])
+        bucket["doc_role_fn"] += int(doc_sample["overall"][2])
+
     def _extract_text_proxy_sets(self, events: List[Dict[str, Any]]) -> Dict[str, Set[Tuple[Any, ...]]]:
         metrics = {
             "trigger_text_id": set(),
@@ -745,6 +805,7 @@ class AcademicEventEvaluator:
         self.stats["doc_combination_tp"] += doc_sample["combination"][0]
         self.stats["doc_combination_fp"] += doc_sample["combination"][1]
         self.stats["doc_combination_fn"] += doc_sample["combination"][2]
+        self._update_gold_event_multiplicity_stats(gold_events, doc_sample)
         for event_type, role_order in doc_sample["role_order_map"].items():
             existing = self.stats["doc_role_orders"][event_type]
             for role in role_order:
@@ -958,6 +1019,10 @@ class AcademicEventEvaluator:
             self.stats["doc_combination_fp"],
             self.stats["doc_combination_fn"],
         )
+        report.gold_event_multiplicity_breakdown = {
+            bucket_name: _multiplicity_metric_payload(bucket)
+            for bucket_name, bucket in self.stats["gold_event_multiplicity"].items()
+        }
         report.doc_ee = {
             "overall": {
                 "MacroPrecision": macro_precision_sum / n_doc_events,
@@ -999,6 +1064,7 @@ class AcademicEventEvaluator:
                 "FP": self.stats["doc_combination_fp"],
                 "FN": self.stats["doc_combination_fn"],
             },
+            "gold_event_multiplicity_breakdown": report.gold_event_multiplicity_breakdown,
         }
 
         report.ee_text_proxy = {
@@ -1328,6 +1394,9 @@ def build_primary_metric_map(report: MetricsReport) -> Dict[str, float]:
     classification = doc_ee.get("classification", {})
     instance = doc_ee.get("instance", {})
     combination = doc_ee.get("combination", {})
+    multiplicity = doc_ee.get("gold_event_multiplicity_breakdown", report.gold_event_multiplicity_breakdown) or {}
+    single_event_role = (multiplicity.get("single_event", {}) or {}).get("doc_role", {}) or {}
+    multi_event_role = (multiplicity.get("multi_event", {}) or {}).get("doc_role", {}) or {}
     return {
         "legacy_dueefin_overall_precision": float(report.strict_precision),
         "legacy_dueefin_overall_recall": float(report.strict_recall),
@@ -1341,6 +1410,8 @@ def build_primary_metric_map(report: MetricsReport) -> Dict[str, float]:
         "doc_event_type_macro_f1": float(classification.get("MacroF1", 0.0)),
         "doc_instance_micro_f1": float(instance.get("MicroF1", 0.0)),
         "doc_combination_micro_f1": float(combination.get("MicroF1", 0.0)),
+        "single_event_doc_role_micro_f1": float(single_event_role.get("MicroF1", 0.0)),
+        "multi_event_doc_role_micro_f1": float(multi_event_role.get("MicroF1", 0.0)),
     }
 
 

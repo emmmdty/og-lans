@@ -22,6 +22,10 @@ ACADEMIC_MAIN_TABLE_METRICS = (
     "doc_combination_micro_f1",
     "doc_event_type_micro_f1",
 )
+GOLD_EVENT_MULTIPLICITY_REPORT_METRICS = (
+    "single_event_doc_role_micro_f1",
+    "multi_event_doc_role_micro_f1",
+)
 CORE_DIAGNOSTIC_REPORT_METRICS = (
     "legacy_dueefin_overall_precision",
     "legacy_dueefin_overall_recall",
@@ -52,17 +56,23 @@ SUMMARY_DIAGNOSTIC_REPORT_METRICS = (
     "roles_added_count",
     "events_dropped_after_correction",
 )
-LOCAL_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + CORE_DIAGNOSTIC_REPORT_METRICS
+LOCAL_SUITE_REPORT_METRICS = (
+    ACADEMIC_MAIN_TABLE_METRICS
+    + GOLD_EVENT_MULTIPLICITY_REPORT_METRICS
+    + CORE_DIAGNOSTIC_REPORT_METRICS
+)
 API_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + (
     "strict_f1",
     "relaxed_f1",
     "type_f1",
     "schema_compliance_rate",
     "hallucination_rate",
-)
+) + GOLD_EVENT_MULTIPLICITY_REPORT_METRICS
 OPTIONAL_REPORT_METRICS = (
     "parse_error_rate",
     "parse_success_rate",
+    "single_event_doc_role_micro_f1",
+    "multi_event_doc_role_micro_f1",
     "cot_faithfulness",
     "avg_tokens_per_sample",
     "total_tokens",
@@ -138,6 +148,15 @@ def extract_report_metrics(
     instance = _mapping_get(doc_ee, "instance") or {}
     combination = _mapping_get(doc_ee, "combination") or {}
     classification = _mapping_get(doc_ee, "classification") or {}
+    multiplicity = (
+        _mapping_get(doc_ee, "gold_event_multiplicity_breakdown")
+        or _mapping_get(metrics_obj, "gold_event_multiplicity_breakdown")
+        or {}
+    )
+    single_event = _mapping_get(multiplicity, "single_event") or {}
+    multi_event = _mapping_get(multiplicity, "multi_event") or {}
+    single_event_role = _mapping_get(single_event, "doc_role") or {}
+    multi_event_role = _mapping_get(multi_event, "doc_role") or {}
 
     legacy_metrics = _mapping_get(metrics_obj, "legacy_metrics") or {}
     strict = _mapping_get(metrics_obj, "strict") or _mapping_get(legacy_metrics, "strict") or {}
@@ -169,6 +188,12 @@ def extract_report_metrics(
         ),
         "doc_event_type_micro_f1": _to_float_or_none(
             metrics_obj.get("doc_event_type_micro_f1", classification.get("MicroF1"))
+        ),
+        "single_event_doc_role_micro_f1": _to_float_or_none(
+            metrics_obj.get("single_event_doc_role_micro_f1", single_event_role.get("MicroF1"))
+        ),
+        "multi_event_doc_role_micro_f1": _to_float_or_none(
+            metrics_obj.get("multi_event_doc_role_micro_f1", multi_event_role.get("MicroF1"))
         ),
         "legacy_dueefin_overall_precision": _to_float_or_none(
             metrics_obj.get(
@@ -355,6 +380,21 @@ def metrics_from_sample_counts(sample_counts: Sequence[CountDict]) -> Dict[str, 
         agg["doc_combination_pred_total"],
         agg["doc_combination_gold_total"],
     )
+    single_rows = [row for row in sample_counts if int(row.get("gold_event_count", 0)) == 1]
+    multi_rows = [row for row in sample_counts if int(row.get("gold_event_count", 0)) >= 2]
+    zero_gold_samples = sum(1 for row in sample_counts if int(row.get("gold_event_count", 0)) == 0)
+    single_agg = aggregate_sample_counts(single_rows)
+    multi_agg = aggregate_sample_counts(multi_rows)
+    single_doc_role = metric_from_counts(
+        single_agg["doc_role_tp"],
+        single_agg["doc_role_pred_total"],
+        single_agg["doc_role_gold_total"],
+    )
+    multi_doc_role = metric_from_counts(
+        multi_agg["doc_role_tp"],
+        multi_agg["doc_role_pred_total"],
+        multi_agg["doc_role_gold_total"],
+    )
     return {
         "strict_precision": strict["precision"],
         "strict_recall": strict["recall"],
@@ -377,6 +417,13 @@ def metrics_from_sample_counts(sample_counts: Sequence[CountDict]) -> Dict[str, 
         "doc_combination_micro_precision": doc_combination["precision"],
         "doc_combination_micro_recall": doc_combination["recall"],
         "doc_combination_micro_f1": doc_combination["f1"],
+        "single_event_doc_role_micro_precision": single_doc_role["precision"],
+        "single_event_doc_role_micro_recall": single_doc_role["recall"],
+        "single_event_doc_role_micro_f1": single_doc_role["f1"],
+        "multi_event_doc_role_micro_precision": multi_doc_role["precision"],
+        "multi_event_doc_role_micro_recall": multi_doc_role["recall"],
+        "multi_event_doc_role_micro_f1": multi_doc_role["f1"],
+        "zero_gold_samples": float(zero_gold_samples),
     }
 
 
@@ -413,6 +460,10 @@ def bootstrap_confidence_intervals(
         "doc_event_type_micro_precision", "doc_event_type_micro_recall", "doc_event_type_micro_f1",
         "doc_instance_micro_precision", "doc_instance_micro_recall", "doc_instance_micro_f1",
         "doc_combination_micro_precision", "doc_combination_micro_recall", "doc_combination_micro_f1",
+        "single_event_doc_role_micro_precision", "single_event_doc_role_micro_recall",
+        "single_event_doc_role_micro_f1",
+        "multi_event_doc_role_micro_precision", "multi_event_doc_role_micro_recall",
+        "multi_event_doc_role_micro_f1",
     ]
     trajectories = {k: [] for k in metric_keys}
 

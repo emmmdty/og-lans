@@ -121,6 +121,59 @@ def test_doc_role_micro_f1_preserves_duplicate_event_records():
     assert report.doc_ee["overall"]["FN"] == 2
 
 
+def test_doc_role_micro_f1_reports_gold_event_multiplicity_breakdown():
+    evaluator = AcademicEventEvaluator()
+    single_gold = [
+        {
+            "event_type": "企业融资",
+            "arguments": [{"role": "融资金额", "argument": "10亿元"}],
+        }
+    ]
+    multi_gold = [
+        {
+            "event_type": "企业收购",
+            "arguments": [{"role": "收购方", "argument": "甲公司"}],
+        },
+        {
+            "event_type": "企业融资",
+            "arguments": [{"role": "融资金额", "argument": "10亿元"}],
+        },
+    ]
+    multi_pred = [
+        {
+            "event_type": "企业收购",
+            "arguments": [{"role": "收购方", "argument": "甲公司"}],
+        },
+        {
+            "event_type": "企业融资",
+            "arguments": [{"role": "融资金额", "argument": "20亿元"}],
+        },
+    ]
+    zero_gold_pred = [
+        {
+            "event_type": "企业融资",
+            "arguments": [{"role": "融资金额", "argument": "1亿元"}],
+        }
+    ]
+
+    evaluator.update(single_gold, single_gold)
+    evaluator.update(multi_pred, multi_gold)
+    evaluator.update(zero_gold_pred, [])
+    report = evaluator.compute_metrics()
+    metric_map = build_primary_metric_map(report)
+    breakdown = report.doc_ee["gold_event_multiplicity_breakdown"]
+
+    assert breakdown["single_event"]["support_samples"] == 1
+    assert breakdown["single_event"]["support_gold_events"] == 1
+    assert breakdown["single_event"]["doc_role"]["MicroF1"] == pytest.approx(1.0)
+    assert breakdown["multi_event"]["support_samples"] == 1
+    assert breakdown["multi_event"]["support_gold_events"] == 2
+    assert breakdown["multi_event"]["doc_role"]["MicroF1"] == pytest.approx(0.5)
+    assert breakdown["zero_gold"]["support_samples"] == 1
+    assert metric_map["single_event_doc_role_micro_f1"] == pytest.approx(1.0)
+    assert metric_map["multi_event_doc_role_micro_f1"] == pytest.approx(0.5)
+
+
 def test_text_proxy_metrics_and_grounding_coverage_are_reported():
     evaluator = AcademicEventEvaluator()
     pred = [
