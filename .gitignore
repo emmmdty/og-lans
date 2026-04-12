@@ -12,6 +12,7 @@ data/raw/
 data/processed/
 data/schemas/
 logs/
+models/
 backup/
 .worktrees/
 
