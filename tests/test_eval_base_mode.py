@@ -71,6 +71,21 @@ def test_parse_args_supports_summary_file_override():
     assert args.summary_file == "logs/DuEE-Fin/eval_base/custom_summary.json"
 
 
+def test_parse_args_supports_data_dir_and_schema_path():
+    args = evaluate_module.parse_args(
+        [
+            "--base_only",
+            "--data_dir",
+            "/data/TJK/og-lans/data/raw/DuEE-Fin",
+            "--schema_path",
+            "/data/TJK/og-lans/data/raw/DuEE-Fin/duee_fin_event_schema.json",
+        ]
+    )
+
+    assert args.data_dir == "/data/TJK/og-lans/data/raw/DuEE-Fin"
+    assert args.schema_path == "/data/TJK/og-lans/data/raw/DuEE-Fin/duee_fin_event_schema.json"
+
+
 def test_parse_args_with_unknown_preserves_cli_overrides():
     args, unknown = evaluate_module.parse_args_with_unknown(
         [
@@ -101,6 +116,71 @@ def test_infer_dataset_name_for_eval_prefers_config_when_no_checkpoint():
         }
     }
     assert evaluate_module.infer_dataset_name_for_eval(cfg, checkpoint_path=None) == "DuEE-Fin"
+
+
+def test_infer_dataset_name_for_eval_falls_back_when_checkpoint_tag_is_not_real_dataset(monkeypatch):
+    cfg = {
+        "algorithms": {
+            "ds_cns": {
+                "taxonomy_path": "./data/raw/DuEE-Fin/duee_fin_event_schema.json"
+            }
+        }
+    }
+
+    def fake_exists(path):
+        return "DuEE-Fin" in str(path)
+
+    monkeypatch.setattr(evaluate_module.os.path, "exists", fake_exists)
+
+    assert (
+        evaluate_module.infer_dataset_name_for_eval(
+            cfg,
+            checkpoint_path="/data/TJK/og-lans/logs/smoke/checkpoints/exp1",
+        )
+        == "DuEE-Fin"
+    )
+
+
+def test_resolve_eval_dataset_context_prefers_configured_schema_dir_over_checkpoint_tag():
+    cfg = {
+        "algorithms": {
+            "ds_cns": {
+                "taxonomy_path": "./data/raw/DuEE-Fin/duee_fin_event_schema.json"
+            }
+        }
+    }
+
+    ctx = evaluate_module.resolve_eval_dataset_context(
+        cfg,
+        checkpoint_path="/data/TJK/og-lans/logs/smoke/checkpoints/exp1",
+    )
+
+    assert ctx["dataset_name"] == "DuEE-Fin"
+    assert ctx["data_path"].replace("\\", "/").endswith("data/raw/DuEE-Fin")
+    assert ctx["schema_path"].replace("\\", "/").endswith(
+        "data/raw/DuEE-Fin/duee_fin_event_schema.json"
+    )
+
+
+def test_resolve_eval_dataset_context_explicit_overrides_take_priority():
+    cfg = {
+        "algorithms": {
+            "ds_cns": {
+                "taxonomy_path": "./data/raw/DuEE-Fin/duee_fin_event_schema.json"
+            }
+        }
+    }
+
+    ctx = evaluate_module.resolve_eval_dataset_context(
+        cfg,
+        checkpoint_path="/data/TJK/og-lans/logs/smoke/checkpoints/exp1",
+        data_dir_override="/tmp/custom_data/MyData",
+        schema_path_override="/tmp/custom_data/MyData/mydata_event_schema.json",
+    )
+
+    assert ctx["dataset_name"] == "MyData"
+    assert ctx["data_path"] == "/tmp/custom_data/MyData"
+    assert ctx["schema_path"] == "/tmp/custom_data/MyData/mydata_event_schema.json"
 
 
 def test_validate_eval_args_rejects_missing_checkpoint_when_not_base_only():

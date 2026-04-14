@@ -59,6 +59,18 @@ class TestConfig:
         lans_cfg = config["algorithms"]["lans"]
         assert "loss_baseline" in lans_cfg
 
+    def test_scv_defaults_use_local_nli_model_path(self):
+        """主配置和调试配置都应默认命中本地 NLI 模型目录，避免误触发下载。"""
+        manager = ConfigManager()
+        main_cfg = manager.load_config("configs/config.yaml")
+        debug_cfg = manager.load_config("configs/config_debug.yaml")
+
+        expected_path = "./models/Fengshenbang/Erlangshen-MegatronBert-1___3B-NLI"
+        assert main_cfg["algorithms"]["scv"]["source"] == "local"
+        assert main_cfg["algorithms"]["scv"]["nli_model"] == expected_path
+        assert debug_cfg["algorithms"]["scv"]["source"] == "local"
+        assert debug_cfg["algorithms"]["scv"]["nli_model"] == expected_path
+
     def test_rpo_config_exists(self):
         """主配置需要声明 RPO 混合损失参数。"""
         manager = ConfigManager()

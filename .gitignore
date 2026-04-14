@@ -6,12 +6,17 @@ sync_config.yaml
 sync_config.json
 sync_to_remote.py
 sync-remote.yaml
+server_access_policy.md
 
 # Local data and derived artifacts
+data
+data/
 data/raw/
 data/processed/
 data/schemas/
+logs
 logs/
+models
 models/
 backup/
 .worktrees/

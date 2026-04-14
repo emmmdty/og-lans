@@ -191,8 +191,8 @@ algorithms:
   # SCV: Semantic Consistency Verification
   scv:
     enabled: true
-    source: "modelscope"
-    nli_model: "Fengshenbang/Erlangshen-MegatronBert-1.3B-NLI"
+    source: "local"
+    nli_model: "./models/Fengshenbang/Erlangshen-MegatronBert-1___3B-NLI"
     entailment_idx: null               # 可显式指定 entailment 标签索引；官方 HF config 为 2
     nli_threshold: 0.85                 # Entailment 阈值
     progress_log_interval: 200          # 每 N 次 SCV 检查输出一次心跳

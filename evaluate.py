@@ -95,6 +95,7 @@ from oglans.utils.model_profile import (
     prepare_tokenizer_for_profile,
     resolve_profile_terminator_token_ids,
 )
+from oglans.utils.pathing import normalize_dataset_name, resolve_schema_path
 
 def load_eval_protocol(path: Optional[str]) -> Dict[str, Any]:
     return shared_load_eval_protocol(path)
@@ -142,6 +143,8 @@ def _build_arg_parser():
     parser.add_argument("--num_samples", type=int, default=None, help="评估样本数量（None=全部）")
     parser.add_argument("--batch_size", type=int, default=4, help="推理批次大小")
     parser.add_argument("--split", type=str, default="dev", help="数据集划分 (train/dev/test)")
+    parser.add_argument("--data_dir", type=str, default=None, help="显式指定数据目录，优先于 checkpoint/config 推断")
+    parser.add_argument("--schema_path", type=str, default=None, help="显式指定 schema 路径，优先于配置默认值")
     parser.add_argument("--output_file", type=str, default="eval_results.jsonl", help="结果输出文件")
     parser.add_argument(
         "--summary_file",
@@ -277,7 +280,16 @@ def infer_dataset_name_for_eval(
             if dataset_name == "debug":
                 return "DuEE-Fin"
             if dataset_name:
-                return dataset_name
+                dataset_slug = dataset_name.lower().replace("-", "_")
+                candidate_schema = os.path.join(
+                    ".",
+                    "data",
+                    "raw",
+                    dataset_name,
+                    f"{dataset_slug}_event_schema.json",
+                )
+                if os.path.exists(candidate_schema) or dataset_name == "DuEE-Fin":
+                    return dataset_name
         except (ValueError, IndexError):
             pass
 
@@ -296,6 +308,51 @@ def infer_dataset_name_for_eval(
 
 def optional_abspath(path: Optional[str]) -> Optional[str]:
     return os.path.abspath(path) if path else None
+
+
+def resolve_eval_dataset_context(
+    config: Dict[str, Any],
+    *,
+    checkpoint_path: Optional[str] = None,
+    data_dir_override: Optional[str] = None,
+    schema_path_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    configured_schema_path = (
+        config.get("algorithms", {})
+        .get("ds_cns", {})
+        .get("taxonomy_path")
+    )
+
+    if data_dir_override:
+        data_path = os.path.normpath(str(data_dir_override))
+    elif configured_schema_path:
+        data_path = os.path.dirname(os.path.normpath(str(configured_schema_path)))
+    else:
+        inferred_dataset = infer_dataset_name_for_eval(config, checkpoint_path=checkpoint_path)
+        data_path = os.path.normpath(os.path.join(".", "data", "raw", inferred_dataset))
+
+    dataset_name = normalize_dataset_name(data_path)
+    if schema_path_override:
+        schema_path = os.path.normpath(str(schema_path_override))
+        _, schema_candidates = resolve_schema_path(
+            data_dir=data_path,
+            dataset_name=dataset_name,
+            configured_schema_path=configured_schema_path,
+            cli_schema_path=schema_path_override,
+        )
+    else:
+        schema_path, schema_candidates = resolve_schema_path(
+            data_dir=data_path,
+            dataset_name=dataset_name,
+            configured_schema_path=configured_schema_path,
+            cli_schema_path=None,
+        )
+    return {
+        "dataset_name": dataset_name,
+        "data_path": data_path,
+        "schema_path": schema_path,
+        "schema_candidates": schema_candidates,
+    }
 
 
 def resolve_model_name_or_path(
@@ -471,11 +528,15 @@ def main(argv=None):
 
     # 2. 路径解析
     checkpoint_path = os.path.normpath(args.checkpoint) if args.checkpoint else None
-    dataset_name = infer_dataset_name_for_eval(config, checkpoint_path=checkpoint_path)
-
-    dataset_name_lower = dataset_name.lower().replace("-", "_")
-    schema_path = f"./data/raw/{dataset_name}/{dataset_name_lower}_event_schema.json"
-    data_path = f"./data/raw/{dataset_name}"
+    dataset_ctx = resolve_eval_dataset_context(
+        config,
+        checkpoint_path=checkpoint_path,
+        data_dir_override=args.data_dir,
+        schema_path_override=args.schema_path,
+    )
+    dataset_name = dataset_ctx["dataset_name"]
+    data_path = dataset_ctx["data_path"]
+    schema_path = dataset_ctx["schema_path"]
     
     # 创建输出目录（每次运行独立目录，避免覆盖）
     timestamp = time.strftime("%Y%m%d_%H%M%S")
