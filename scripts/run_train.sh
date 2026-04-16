@@ -15,7 +15,7 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"  # 确保 Python 输出不缓存，实时写入日志
-export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-${PROJECT_ROOT}/models}"
+export MODELSCOPE_CACHE="${PROJECT_ROOT}/models"
 usage() {
   cat <<'EOF'
 Usage:
@@ -32,6 +32,14 @@ All other options are forwarded to main.py unchanged.
 EOF
 }
 resolve_python_bin() {
+  if [[ -n "${CONDA_PREFIX:-}" ]] && command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
+  if [[ -n "${VIRTUAL_ENV:-}" ]] && command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
   if command -v uv >/dev/null 2>&1; then
     echo "uv run python"
     return

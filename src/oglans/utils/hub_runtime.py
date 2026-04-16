@@ -55,7 +55,7 @@ def configure_model_download_runtime(
     if source_name == "local":
         return {}
     if source_name == "modelscope":
-        return configure_modelscope_runtime(project_root, force=force)
+        return configure_modelscope_runtime(project_root, force=True)
     raise ValueError(f"Unsupported model source: {source}")
 
 
@@ -66,7 +66,7 @@ def get_modelscope_runtime_snapshot(
     Return the active ModelScope runtime values, filling defaults if needed.
     """
     if project_root is not None:
-        return configure_modelscope_runtime(project_root)
+        return configure_modelscope_runtime(project_root, force=True)
     return {
         "MODELSCOPE_CACHE": os.environ.get("MODELSCOPE_CACHE", ""),
     }
@@ -133,7 +133,10 @@ def resolve_model_name_or_path(
     if source_name != "modelscope":
         raise ValueError(f"Unsupported model source: {source}")
 
-    runtime = configure_modelscope_runtime(project_root or Path.cwd())
+    runtime = configure_modelscope_runtime(
+        project_root or Path.cwd(),
+        force=project_root is not None,
+    )
     cache_dir = modelscope_cache_dir or runtime["MODELSCOPE_CACHE"]
     cached_path = _resolve_modelscope_cache_path(
         model_name_or_path,

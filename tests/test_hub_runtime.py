@@ -102,6 +102,33 @@ def test_resolve_model_name_or_path_prefers_existing_modelscope_cache(monkeypatc
     assert resolved == str(cached_model_dir.resolve())
 
 
+def test_resolve_model_name_or_path_ignores_external_modelscope_cache_when_project_root_is_set(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("MODELSCOPE_CACHE", "/tmp/foreign-modelscope-cache")
+    cached_model_dir = tmp_path / "models" / "Qwen" / "Qwen3-4B-Instruct-2507"
+    cached_model_dir.mkdir(parents=True)
+
+    hub_runtime = _load_module()
+
+    fake_modelscope = types.ModuleType("modelscope")
+
+    def snapshot_download(*args, **kwargs):
+        raise AssertionError("snapshot_download should not be called when project-root cache exists")
+
+    fake_modelscope.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "modelscope", fake_modelscope)
+
+    resolved = hub_runtime.resolve_model_name_or_path(
+        "Qwen/Qwen3-4B-Instruct-2507",
+        source="modelscope",
+        project_root=str(tmp_path),
+    )
+
+    assert resolved == str(cached_model_dir.resolve())
+    assert os.environ["MODELSCOPE_CACHE"] == str((tmp_path / "models").resolve())
+
+
 def test_resolve_model_name_or_path_download_failure_raises_runtime_error(monkeypatch, tmp_path):
     monkeypatch.delenv("MODELSCOPE_CACHE", raising=False)
 

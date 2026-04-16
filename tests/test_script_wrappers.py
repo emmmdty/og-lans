@@ -17,7 +17,8 @@ def test_shell_wrappers_export_modelscope_runtime_defaults():
     ]
     for name in targets:
         text = _read_script(name)
-        assert 'MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-${PROJECT_ROOT}/models}"' in text, name
+        assert 'MODELSCOPE_CACHE="${PROJECT_ROOT}/models"' in text, name
+        assert '${MODELSCOPE_CACHE:-${PROJECT_ROOT}/models}' not in text, name
         assert "HF_HOME" not in text, name
         assert "HF_HUB_CACHE" not in text, name
         assert "HF_ASSETS_CACHE" not in text, name
@@ -79,6 +80,19 @@ def test_run_train_wrapper_uses_effective_config_helper_for_manifest_provenance(
 def test_run_train_wrapper_prefers_uv_managed_python():
     text = _read_script("run_train.sh")
     assert "uv run python" in text
+
+
+def test_run_train_wrapper_prefers_active_conda_python_before_uv():
+    text = _read_script("run_train.sh")
+    assert 'if [[ -n "${CONDA_PREFIX:-}" ]]' in text
+    assert 'echo "python"' in text
+    assert text.index('if [[ -n "${CONDA_PREFIX:-}" ]]') < text.index('if command -v uv >/dev/null 2>&1; then')
+
+
+def test_run_train_wrapper_falls_back_to_uv_when_no_conda_env_is_active():
+    text = _read_script("run_train.sh")
+    assert 'if command -v uv >/dev/null 2>&1; then' in text
+    assert 'echo "uv run python"' in text
 
 
 def test_run_train_wrapper_no_longer_hardcodes_gpu_banner():

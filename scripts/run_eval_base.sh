@@ -10,7 +10,7 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"
-export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-${PROJECT_ROOT}/models}"
+export MODELSCOPE_CACHE="${PROJECT_ROOT}/models"
 
 resolve_python_bin() {
   if command -v python >/dev/null 2>&1; then

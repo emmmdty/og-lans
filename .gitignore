@@ -18,6 +18,7 @@ logs
 logs/
 models
 models/
+docs/paper_research/
 backup/
 .worktrees/
 
