@@ -291,7 +291,7 @@ for m in ("torch", "yaml", "tqdm"):
 PY
 then
   echo "ERROR: python dependencies missing in current environment."
-  echo "Hint: activate env and run 'pip install -r requirements.txt && pip install -e .'"
+  echo "Hint: activate a Python 3.10+ env and install project deps via 'uv sync --extra dev' or 'pip install -e .'."
   exit 1
 fi
 

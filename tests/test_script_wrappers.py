@@ -72,6 +72,14 @@ def test_run_eval_academic_disallows_weak_seed_and_continue_flags():
     assert "--continue-on-error" not in text
 
 
+def test_run_eval_academic_dependency_hint_matches_pyproject_workflow():
+    text = _read_script("run_eval_academic.sh")
+
+    assert "requirements.txt" not in text
+    assert "uv sync --extra dev" in text
+    assert "pip install -e ." in text
+
+
 def test_python_script_entrypoints_do_not_parse_main_config_with_yaml_safe_load():
     ablation_text = _read_script("ablation_study.py")
     assert "yaml.safe_load" not in ablation_text
