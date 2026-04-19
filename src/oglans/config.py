@@ -54,6 +54,9 @@ SEMANTIC_REQUIRED_PATHS = (
     "comparison.normalization_version",
     "evaluation.mode",
 )
+LAUNCHER_INJECTED_CLI_FLAGS = {"--local-rank", "--local_rank"}
+LAUNCHER_INJECTED_CLI_PREFIXES = ("--local-rank=", "--local_rank=")
+
 
 class ConfigManager:
     _instance = None
@@ -138,12 +141,26 @@ class ConfigManager:
         if not overrides:
             return
 
-        if len(overrides) % 2 != 0:
+        sanitized_overrides = []
+        idx = 0
+        raw_overrides = [str(item) for item in overrides]
+        while idx < len(raw_overrides):
+            token = raw_overrides[idx]
+            if token in LAUNCHER_INJECTED_CLI_FLAGS:
+                idx += 2
+                continue
+            if token.startswith(LAUNCHER_INJECTED_CLI_PREFIXES):
+                idx += 1
+                continue
+            sanitized_overrides.append(token)
+            idx += 1
+
+        if len(sanitized_overrides) % 2 != 0:
             raise ValueError("Command line overrides must be in pairs: --key value")
 
-        for i in range(0, len(overrides), 2):
-            key = overrides[i]
-            value = overrides[i + 1]
+        for i in range(0, len(sanitized_overrides), 2):
+            key = sanitized_overrides[i]
+            value = sanitized_overrides[i + 1]
             if not key.startswith("--"):
                 continue
 

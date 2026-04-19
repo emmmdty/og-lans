@@ -102,3 +102,45 @@
 3. 在可复现环境中跑通并记录测试结果，最好接入自动化 CI。
 4. 为训练、评测、复现实验提供最小可运行示例和示例产物。
 5. 对论文口径与工程口径做分层，避免配置注释里的“publication ready”误导真实成熟度判断。
+
+## 9. 4090 服务器大文件存放约定
+
+为避免 `/home/TJK/masterProjects/og-lans` 根分区持续承载大体积数据与模型，4090 服务器上的大文件目录约定如下：
+
+- 数据与数据缓存的规范根目录：`/data/TJK/og-lans/data`
+- 本地 LLM 模型的规范根目录：`/data/TJK/og-lans/models`
+- 训练、评测和实验日志仍保留在项目目录：`/home/TJK/masterProjects/og-lans/logs`
+
+为兼容现有脚本中的相对路径，服务器主仓根目录应保留以下两个软连接入口：
+
+- `/home/TJK/masterProjects/og-lans/data -> /data/TJK/og-lans/data`
+- `/home/TJK/masterProjects/og-lans/models -> /data/TJK/og-lans/models`
+
+这意味着：
+
+- 现有依赖 `./data/raw/DuEE-Fin` 的主仓脚本可继续工作。
+- 现有依赖 `PROJECT_ROOT/models` 或 `MODELSCOPE_CACHE=${PROJECT_ROOT}/models` 的模型解析逻辑可继续工作。
+- 不需要把 `logs/`、代码或 `.git/` 移出项目目录。
+
+对于服务器上的独立 worktree，不应再假设 worktree 目录内一定有真实 `./data` 或 `./models` 目录。更稳妥的调用方式是显式使用绝对路径：
+
+```bash
+uv run python main.py \
+  --config configs/config.yaml \
+  --data_dir /data/TJK/og-lans/data/raw/DuEE-Fin \
+  --model.base_model /data/TJK/og-lans/models/Qwen/Qwen3-4B-Instruct-2507
+```
+
+```bash
+MODELSCOPE_CACHE=/data/TJK/og-lans/models \
+uv run python evaluate.py \
+  --config configs/config.yaml \
+  --model_name /data/TJK/og-lans/models/Qwen/Qwen3-4B-Instruct-2507 \
+  --data_dir /data/TJK/og-lans/data/raw/DuEE-Fin
+```
+
+约束要求如下：
+
+- 不要把新的模型快照重新下载回 `/home/TJK/masterProjects/og-lans/models` 的真实目录。
+- 不要把原始数据、缓存数据或大模型文件散落到其他用户目录或 `/data/TJK` 的无关路径下。
+- 在服务器上新增脚本或手工命令时，优先复用上述两个规范根目录，而不是继续引入新的大文件落点。

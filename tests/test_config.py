@@ -34,6 +34,25 @@ class TestConfig:
         assert config['training']['max_steps'] == 100
         assert config['algorithms']['lans']['enabled'] is False
 
+    def test_cli_overrides_ignore_torchrun_local_rank(self):
+        """torchrun 注入的 local rank 参数不应破坏业务配置覆盖。"""
+        manager = ConfigManager()
+        overrides = [
+            "--local-rank=0",
+            "--training.max_steps",
+            "100",
+            "--local_rank",
+            "1",
+            "--algorithms.lans.enabled",
+            "false",
+        ]
+        config = manager.load_config("configs/config.yaml", overrides)
+
+        assert config["training"]["max_steps"] == 100
+        assert config["algorithms"]["lans"]["enabled"] is False
+        assert "local-rank" not in config
+        assert "local_rank" not in config
+
     def test_get_config_without_load(self):
         """测试未加载直接获取配置应抛出异常"""
         # Reset singleton manually for test (hacky but needed for unit test isolation if running sequentially)
