@@ -155,6 +155,119 @@ def test_config_rejects_huggingface_model_sources(tmp_path):
         ConfigManager.load_config(str(config_path))
 
 
+def test_config_rejects_legacy_resume_from_checkpoint_field(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "project": {"seed": 3407},
+                "model": {
+                    "base_model": "Qwen/Qwen3-4B-Instruct-2507",
+                    "profile": "qwen3_instruct",
+                    "source": "modelscope",
+                },
+                "training": {
+                    "mode": "preference",
+                    "resume_from_checkpoint": "./logs/DuEE-Fin/checkpoints/legacy",
+                },
+                "algorithms": {
+                    "lans": {"enabled": True},
+                    "scv": {"enabled": True},
+                },
+                "comparison": {
+                    "eval_protocol_path": "./configs/eval_protocol.yaml",
+                    "role_alias_map_path": "./configs/role_aliases_duee_fin.yaml",
+                    "prompt_builder_version": "phase3_mvp_v1",
+                    "parser_version": "phase3_mvp_v1",
+                    "normalization_version": "phase3_mvp_v1",
+                },
+                "evaluation": {"mode": "scored"},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="resume_from_checkpoint"):
+        ConfigManager.load_config(str(config_path))
+
+
+def test_config_rejects_conflicting_resume_and_warm_start_fields(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "project": {"seed": 3407},
+                "model": {
+                    "base_model": "Qwen/Qwen3-4B-Instruct-2507",
+                    "profile": "qwen3_instruct",
+                    "source": "modelscope",
+                },
+                "training": {
+                    "mode": "preference",
+                    "resume_training_from": "./logs/DuEE-Fin/checkpoints/resume",
+                    "warm_start_from_checkpoint": "./logs/DuEE-Fin/checkpoints/warm",
+                },
+                "algorithms": {
+                    "lans": {"enabled": True},
+                    "scv": {"enabled": True},
+                },
+                "comparison": {
+                    "eval_protocol_path": "./configs/eval_protocol.yaml",
+                    "role_alias_map_path": "./configs/role_aliases_duee_fin.yaml",
+                    "prompt_builder_version": "phase3_mvp_v1",
+                    "parser_version": "phase3_mvp_v1",
+                    "normalization_version": "phase3_mvp_v1",
+                },
+                "evaluation": {"mode": "scored"},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ConfigManager.load_config(str(config_path))
+
+
+def test_config_rejects_unsupported_postprocess_profile(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "project": {"seed": 3407},
+                "model": {
+                    "base_model": "Qwen/Qwen3-4B-Instruct-2507",
+                    "profile": "qwen3_instruct",
+                    "source": "modelscope",
+                },
+                "training": {"mode": "preference"},
+                "algorithms": {
+                    "lans": {"enabled": True},
+                    "scv": {"enabled": True},
+                },
+                "comparison": {
+                    "eval_protocol_path": "./configs/eval_protocol.yaml",
+                    "role_alias_map_path": "./configs/role_aliases_duee_fin.yaml",
+                    "prompt_builder_version": "phase3_mvp_v1",
+                    "parser_version": "phase3_mvp_v1",
+                    "normalization_version": "phase3_mvp_v1",
+                    "postprocess_profile": "event_probe_v3",
+                },
+                "evaluation": {"mode": "scored"},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported postprocess_profile"):
+        ConfigManager.load_config(str(config_path))
+
+
 def test_gpu_smoke_test_contract_no_longer_expects_markdown_json():
     repo_root = Path(__file__).resolve().parents[1]
     smoke_test_text = (repo_root / "tests" / "test_inference.py").read_text(encoding="utf-8")

@@ -41,6 +41,9 @@ import yaml
 import logging
 from typing import Dict, Any, Optional
 
+from oglans.utils.experiment_contract import normalize_postprocess_profile
+from oglans.utils.training_protocol import resolve_training_resume_settings
+
 logger = logging.getLogger("OGLANS")
 
 
@@ -195,6 +198,8 @@ class ConfigManager:
         training_cfg.setdefault("dataloader_num_workers", 0)
         training_cfg.setdefault("dataloader_pin_memory", False)
         training_cfg.setdefault("aux_log_interval", 50)
+        training_cfg.setdefault("resume_training_from", None)
+        training_cfg.setdefault("warm_start_from_checkpoint", None)
         teacher_silver_cfg = training_cfg.setdefault("teacher_silver", {})
         teacher_silver_cfg.setdefault("enabled", False)
         teacher_silver_cfg.setdefault("path", None)
@@ -239,6 +244,7 @@ class ConfigManager:
         comparison_cfg.setdefault("fewshot_pool_split", "train_fit")
         comparison_cfg.setdefault("train_tune_ratio", 0.1)
         comparison_cfg.setdefault("research_split_manifest_path", None)
+        comparison_cfg.setdefault("postprocess_profile", "none")
 
     @staticmethod
     def _get_nested(config: Dict[str, Any], path: str) -> Any:
@@ -274,6 +280,7 @@ class ConfigManager:
                 f"Unsupported evaluation.mode: {evaluation_mode}. "
                 "Expected one of scored, prediction_only."
             )
+        resolve_training_resume_settings(config.get("training", {}) or {})
         if cls._get_nested(config, "api_evaluation.system_prompt_style") is not None:
             raise ValueError(
                 "api_evaluation.system_prompt_style is no longer supported. "
@@ -289,3 +296,4 @@ class ConfigManager:
                 "comparison.thinking_budget is no longer supported. "
                 "The current prompt contract requires plain JSON output without hidden reasoning budgets."
             )
+        normalize_postprocess_profile(cls._get_nested(config, "comparison.postprocess_profile"))

@@ -116,7 +116,11 @@ def _summary(metric_value: float, *, prompt_variant: str = "zeroshot", stage_mod
                 "research_split_manifest_path": "/tmp/frozen.json",
                 "research_split_manifest_hash": "a" * 64,
                 "pipeline_mode": "e2e",
+                "postprocess_profile": "none",
                 "canonical_metric_mode": "analysis_only",
+                "prompt_builder_version": "phase3_mvp_v1",
+                "parser_version": "phase3_mvp_v1",
+                "normalization_version": "phase3_mvp_v1",
                 "protocol_hash": "b" * 64,
                 "role_alias_hash": "c" * 64,
                 "seed": seed,
@@ -151,6 +155,15 @@ def test_compute_significance_skips_single_seed_and_sets_metadata():
     assert significance == {}
     assert metadata["significance_status"] == "skipped_insufficient_pairs"
     assert metadata["significance_min_pairs"] == 2
+
+
+def test_collect_mode_experiment_contracts_exposes_contract_summary():
+    summaries = {"zeroshot": {3407: _summary(0.2)}}
+
+    contracts = mod.collect_mode_experiment_contracts(summaries)
+
+    assert contracts["zeroshot"]["experiment_contract_hash"]
+    assert contracts["zeroshot"]["postprocess_profile"] == "none"
 
 
 def test_validate_mode_contracts_returns_hash_per_mode():
@@ -191,6 +204,20 @@ def test_compute_significance_rejects_incomplete_seed_coverage():
         assert "incomplete seed coverage for significance" in str(exc)
     else:
         raise AssertionError("Expected ValueError for incomplete seed coverage")
+
+
+def test_compute_significance_skips_when_only_one_mode_is_present():
+    significance, metadata = mod.compute_significance(
+        {
+            "fewshot": {3407: _summary(0.25, prompt_variant="fewshot")},
+        },
+        report_primary_metric="doc_role_micro_f1",
+        expected_seeds=[3407],
+    )
+
+    assert significance == {}
+    assert metadata["significance_status"] == "skipped_no_complete_pairs"
+    assert "zeroshot" in metadata["significance_skipped_reason"]
 
 
 def test_build_cmd_forwards_base_url():
@@ -240,6 +267,7 @@ def test_build_cmd_forwards_stage_and_pool_controls():
         report_primary_metric="doc_role_micro_f1",
         fewshot_num_examples=3,
         stage_mode="two_stage",
+        postprocess_profile="event_probe_v2",
         fewshot_selection_mode="dynamic",
         fewshot_pool_split="train_fit",
         train_tune_ratio=0.1,
@@ -248,6 +276,8 @@ def test_build_cmd_forwards_stage_and_pool_controls():
 
     assert "--stage_mode" in cmd
     assert "two_stage" in cmd
+    assert "--postprocess_profile" in cmd
+    assert "event_probe_v2" in cmd
     assert "--fewshot_selection_mode" in cmd
     assert "dynamic" in cmd
     assert "--fewshot_pool_split" in cmd
@@ -256,3 +286,27 @@ def test_build_cmd_forwards_stage_and_pool_controls():
     assert "0.1" in cmd
     assert "--research_split_manifest" in cmd
     assert "configs/research_splits/frozen.json" in cmd
+
+
+def test_build_metric_row_exposes_legacy_and_multi_minus_single_gap():
+    summary = _summary(0.25, prompt_variant="fewshot")
+    summary["metrics"]["legacy_dueefin_overall_f1"] = 0.58
+    summary["metrics"]["single_event_doc_role_micro_f1"] = 0.31
+    summary["metrics"]["multi_event_doc_role_micro_f1"] = 0.47
+
+    row = mod.build_metric_row(
+        summary,
+        [
+            "doc_role_micro_f1",
+            "legacy_dueefin_overall_f1",
+            "single_event_doc_role_micro_f1",
+            "multi_event_doc_role_micro_f1",
+            "multi_minus_single",
+        ],
+        seed=3407,
+    )
+
+    assert row["legacy_dueefin_overall_f1"] == 0.58
+    assert row["single_event_doc_role_micro_f1"] == 0.31
+    assert row["multi_event_doc_role_micro_f1"] == 0.47
+    assert row["multi_minus_single"] == pytest.approx(0.16)

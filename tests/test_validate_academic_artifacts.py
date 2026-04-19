@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+from oglans.utils.experiment_contract import build_experiment_contract
+
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "validate_academic_artifacts.py"
 spec = importlib.util.spec_from_file_location("validate_academic_artifacts", str(MODULE_PATH))
@@ -12,7 +14,7 @@ spec.loader.exec_module(validate_mod)
 
 
 def build_valid_summary():
-    return {
+    summary = {
         "meta": {
             "timestamp": "2026-03-18T00:00:00",
             "model": "test-model",
@@ -54,7 +56,11 @@ def build_valid_summary():
             "research_split_manifest_path": "/tmp/frozen.json",
             "research_split_manifest_hash": "e" * 64,
             "pipeline_mode": "e2e",
+            "postprocess_profile": "none",
             "canonical_metric_mode": "analysis_only",
+            "prompt_builder_version": "route_a_compare_v1",
+            "parser_version": "route_a_compare_v1",
+            "normalization_version": "route_a_compare_v1",
             "protocol_hash": "b" * 64,
             "role_alias_hash": "d" * 64,
             "seed": 3407,
@@ -146,6 +152,8 @@ def build_valid_summary():
             "protocol": {"version": "1.0"},
         },
     }
+    summary["experiment_contract"] = build_experiment_contract(summary["compare"])
+    return summary
 
 
 def test_validate_summary_accepts_compare_metadata():
@@ -160,6 +168,15 @@ def test_validate_summary_rejects_missing_compare_metadata():
     errors = validate_mod.validate_summary(summary)
 
     assert "Missing required field: compare.prompt_variant" in errors
+
+
+def test_validate_summary_rejects_missing_experiment_contract():
+    summary = build_valid_summary()
+    del summary["experiment_contract"]
+
+    errors = validate_mod.validate_summary(summary)
+
+    assert "Missing experiment_contract block" in errors
 
 
 def build_valid_suite_summary(tmp_path: Path):
@@ -215,6 +232,9 @@ def build_valid_suite_summary(tmp_path: Path):
         "significance_status": "skipped_insufficient_pairs",
         "significance_min_pairs": 2,
         "significance_skipped_reason": "paired permutation requires at least 2 paired observations per comparison; observed 1",
+        "experiment_contracts": {
+            "base": child_summary["experiment_contract"],
+        },
     }
 
 

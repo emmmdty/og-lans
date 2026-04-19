@@ -52,6 +52,7 @@ FEWSHOT_SELECTION_MODE=""
 FEWSHOT_POOL_SPLIT=""
 TRAIN_TUNE_RATIO=""
 RESEARCH_SPLIT_MANIFEST=""
+POSTPROCESS_PROFILE=""
 EXTRA_ARGS=()
 
 usage() {
@@ -74,7 +75,7 @@ Options:
   --prompt-variant <mode>  zeroshot|fewshot (optional)
   --fewshot-num-examples <int>
                            Few-shot example count (optional)
-  --stage-mode <mode>      single_pass|two_stage (optional)
+  --stage-mode <mode>      single_pass|two_stage|two_stage_per_type (optional)
   --fewshot-selection-mode <mode>
                            static|dynamic (optional)
   --fewshot-pool-split <mode>
@@ -83,6 +84,8 @@ Options:
                            Optional. train_tune ratio used when no frozen manifest is provided.
   --research-split-manifest <path>
                            Optional. Frozen train_fit/train_tune split manifest path.
+  --postprocess-profile <profile>
+                           none|event_probe_v2 (optional)
   -h, --help               Show help.
 
 Other evaluate.py args are forwarded transparently.
@@ -127,6 +130,8 @@ while [[ $# -gt 0 ]]; do
       TRAIN_TUNE_RATIO="${2:-}"; shift 2 ;;
     --research-split-manifest|--research_split_manifest)
       RESEARCH_SPLIT_MANIFEST="${2:-}"; shift 2 ;;
+    --postprocess-profile|--postprocess_profile)
+      POSTPROCESS_PROFILE="${2:-}"; shift 2 ;;
     -h|--help)
       usage
       exit 0 ;;
@@ -226,6 +231,9 @@ if [[ -n "$TRAIN_TUNE_RATIO" ]]; then
 fi
 if [[ -n "$RESEARCH_SPLIT_MANIFEST" ]]; then
   cmd+=(--research_split_manifest "$RESEARCH_SPLIT_MANIFEST")
+fi
+if [[ -n "$POSTPROCESS_PROFILE" ]]; then
+  cmd+=(--postprocess_profile "$POSTPROCESS_PROFILE")
 fi
 cmd+=("${EXTRA_ARGS[@]}")
 "${cmd[@]}"

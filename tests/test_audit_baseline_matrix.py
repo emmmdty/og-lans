@@ -63,6 +63,23 @@ def test_summarize_result_rows_reports_stage1_coverage_and_fewshot_usage():
     assert summary["fewshot_unique_combinations"] == 1
 
 
+def test_summarize_result_rows_treats_two_stage_per_type_as_stage1_aware():
+    rows = [
+        _row(
+            event_types=["公司上市"],
+            stage_mode="two_stage_per_type",
+            predicted_types=["公司上市"],
+            example_ids=["typed-a"],
+        )
+    ]
+
+    summary = mod.summarize_result_rows(rows)
+
+    assert summary["stage1_rows"] == 1
+    assert summary["stage1_gold_coverage_rate"] == 1.0
+    assert summary["stage1_exact_match_rate"] == 1.0
+
+
 def test_audit_suite_builds_pairwise_deltas(tmp_path: Path):
     single_run = tmp_path / "single_run"
     two_stage_run = tmp_path / "two_stage_run"

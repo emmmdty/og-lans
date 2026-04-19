@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "evaluate_api.py"
@@ -174,14 +176,14 @@ def test_build_api_fewshot_example_pool_extracts_sample_metadata():
 
 def test_resolve_stage_settings_prefers_cli_overrides():
     resolved = mod.resolve_stage_settings(
-        stage_mode="two_stage",
-        fewshot_selection_mode="dynamic",
+        stage_mode="two_stage_per_type",
+        fewshot_selection_mode="contrastive",
         fewshot_pool_split="train_fit",
         comparison_cfg={"stage_mode": "single_pass"},
     )
 
-    assert resolved["stage_mode"] == "two_stage"
-    assert resolved["fewshot_selection_mode"] == "dynamic"
+    assert resolved["stage_mode"] == "two_stage_per_type"
+    assert resolved["fewshot_selection_mode"] == "contrastive"
     assert resolved["fewshot_pool_split"] == "train_fit"
 
 
@@ -201,3 +203,277 @@ def test_compute_sample_metric_row_records_gold_event_count_for_multiplicity_ci(
     row = mod.compute_sample_metric_row(evaluator, pred_events=gold[:1], gold_events=gold)
 
     assert row["gold_event_count"] == 2
+
+
+def test_process_single_sample_two_stage_routes_stage1_event_types_into_fewshot_selection(monkeypatch):
+    captured = {}
+
+    def fake_perform_api_inference(client, model, messages, max_retries, json_mode):
+        if len(messages) == 2 and "请识别以下金融文本中出现的事件类型" in messages[1]["content"]:
+            return (
+                '[{"event_type":"中标","arguments":[]}]',
+                {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                True,
+                None,
+                {},
+            )
+        return (
+            "[]",
+            {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            True,
+            None,
+            {},
+        )
+
+    def fake_parse_event_list_strict_with_diagnostics(text):
+        try:
+            return json.loads(text), {"success": True, "error": None}
+        except json.JSONDecodeError:
+            return [], {"success": False, "error": "json_error"}
+
+    def fake_build_inference_prompt_payload(**kwargs):
+        captured.update(kwargs)
+        return {
+            "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "fewshot_selection_mode": kwargs.get("fewshot_selection_mode", "none"),
+            "fewshot_example_ids": [],
+            "fewshot_count": 0,
+        }
+
+    monkeypatch.setattr(mod, "perform_api_inference", fake_perform_api_inference)
+    monkeypatch.setattr(mod, "parse_event_list_strict_with_diagnostics", fake_parse_event_list_strict_with_diagnostics)
+    monkeypatch.setattr(mod, "build_inference_prompt_payload", fake_build_inference_prompt_payload)
+
+    sample = SimpleNamespace(
+        id="s1",
+        text="华建科技公告称公司中标智慧园区升级项目。",
+        events=[],
+    )
+
+    result = mod.process_single_sample(
+        client=object(),
+        model="deepseek-chat",
+        max_retries=1,
+        sample_idx=0,
+        sample=sample,
+        use_fewshot=True,
+        fewshot_num_examples=2,
+        fewshot_selection_mode="dynamic",
+        fewshot_example_pool=[],
+        json_mode="auto",
+        schema={"中标": ["中标公司", "中标标的"]},
+        pipeline_mode="e2e",
+        stage_mode="two_stage",
+        role_alias_map=None,
+    )
+
+    assert captured["target_event_types"] == ["中标"]
+    assert result["stage_meta"]["stage1_predicted_event_types"] == ["中标"]
+
+
+def test_process_single_sample_applies_postprocess_profile_after_pipeline(monkeypatch):
+    def fake_perform_api_inference(client, model, messages, max_retries, json_mode):
+        return (
+            '[{"event_type":"股份回购","arguments":[{"role":"每股交易价格","argument":"股"}]}]',
+            {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            True,
+            None,
+            {},
+        )
+
+    def fake_parse_event_list_strict_with_diagnostics(text):
+        return json.loads(text), {"success": True, "error": None}
+
+    def fake_pipeline(pred_events, **kwargs):
+        return SimpleNamespace(events=pred_events, cat_result=None, correction_result=None)
+
+    monkeypatch.setattr(mod, "perform_api_inference", fake_perform_api_inference)
+    monkeypatch.setattr(mod, "parse_event_list_strict_with_diagnostics", fake_parse_event_list_strict_with_diagnostics)
+    monkeypatch.setattr(mod, "apply_structured_event_pipeline", fake_pipeline)
+
+    sample = SimpleNamespace(id="s-post", text="公司回购股份。", events=[])
+    result = mod.process_single_sample(
+        client=object(),
+        model="deepseek-chat",
+        max_retries=1,
+        sample_idx=0,
+        sample=sample,
+        use_fewshot=False,
+        fewshot_num_examples=0,
+        fewshot_selection_mode="static",
+        fewshot_example_pool=None,
+        json_mode="auto",
+        schema={"股份回购": ["每股交易价格"]},
+        pipeline_mode="e2e",
+        postprocess_profile="event_probe_v2",
+        stage_mode="single_pass",
+        role_alias_map=None,
+    )
+
+    assert result["pred_events"] == [{"event_type": "股份回购", "arguments": []}]
+    assert result["postprocess_profile_stats"]["profile"] == "event_probe_v2"
+    assert result["postprocess_profile_stats"]["profile_stats"]["value_fragment_drops"] == 1
+
+
+def test_process_single_sample_two_stage_per_type_extracts_each_event_type_separately(monkeypatch):
+    build_calls = []
+
+    def fake_perform_api_inference(client, model, messages, max_retries, json_mode):
+        user_content = messages[1]["content"]
+        if "请识别以下金融文本中出现的事件类型" in user_content:
+            return (
+                '[{"event_type":"中标","arguments":[]},{"event_type":"股份回购","arguments":[]}]',
+                {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                True,
+                None,
+                {},
+            )
+        if "target=中标" in user_content:
+            return (
+                '[{"event_type":"中标","arguments":[{"role":"中标公司","argument":"华建科技"}]}]',
+                {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+                True,
+                None,
+                {},
+            )
+        if "target=股份回购" in user_content:
+            return (
+                '[{"event_type":"股份回购","arguments":[{"role":"回购方","argument":"华建科技"}]}]',
+                {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+                True,
+                None,
+                {},
+            )
+        raise AssertionError(f"unexpected messages: {messages}")
+
+    def fake_parse_event_list_strict_with_diagnostics(text):
+        try:
+            return json.loads(text), {"success": True, "error": None}
+        except json.JSONDecodeError:
+            return [], {"success": False, "error": "json_error"}
+
+    def fake_build_inference_prompt_payload(**kwargs):
+        build_calls.append(kwargs)
+        target = (kwargs.get("target_event_types") or ["all"])[0]
+        return {
+            "messages": [
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": f"target={target};text={kwargs.get('text', '')}"},
+            ],
+            "fewshot_selection_mode": kwargs.get("fewshot_selection_mode", "none"),
+            "fewshot_example_ids": [f"ex-{target}"],
+            "fewshot_count": 1,
+            "fewshot_target_event_types": kwargs.get("target_event_types", []),
+            "fewshot_contrastive_warnings": [],
+        }
+
+    monkeypatch.setattr(mod, "perform_api_inference", fake_perform_api_inference)
+    monkeypatch.setattr(mod, "parse_event_list_strict_with_diagnostics", fake_parse_event_list_strict_with_diagnostics)
+    monkeypatch.setattr(mod, "build_inference_prompt_payload", fake_build_inference_prompt_payload)
+
+    sample = SimpleNamespace(
+        id="s2",
+        text="华建科技公告称公司中标智慧园区升级项目，并实施股份回购。",
+        events=[],
+    )
+
+    result = mod.process_single_sample(
+        client=object(),
+        model="deepseek-chat",
+        max_retries=1,
+        sample_idx=0,
+        sample=sample,
+        use_fewshot=True,
+        fewshot_num_examples=2,
+        fewshot_selection_mode="contrastive",
+        fewshot_example_pool=[],
+        json_mode="auto",
+        schema={"中标": ["中标公司"], "股份回购": ["回购方"]},
+        pipeline_mode="e2e",
+        stage_mode="two_stage_per_type",
+        role_alias_map=None,
+    )
+
+    assert [call["target_event_types"] for call in build_calls] == [["中标"], ["股份回购"]]
+    assert {event["event_type"] for event in result["pred_events"]} == {"中标", "股份回购"}
+    assert result["stage_meta"]["typed_stage2_call_count"] == 2
+    assert result["prompt_meta"]["fewshot_example_ids"] == ["ex-中标", "ex-股份回购"]
+
+
+def test_process_single_sample_two_stage_per_type_surfaces_partial_stage_failures(monkeypatch):
+    def fake_perform_api_inference(client, model, messages, max_retries, json_mode):
+        user_content = messages[1]["content"]
+        if "请识别以下金融文本中出现的事件类型" in user_content:
+            return (
+                '[{"event_type":"中标","arguments":[]},{"event_type":"股份回购","arguments":[]}]',
+                {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                True,
+                None,
+                {"request_id": "stage1"},
+            )
+        if "target=中标" in user_content:
+            return (
+                "[]",
+                {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+                False,
+                "timeout",
+                {"request_id": "typed-zhongbiao"},
+            )
+        if "target=股份回购" in user_content:
+            return (
+                '[{"event_type":"股份回购","arguments":[{"role":"回购方","argument":"华建科技"}]}]',
+                {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
+                True,
+                None,
+                {"request_id": "typed-huigou"},
+            )
+        raise AssertionError(f"unexpected messages: {messages}")
+
+    def fake_parse_event_list_strict_with_diagnostics(text):
+        return json.loads(text), {"success": True, "error": None}
+
+    def fake_build_inference_prompt_payload(**kwargs):
+        target = (kwargs.get("target_event_types") or ["all"])[0]
+        return {
+            "messages": [
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": f"target={target};text={kwargs.get('text', '')}"},
+            ],
+            "fewshot_selection_mode": kwargs.get("fewshot_selection_mode", "none"),
+            "fewshot_example_ids": [f"ex-{target}"],
+            "fewshot_count": 1,
+            "fewshot_target_event_types": kwargs.get("target_event_types", []),
+            "fewshot_contrastive_warnings": [],
+        }
+
+    monkeypatch.setattr(mod, "perform_api_inference", fake_perform_api_inference)
+    monkeypatch.setattr(mod, "parse_event_list_strict_with_diagnostics", fake_parse_event_list_strict_with_diagnostics)
+    monkeypatch.setattr(mod, "build_inference_prompt_payload", fake_build_inference_prompt_payload)
+
+    sample = SimpleNamespace(
+        id="s3",
+        text="华建科技公告称公司中标智慧园区升级项目，并实施股份回购。",
+        events=[],
+    )
+
+    result = mod.process_single_sample(
+        client=object(),
+        model="deepseek-chat",
+        max_retries=1,
+        sample_idx=0,
+        sample=sample,
+        use_fewshot=True,
+        fewshot_num_examples=2,
+        fewshot_selection_mode="contrastive",
+        fewshot_example_pool=[],
+        json_mode="auto",
+        schema={"中标": ["中标公司"], "股份回购": ["回购方"]},
+        pipeline_mode="e2e",
+        stage_mode="two_stage_per_type",
+        role_alias_map=None,
+    )
+
+    assert result["api_success"] is False
+    assert result["api_error"]["stage2"][0]["event_type"] == "中标"
+    assert result["api_error"]["stage2"][0]["api_error"] == "timeout"
+    assert result["response_meta"]["stage2"][0]["response_text"] == "[]"

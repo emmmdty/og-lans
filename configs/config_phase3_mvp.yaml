@@ -1,6 +1,7 @@
 extends: ./config.yaml
 
 comparison:
+  postprocess_profile: "none"
   prompt_builder_version: "phase3_mvp_v1"
   parser_version: "phase3_mvp_v1"
   normalization_version: "phase3_mvp_v1"

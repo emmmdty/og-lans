@@ -70,3 +70,4 @@ def test_runtime_defaults_are_applied(tmp_path):
     assert loaded["inference"]["scv_lite"]["trigger_on_grounding_failure"] is True
     assert loaded["inference"]["scv_lite"]["trigger_on_mutual_exclusion"] is False
     assert loaded["inference"]["scv_lite"]["trigger_on_shared_role_conflict"] is False
+    assert loaded["comparison"]["postprocess_profile"] == "none"

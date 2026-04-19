@@ -112,12 +112,18 @@ from oglans.utils.research_protocol import (
     select_fewshot_pool_samples,
     validate_stage_mode,
 )
-from oglans.inference import apply_structured_event_pipeline, validate_pipeline_mode
+from oglans.inference import (
+    apply_postprocess_profile,
+    apply_structured_event_pipeline,
+    summarize_postprocess_profile_rows,
+    validate_pipeline_mode,
+)
 from oglans.inference.cat_lite import perturb_text_for_counterfactual
 from oglans.utils.academic_eval import bootstrap_confidence_intervals
 from oglans.utils.run_manifest import (
     build_contract_record,
     build_run_manifest,
+    resolve_semantic_version_meta,
     save_json,
 )
 from oglans.utils.eval_protocol import (
@@ -129,6 +135,13 @@ from oglans.utils.eval_protocol import (
     canonicalize_pred_roles as shared_canonicalize_pred_roles,
 )
 from oglans.utils.compare_contract import build_compare_contract, build_result_diagnostics
+from oglans.utils.experiment_contract import (
+    STAGE_MODE_CHOICES,
+    SUPPORTED_POSTPROCESS_PROFILES,
+    build_experiment_contract,
+    is_two_stage_mode,
+    normalize_postprocess_profile,
+)
 
 # 日志设置保持不变
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -541,6 +554,88 @@ def summarize_fewshot_usage(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _dedupe_event_records(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        payload = json.dumps(event, ensure_ascii=False, sort_keys=True)
+        if payload in seen:
+            continue
+        seen.add(payload)
+        deduped.append(event)
+    return deduped
+
+
+def _aggregate_prompt_meta_rows(prompt_meta_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    example_ids: List[str] = []
+    target_event_types: List[str] = []
+    warnings: List[str] = []
+    for row in prompt_meta_rows:
+        for example_id in row.get("fewshot_example_ids", []) or []:
+            normalized = str(example_id).strip()
+            if normalized and normalized not in example_ids:
+                example_ids.append(normalized)
+        for event_type in row.get("fewshot_target_event_types", []) or []:
+            normalized = str(event_type).strip()
+            if normalized and normalized not in target_event_types:
+                target_event_types.append(normalized)
+        for warning in row.get("fewshot_contrastive_warnings", []) or []:
+            normalized = str(warning).strip()
+            if normalized and normalized not in warnings:
+                warnings.append(normalized)
+
+    last_row = prompt_meta_rows[-1] if prompt_meta_rows else {}
+    return {
+        "fewshot_selection_mode": str(last_row.get("fewshot_selection_mode", "none")),
+        "fewshot_example_ids": example_ids,
+        "fewshot_count": len(example_ids),
+        "fewshot_target_event_types": target_event_types,
+        "fewshot_contrastive_warnings": warnings,
+    }
+
+
+def _event_type_focus_text(
+    text: str,
+    event_type: str,
+    *,
+    fewshot_example_pool: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[str, bool]:
+    sentences = [
+        segment.strip()
+        for segment in re.split(r"(?<=[。！？；;])|\n", str(text or ""))
+        if segment and segment.strip()
+    ]
+    if len(sentences) <= 1:
+        return str(text or ""), False
+
+    cues = {str(event_type).strip()}
+    cues.update(getattr(ChinesePromptBuilder, "_EVENT_TYPE_RETRIEVAL_CUES", {}).get(str(event_type), ()))
+    for example in fewshot_example_pool or []:
+        example_types = {
+            str(item).strip()
+            for item in example.get("event_types", [])
+            if str(item).strip()
+        }
+        if str(event_type).strip() not in example_types:
+            continue
+        for field in ("triggers", "keywords"):
+            for cue in example.get(field, []) or []:
+                normalized = str(cue).strip()
+                if 1 < len(normalized) <= 12:
+                    cues.add(normalized)
+
+    focused = [
+        sentence
+        for sentence in sentences
+        if any(cue and cue in sentence for cue in cues)
+    ]
+    if not focused or len(focused) == len(sentences):
+        return str(text or ""), False
+    return "".join(focused), True
+
+
 def perform_api_inference(
     client: OpenAI,
     model: str,
@@ -600,6 +695,7 @@ def process_single_sample(
     json_mode: str = "auto",
     schema: Optional[Dict[str, List[str]]] = None,
     pipeline_mode: str = "e2e",
+    postprocess_profile: str = "none",
     stage_mode: str = "single_pass",
     role_alias_map: Optional[Dict[str, Dict[str, str]]] = None,
 ):
@@ -624,12 +720,21 @@ def process_single_sample(
     stage1_parse_error = None
     stage2_schema = schema
     stage2_schema_event_types = valid_event_types
+    typed_stage2_call_count = 0
+    typed_stage2_focus_fallback_count = 0
     response_text = ""
     api_success = False
     api_error = None
     response_meta: Dict[str, Any] = {}
+    prompt_meta: Dict[str, Any] = {
+        "fewshot_selection_mode": "none",
+        "fewshot_example_ids": [],
+        "fewshot_count": 0,
+        "fewshot_target_event_types": [],
+        "fewshot_contrastive_warnings": [],
+    }
 
-    if stage_mode == "two_stage":
+    if is_two_stage_mode(stage_mode):
         stage1_payload = ChinesePromptBuilder.build_event_type_payload(
             text=text,
             schema=schema,
@@ -661,31 +766,135 @@ def process_single_sample(
             "response_meta": stage1_response_meta,
         }
 
-    prompt_payload = build_inference_prompt_payload(
-        text=text,
-        schema=stage2_schema,
-        use_oneshot=use_fewshot,
-        num_examples=fewshot_num_examples,
-        fewshot_selection_mode=fewshot_selection_mode,
-        fewshot_example_pool=fewshot_example_pool,
-    )
-    messages = prompt_payload["messages"]
+    if stage_mode == "two_stage_per_type" and stage1_predicted_event_types:
+        typed_pred_events: List[Dict[str, Any]] = []
+        typed_parse_results: List[Dict[str, Any]] = []
+        typed_prompt_meta_rows: List[Dict[str, Any]] = []
+        typed_response_rows: List[Dict[str, Any]] = []
+        typed_stage2_errors: List[Dict[str, Any]] = []
+        stage2_start = time.perf_counter()
+        for event_type in stage1_predicted_event_types:
+            event_schema, _ = restrict_schema_to_event_types(schema, [event_type])
+            focus_text, used_focus = _event_type_focus_text(
+                text,
+                event_type,
+                fewshot_example_pool=fewshot_example_pool,
+            )
+            attempt_rows = [(focus_text, used_focus)]
+            if used_focus:
+                attempt_rows.append((text, False))
+            final_events: List[Dict[str, Any]] = []
+            final_diagnostics: Dict[str, Any] = {"success": False, "error": "typed_empty"}
+            final_api_success = False
+            final_api_error = None
 
-    stage2_start = time.perf_counter()
-    response_text, stage2_usage, api_success, api_error, response_meta_stage2 = perform_api_inference(
-        client,
-        model,
-        messages,
-        max_retries,
-        json_mode,
-    )
-    stage_runtime["stage2_wall_clock_seconds"] = round(time.perf_counter() - stage2_start, 6)
-    stage_usage["stage2"] = dict(stage2_usage)
-    response_meta["stage2"] = response_meta_stage2
+            for attempt_idx, (current_text, current_focus) in enumerate(attempt_rows):
+                prompt_payload = build_inference_prompt_payload(
+                    text=current_text,
+                    schema=event_schema,
+                    use_oneshot=use_fewshot,
+                    num_examples=fewshot_num_examples,
+                    fewshot_selection_mode=fewshot_selection_mode,
+                    fewshot_example_pool=fewshot_example_pool,
+                    target_event_types=[event_type],
+                )
+                typed_prompt_meta_rows.append(prompt_payload)
+                typed_stage2_call_count += 1
+                call_response_text, call_usage, call_api_success, call_api_error, call_response_meta = perform_api_inference(
+                    client,
+                    model,
+                    prompt_payload["messages"],
+                    max_retries,
+                    json_mode,
+                )
+                stage_usage["stage2"] = _merge_usage(stage_usage["stage2"], call_usage)
+                typed_response_rows.append(
+                    {
+                        "event_type": event_type,
+                        "used_focus_text": current_focus,
+                        "api_success": call_api_success,
+                        "api_error": call_api_error,
+                        "response_text": call_response_text,
+                        "response_meta": call_response_meta,
+                    }
+                )
+                call_events, call_parse_diagnostics = parse_event_list_strict_with_diagnostics(call_response_text)
+                response_text = "\n".join(filter(None, [response_text, call_response_text]))
+                if call_events or not current_focus or attempt_idx == len(attempt_rows) - 1:
+                    final_events = call_events
+                    final_diagnostics = call_parse_diagnostics
+                    final_api_success = call_api_success
+                    final_api_error = call_api_error
+                    break
+                typed_stage2_focus_fallback_count += 1
 
-    # Parse: 使用带诊断的解析器，区分 "[] 成功" 和 "解析失败"
-    pred_events, parse_diagnostics = parse_event_list_strict_with_diagnostics(response_text)
-    parse_success = bool(parse_diagnostics.get("success", False))
+            if not final_api_success or final_api_error:
+                typed_stage2_errors.append(
+                    {
+                        "event_type": event_type,
+                        "api_success": bool(final_api_success),
+                        "api_error": final_api_error,
+                    }
+                )
+            typed_pred_events.extend(final_events)
+            typed_parse_results.append(
+                {
+                    "event_type": event_type,
+                    "success": bool(final_diagnostics.get("success", False)),
+                    "error": final_diagnostics.get("error"),
+                }
+            )
+
+        stage_runtime["stage2_wall_clock_seconds"] = round(time.perf_counter() - stage2_start, 6)
+        response_meta["stage2"] = typed_response_rows
+        prompt_meta = _aggregate_prompt_meta_rows(typed_prompt_meta_rows)
+        pred_events = _dedupe_event_records(typed_pred_events)
+        parse_success = all(bool(row.get("success", False)) for row in typed_parse_results)
+        stage1_success = bool(stage1_api_success) if is_two_stage_mode(stage_mode) else True
+        api_success = stage1_success and not typed_stage2_errors
+        api_error = {
+            "stage1": stage1_api_error,
+            "stage2": typed_stage2_errors,
+        } if (stage1_api_error or typed_stage2_errors) else None
+        parse_diagnostics = {
+            "success": parse_success,
+            "error": None if parse_success else "typed_stage_parse_failure",
+            "typed_stage_results": typed_parse_results,
+        }
+    else:
+        prompt_payload = build_inference_prompt_payload(
+            text=text,
+            schema=stage2_schema,
+            use_oneshot=use_fewshot,
+            num_examples=fewshot_num_examples,
+            fewshot_selection_mode=fewshot_selection_mode,
+            fewshot_example_pool=fewshot_example_pool,
+                    target_event_types=stage1_predicted_event_types if is_two_stage_mode(stage_mode) else None,
+        )
+        messages = prompt_payload["messages"]
+
+        stage2_start = time.perf_counter()
+        response_text, stage2_usage, api_success, api_error, response_meta_stage2 = perform_api_inference(
+            client,
+            model,
+            messages,
+            max_retries,
+            json_mode,
+        )
+        stage_runtime["stage2_wall_clock_seconds"] = round(time.perf_counter() - stage2_start, 6)
+        stage_usage["stage2"] = dict(stage2_usage)
+        response_meta["stage2"] = response_meta_stage2
+
+        # Parse: 使用带诊断的解析器，区分 "[] 成功" 和 "解析失败"
+        pred_events, parse_diagnostics = parse_event_list_strict_with_diagnostics(response_text)
+        parse_success = bool(parse_diagnostics.get("success", False))
+        prompt_meta = {
+            "fewshot_selection_mode": prompt_payload.get("fewshot_selection_mode", "none"),
+            "fewshot_example_ids": prompt_payload.get("fewshot_example_ids", []),
+            "fewshot_count": prompt_payload.get("fewshot_count", 0),
+            "fewshot_target_event_types": prompt_payload.get("fewshot_target_event_types", []),
+            "fewshot_contrastive_warnings": prompt_payload.get("fewshot_contrastive_warnings", []),
+        }
     pipeline_result = apply_structured_event_pipeline(
         pred_events,
         source_text=text,
@@ -694,6 +903,11 @@ def process_single_sample(
         pipeline_mode=pipeline_mode,
     )
     pred_events = pipeline_result.events
+    pred_events, postprocess_profile_stats = apply_postprocess_profile(
+        pred_events,
+        source_text=text,
+        profile=postprocess_profile,
+    )
     cat_stats = {}
     if pipeline_result.cat_result is not None:
         cat_stats = {
@@ -736,18 +950,17 @@ def process_single_sample(
         "response_meta": response_meta,
         "cat_stats": cat_stats,
         "correction_stats": correction_stats,
+        "postprocess_profile_stats": postprocess_profile_stats,
         "stage_meta": {
             "stage_mode": stage_mode,
             "stage1_predicted_event_types": stage1_predicted_event_types,
             "stage1_parse_success": stage1_parse_success,
             "stage1_parse_error": stage1_parse_error,
             "stage2_schema_event_types": stage2_schema_event_types,
+            "typed_stage2_call_count": typed_stage2_call_count,
+            "typed_stage2_focus_fallback_count": typed_stage2_focus_fallback_count,
         },
-        "prompt_meta": {
-            "fewshot_selection_mode": prompt_payload.get("fewshot_selection_mode", "none"),
-            "fewshot_example_ids": prompt_payload.get("fewshot_example_ids", []),
-            "fewshot_count": prompt_payload.get("fewshot_count", 0),
-        },
+        "prompt_meta": prompt_meta,
     }
 
 
@@ -821,14 +1034,14 @@ def main():
         "--stage_mode",
         type=str,
         default=None,
-        choices=["single_pass", "two_stage"],
-        help="推理阶段模式（single_pass | two_stage）",
+        choices=list(STAGE_MODE_CHOICES),
+        help="推理阶段模式（single_pass | two_stage | two_stage_per_type）",
     )
     parser.add_argument(
         "--fewshot_selection_mode",
         type=str,
         default=None,
-        choices=["static", "dynamic"],
+        choices=["static", "dynamic", "contrastive"],
         help="few-shot 示例选择模式",
     )
     parser.add_argument(
@@ -870,6 +1083,13 @@ def main():
         choices=["e2e", "cat_lite", "record_corrector", "record_corrector+cat_lite"],
         help="推理流水线模式（默认读取 config.inference.pipeline_mode）",
     )
+    parser.add_argument(
+        "--postprocess_profile",
+        type=str,
+        default=None,
+        choices=list(SUPPORTED_POSTPROCESS_PROFILES),
+        help="正式后处理档位（默认读取 comparison.postprocess_profile）",
+    )
     args = parser.parse_args()
 
     # Load Config（支持 extends 继承与运行时默认值）
@@ -896,6 +1116,9 @@ def main():
     if args.pipeline_mode is None:
         args.pipeline_mode = str(config.get("inference", {}).get("pipeline_mode", "e2e"))
     args.pipeline_mode = validate_pipeline_mode(args.pipeline_mode)
+    if args.postprocess_profile is None:
+        args.postprocess_profile = str(comparison_cfg.get("postprocess_profile", "none"))
+    args.postprocess_profile = normalize_postprocess_profile(args.postprocess_profile)
     prompt_settings = resolve_prompt_settings(
         prompt_variant=args.prompt_variant,
         fewshot_num_examples=args.fewshot_num_examples,
@@ -1014,6 +1237,7 @@ def main():
     logger.info(f"🧭 Canonical Metric Mode: {args.canonical_metric_mode}")
     logger.info(f"🧠 CoT Eval Mode: {args.cot_eval_mode}")
     logger.info(f"🧩 Pipeline Mode: {args.pipeline_mode}")
+    logger.info(f"🧰 Postprocess Profile: {args.postprocess_profile}")
     logger.info(f"🪜 Stage Mode: {args.stage_mode}")
     logger.info(f"🌐 API Base URL: {base_url} (source={api_runtime['base_url_source']})")
     if args.research_split_manifest:
@@ -1133,10 +1357,10 @@ def main():
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_sample = {
             executor.submit(
-            process_single_sample,
-            client,
-            model_name,
-            max_retries,
+                process_single_sample,
+                client,
+                model_name,
+                max_retries,
                 idx,
                 sample,
                 use_fewshot,
@@ -1144,11 +1368,12 @@ def main():
                 args.fewshot_selection_mode if use_fewshot else "static",
                 fewshot_example_pool if use_fewshot else None,
                 args.json_mode,
-            prompt_schema,
-            args.pipeline_mode,
-            args.stage_mode,
-            role_alias_map,
-        ): idx
+                prompt_schema,
+                args.pipeline_mode,
+                args.postprocess_profile,
+                args.stage_mode,
+                role_alias_map,
+            ): idx
             for idx, sample in enumerate(samples)
         }
         
@@ -1244,6 +1469,11 @@ def main():
                             pipeline_mode=args.pipeline_mode,
                         )
                         cf_events = cf_pipeline_result.events
+                        cf_events, _ = apply_postprocess_profile(
+                            cf_events,
+                            source_text=perturbed_text,
+                            profile=args.postprocess_profile,
+                        )
                         evaluator.update_counterfactual_consistency(cf_events, perturbation)
                         if canonical_evaluator is not None:
                             cf_events_canonical, _ = canonicalize_pred_roles(cf_events, role_alias_map)
@@ -1269,6 +1499,8 @@ def main():
                     "api_error": res["api_error"],
                     "response_meta": res["response_meta"],
                     "pipeline_mode": args.pipeline_mode,
+                    "postprocess_profile": args.postprocess_profile,
+                    "postprocess_profile_stats": res.get("postprocess_profile_stats", {}),
                     "cat_stats": res.get("cat_stats", {}),
                     "correction_stats": res.get("correction_stats", {}),
                     "cot_eval_mode": args.cot_eval_mode,
@@ -1429,6 +1661,7 @@ def main():
             "hallucination_entity_rate": metrics_dict.get("hallucination_entity_rate"),
         }
     )
+    diagnostics_block.update(summarize_postprocess_profile_rows(results))
     cost_block = {
         "prompt_tokens": token_stats["prompt_tokens"],
         "completion_tokens": token_stats["completion_tokens"],
@@ -1474,35 +1707,48 @@ def main():
     }
     protocol_hash = compute_file_hash(args.protocol)
     role_alias_map_hash = compute_file_hash(args.role_alias_map)
-    compare_block = build_compare_contract(
-        {
-            "model_family": "api",
-            "model_kind": "api_model",
-            "split": args.split,
-            "primary_metric": args.report_primary_metric,
-            "stage_mode": args.stage_mode,
-            "prompt_variant": prompt_variant,
-            "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
-            "fewshot_selection_mode": args.fewshot_selection_mode if use_fewshot else "none",
-            "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
-            "train_tune_ratio": float(args.train_tune_ratio),
-            "research_split_manifest_path": (
-                os.path.abspath(args.research_split_manifest) if args.research_split_manifest else "none"
-            ),
-            "research_split_manifest_hash": (
-                compute_file_hash(args.research_split_manifest)
-                if args.research_split_manifest and os.path.exists(args.research_split_manifest)
-                else "none"
-            ),
-            "pipeline_mode": args.pipeline_mode,
-            "canonical_metric_mode": args.canonical_metric_mode,
-            "protocol_hash": protocol_hash or "none",
-            "role_alias_hash": role_alias_map_hash or "none",
-            "seed": args.seed,
-            "seed_effective": False,
-            "token_usage_kind": "actual",
-        }
+    version_meta = resolve_semantic_version_meta(
+        comparison_cfg=comparison_cfg,
+        effective_prompt_builder_version=PROMPT_BUILDER_VERSION,
+        effective_parser_version=PARSER_VERSION,
+        effective_normalization_version=NORMALIZATION_VERSION,
     )
+    experiment_contract_payload = {
+        "model_family": "api",
+        "model_kind": "api_model",
+        "split": args.split,
+        "primary_metric": args.report_primary_metric,
+        "stage_mode": args.stage_mode,
+        "prompt_variant": prompt_variant,
+        "fewshot_num_examples": fewshot_num_examples if use_fewshot else 0,
+        "fewshot_selection_mode": args.fewshot_selection_mode if use_fewshot else "none",
+        "fewshot_pool_split": args.fewshot_pool_split if use_fewshot else "none",
+        "train_tune_ratio": float(args.train_tune_ratio),
+        "research_split_manifest_path": (
+            os.path.abspath(args.research_split_manifest) if args.research_split_manifest else "none"
+        ),
+        "research_split_manifest_hash": (
+            compute_file_hash(args.research_split_manifest)
+            if args.research_split_manifest and os.path.exists(args.research_split_manifest)
+            else "none"
+        ),
+        "pipeline_mode": args.pipeline_mode,
+        "postprocess_profile": args.postprocess_profile,
+        "canonical_metric_mode": args.canonical_metric_mode,
+        "prompt_builder_version": version_meta["prompt_builder_version"],
+        "configured_prompt_builder_version": version_meta["configured_prompt_builder_version"],
+        "parser_version": version_meta["parser_version"],
+        "configured_parser_version": version_meta["configured_parser_version"],
+        "normalization_version": version_meta["normalization_version"],
+        "configured_normalization_version": version_meta["configured_normalization_version"],
+        "protocol_hash": protocol_hash or "none",
+        "role_alias_hash": role_alias_map_hash or "none",
+        "seed": args.seed,
+        "seed_effective": False,
+        "token_usage_kind": "actual",
+    }
+    experiment_contract = build_experiment_contract(experiment_contract_payload)
+    compare_block = build_compare_contract(experiment_contract)
     
     stage1_prompt_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage1", {}).get("prompt_tokens", 0)) for item in results)
     stage1_completion_tokens = sum(int((item.get("stage_usage", {}) or {}).get("stage1", {}).get("completion_tokens", 0)) for item in results)
@@ -1545,6 +1791,7 @@ def main():
             "json_mode": args.json_mode,
             "cot_eval_mode": args.cot_eval_mode,
             "pipeline_mode": args.pipeline_mode,
+            "postprocess_profile": args.postprocess_profile,
             "correction_mode": (
                 "deterministic_record_corrector"
                 if "record_corrector" in args.pipeline_mode
@@ -1589,12 +1836,11 @@ def main():
             "seed_effective": False,
             "prompt_hashes": prompt_hashes,
             "prompt_variant": prompt_variant,
-            "prompt_builder_version": str(comparison_cfg.get("prompt_builder_version", PROMPT_BUILDER_VERSION)),
-            "parser_version": str(comparison_cfg.get("parser_version", PARSER_VERSION)),
-            "normalization_version": str(comparison_cfg.get("normalization_version", NORMALIZATION_VERSION)),
+            **version_meta,
             "training_mode": "api_inference",
             "evaluation_mode": evaluation_mode,
         },
+        "experiment_contract": experiment_contract,
         "compare": compare_block,
         "metrics": metrics_dict,
         "diagnostics": diagnostics_block,
@@ -1632,6 +1878,7 @@ def main():
             "primary_metric": args.report_primary_metric,
             "primary_metric_value": primary_metric_value,
             "pipeline_mode": args.pipeline_mode,
+            "postprocess_profile": args.postprocess_profile,
             "correction_mode": (
                 "deterministic_record_corrector"
                 if "record_corrector" in args.pipeline_mode
@@ -1661,7 +1908,12 @@ def main():
             model_profile=model_profile,
             model_source="api",
             effective_model_path=model_name,
+            extra={
+                "experiment_contract_hash": experiment_contract["experiment_contract_hash"],
+                "experiment_contract": experiment_contract,
+            },
         ),
+        experiment_contract=experiment_contract,
         runtime={
             "wall_clock_seconds": eval_summary["runtime"]["wall_clock_seconds"],
         },

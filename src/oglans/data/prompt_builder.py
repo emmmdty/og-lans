@@ -9,13 +9,13 @@
 3. 官方评测需要 strict JSON，不能依赖解析修复
 """
 
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import json
 import re
 
-PROMPT_BUILDER_VERSION = "phase3_mvp_v1"
+PROMPT_BUILDER_VERSION = "phase3_mvp_v2"
 SUPPORTED_PROMPT_VARIANTS = ("zeroshot", "fewshot")
-SUPPORTED_FEWSHOT_SELECTION_MODES = ("static", "dynamic")
+SUPPORTED_FEWSHOT_SELECTION_MODES = ("static", "dynamic", "contrastive")
 
 
 def validate_prompt_variant(prompt_variant: Optional[str]) -> str:
@@ -279,6 +279,26 @@ class ChinesePromptBuilder:
             "股权购买协议",
             "购买协议",
             "并购贷款",
+        ),
+    }
+    _CONTRASTIVE_WARNING_RULES = {
+        "亏损": (
+            "不要把披露时间误当成财报周期；财报周期应是年报、半年报、季度等期间表达。",
+        ),
+        "中标": (
+            "不要把中标公司或招标方误当成中标标的；中标标的通常是项目、工程或标段名称。",
+        ),
+        "公司上市": (
+            "环节字段应为筹备上市、暂停上市、正式上市或终止上市，不要把价格、地点或时间误填为环节。",
+        ),
+        "股份回购": (
+            "每股交易价格必须是价格表达，不要把交易金额或回购股份数量误当成价格。",
+        ),
+        "质押": (
+            "不要把质权方或股份数量误当成质押方；质押方应是执行质押动作的主体。",
+        ),
+        "高管变动": (
+            "不要把高管职位误当成变动类型；变动类型应是辞职、离任、聘任、免职等动作表达。",
         ),
     }
 
@@ -598,6 +618,23 @@ class ChinesePromptBuilder:
         return inferred
 
     @classmethod
+    def _resolve_target_event_types(
+        cls,
+        *,
+        text: str,
+        example_pool: Iterable[Dict[str, Any]],
+        target_event_types: Optional[Sequence[str]] = None,
+    ) -> Set[str]:
+        explicit_targets = {
+            str(event_type).strip()
+            for event_type in (target_event_types or [])
+            if str(event_type).strip()
+        }
+        if explicit_targets:
+            return explicit_targets
+        return cls._infer_target_event_types(text, example_pool)
+
+    @classmethod
     def _event_type_focus_key(
         cls,
         example: Dict[str, Any],
@@ -627,6 +664,7 @@ class ChinesePromptBuilder:
         num_examples: int,
         example_pool: Iterable[Dict[str, Any]],
         schema: Optional[Dict[str, List[str]]] = None,
+        target_event_types: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         normalized_pool = [
             cls._normalize_example_record(example, index)
@@ -635,16 +673,20 @@ class ChinesePromptBuilder:
         if not normalized_pool:
             return []
 
-        target_event_types = cls._infer_target_event_types(text, normalized_pool)
+        resolved_target_event_types = cls._resolve_target_event_types(
+            text=text,
+            example_pool=normalized_pool,
+            target_event_types=target_event_types,
+        )
         candidate_pool = normalized_pool
-        if target_event_types:
+        if resolved_target_event_types:
             constrained_pool = [
                 example for example in normalized_pool
                 if {
                     str(event_type)
                     for event_type in example.get("event_types", [])
                     if event_type
-                } & target_event_types
+                } & resolved_target_event_types
             ]
             if constrained_pool:
                 candidate_pool = constrained_pool
@@ -652,8 +694,8 @@ class ChinesePromptBuilder:
         ranked = sorted(
             candidate_pool,
             key=lambda example: (
-                cls._event_type_focus_key(example, target_event_types)
-                if target_event_types else (0, 0, 0, 0),
+                cls._event_type_focus_key(example, resolved_target_event_types)
+                if resolved_target_event_types else (0, 0, 0, 0),
                 cls._score_fewshot_example(text, example, schema=schema),
             ),
             reverse=True,
@@ -690,6 +732,20 @@ class ChinesePromptBuilder:
         return selected[:num_examples]
 
     @classmethod
+    def build_contrastive_warning_block(
+        cls,
+        target_event_types: Sequence[str],
+    ) -> str:
+        lines: List[str] = []
+        for event_type in target_event_types:
+            warnings = cls._CONTRASTIVE_WARNING_RULES.get(str(event_type).strip(), ())
+            for warning in warnings:
+                lines.append(f"- {str(event_type).strip()}: {warning}")
+        if not lines:
+            return ""
+        return "\n".join(["## 易混淆提醒", *lines])
+
+    @classmethod
     def select_fewshot_examples(
         cls,
         num_examples: int = 3,
@@ -698,6 +754,7 @@ class ChinesePromptBuilder:
         selection_mode: str = "static",
         example_pool: Optional[Iterable[Dict[str, Any]]] = None,
         schema: Optional[Dict[str, List[str]]] = None,
+        target_event_types: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         选择 few-shot 示例。
@@ -706,12 +763,13 @@ class ChinesePromptBuilder:
         selection_mode = validate_fewshot_selection_mode(selection_mode)
         pool = list(example_pool) if example_pool is not None else list(cls.FEW_SHOT_EXAMPLES)
         n = max(1, min(num_examples, len(pool)))
-        if selection_mode == "dynamic" and text:
+        if selection_mode in {"dynamic", "contrastive"} and text:
             selected = cls.select_dynamic_fewshot_examples(
                 text=text,
                 num_examples=n,
                 example_pool=pool,
                 schema=schema,
+                target_event_types=target_event_types,
             )
             if selected:
                 return selected
@@ -758,6 +816,7 @@ class ChinesePromptBuilder:
         fewshot_selection_mode: str = "static",
         fewshot_example_pool: Optional[Iterable[Dict[str, Any]]] = None,
         fewshot_examples: Optional[Iterable[Dict[str, Any]]] = None,
+        target_event_types: Optional[Sequence[str]] = None,
         tokenizer: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
@@ -775,11 +834,25 @@ class ChinesePromptBuilder:
             default_prompt_variant="zeroshot",
             default_num_examples=num_examples,
         )
+        resolved_selection_mode = validate_fewshot_selection_mode(fewshot_selection_mode)
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": cls.build_system_prompt(schema=schema)},
         ]
         fewshot_count = 0
         selected_examples: List[Dict[str, Any]] = []
+        contrastive_target_event_types = [
+            str(event_type).strip()
+            for event_type in (
+                target_event_types
+                or cls._resolve_target_event_types(
+                    text=text,
+                    example_pool=fewshot_example_pool or cls.FEW_SHOT_EXAMPLES,
+                    target_event_types=target_event_types,
+                )
+            )
+            if str(event_type).strip()
+        ]
+        contrastive_warning_block = ""
         if prompt_settings["use_oneshot"]:
             if fewshot_examples is not None:
                 selected_examples = [
@@ -790,14 +863,21 @@ class ChinesePromptBuilder:
                 selected_examples = cls.select_fewshot_examples(
                     num_examples=prompt_settings["fewshot_num_examples"],
                     text=text,
-                    selection_mode=fewshot_selection_mode,
+                    selection_mode=resolved_selection_mode,
                     example_pool=fewshot_example_pool,
                     schema=schema,
+                    target_event_types=target_event_types,
                 )
             fewshot_count = len(selected_examples)
             for ex in selected_examples:
                 messages.append({"role": "user", "content": ex["user"]})
                 messages.append({"role": "assistant", "content": ex["assistant"]})
+            if resolved_selection_mode == "contrastive":
+                contrastive_warning_block = cls.build_contrastive_warning_block(
+                    contrastive_target_event_types
+                )
+                if contrastive_warning_block:
+                    messages.append({"role": "system", "content": contrastive_warning_block})
         messages.append({"role": "user", "content": cls.build_user_prompt(text)})
 
         formatted_text: Optional[str] = None
@@ -814,12 +894,22 @@ class ChinesePromptBuilder:
             "prompt_variant": prompt_settings["prompt_variant"],
             "fewshot_count": fewshot_count,
             "fewshot_selection_mode": (
-                validate_fewshot_selection_mode(fewshot_selection_mode)
+                resolved_selection_mode
                 if prompt_settings["use_oneshot"] else "none"
             ),
             "fewshot_example_ids": [
                 str(example.get("id", f"fewshot-{index}"))
                 for index, example in enumerate(selected_examples)
+            ],
+            "fewshot_target_event_types": [
+                str(event_type).strip()
+                for event_type in (target_event_types or [])
+                if str(event_type).strip()
+            ],
+            "fewshot_contrastive_warnings": [
+                line[2:]
+                for line in contrastive_warning_block.splitlines()
+                if line.startswith("- ")
             ],
             "schema_enabled": bool(schema),
         }
@@ -886,6 +976,7 @@ def build_inference_prompt_payload(
     fewshot_selection_mode: str = "static",
     fewshot_example_pool: Optional[Iterable[Dict[str, Any]]] = None,
     fewshot_examples: Optional[Iterable[Dict[str, Any]]] = None,
+    target_event_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """便捷函数：导出统一的推理 payload。"""
     return ChinesePromptBuilder.build_inference_payload(
@@ -897,6 +988,7 @@ def build_inference_prompt_payload(
         fewshot_selection_mode=fewshot_selection_mode,
         fewshot_example_pool=fewshot_example_pool,
         fewshot_examples=fewshot_examples,
+        target_event_types=target_event_types,
         tokenizer=tokenizer,
     )
 

@@ -25,6 +25,12 @@ def test_shell_wrappers_export_modelscope_runtime_defaults():
         assert "HF_XET_CACHE" not in text, name
 
 
+def test_run_eval_api_wrapper_sets_uv_cache_dir_for_uv_managed_runtime():
+    text = _read_script("run_eval_api.sh")
+
+    assert 'export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"' in text
+
+
 def test_shell_wrappers_do_not_parse_config_with_yaml_safe_load():
     targets = [
         "run_train.sh",
@@ -75,6 +81,8 @@ def test_python_script_entrypoints_do_not_parse_main_config_with_yaml_safe_load(
 def test_run_train_wrapper_uses_effective_config_helper_for_manifest_provenance():
     text = _read_script("run_train.sh")
     assert "load_effective_config_metadata" in text
+    assert 'launcher_manifest.json' in text
+    assert 'OG_LANS_LAUNCHER_MANIFEST' in text
 
 
 def test_run_train_wrapper_prefers_uv_managed_python():
@@ -118,10 +126,12 @@ def test_eval_shell_wrappers_expose_prompt_variant_controls():
     assert "--fewshot-pool-split" in base_text
     assert "--train-tune-ratio" in base_text
     assert "--research-split-manifest" in base_text
+    assert "--postprocess-profile" in base_text
     assert "--num-samples" in base_text
     assert "--num_samples" in base_text
     assert "--prompt-variant" in academic_text
     assert "--fewshot-num-examples" in academic_text
+    assert "--postprocess-profile" in academic_text
 
 
 def test_run_eval_api_wrapper_exposes_base_url_controls():
@@ -134,6 +144,7 @@ def test_run_eval_api_wrapper_exposes_base_url_controls():
     assert "--fewshot-pool-split" in text
     assert "--train-tune-ratio" in text
     assert "--research-split-manifest" in text
+    assert "--postprocess-profile" in text
     assert '--base_url "$BASE_URL"' in text
 
 
@@ -142,7 +153,32 @@ def test_run_eval_api_wrapper_does_not_force_hardcoded_model_override():
 
     assert 'MODEL="deepseek-chat"' not in text
     assert 'if [[ -n "$MODEL" ]]; then' in text
-    assert 'cmd+=(--model "$MODEL")' in text
+    assert 'RUN_CMD+=(--model "$MODEL")' in text
+
+
+def test_run_eval_api_wrapper_prefers_active_python_or_uv_managed_python():
+    text = _read_script("run_eval_api.sh")
+
+    assert 'if [[ -n "${CONDA_PREFIX:-}" ]]' in text
+    assert 'if [[ -n "${VIRTUAL_ENV:-}" ]]' in text
+    assert 'if command -v uv >/dev/null 2>&1; then' in text
+    assert 'echo "uv run python"' in text
+
+
+def test_run_eval_api_wrapper_uses_python_command_array_for_uv_runtime():
+    text = _read_script("run_eval_api.sh")
+
+    assert "resolve_python_cmd()" in text
+    assert 'PYTHON_CMD=(uv run python)' in text
+    assert '"${PYTHON_CMD[@]}"' in text
+
+
+def test_run_eval_api_wrapper_executes_command_array_without_shell_reparse():
+    text = _read_script("run_eval_api.sh")
+
+    assert "RUN_CMD=(" in text
+    assert 'bash -lc "$cmd"' not in text
+    assert '"${RUN_CMD[@]}"' in text
 
 
 def test_removed_auxiliary_shell_scripts_are_absent():

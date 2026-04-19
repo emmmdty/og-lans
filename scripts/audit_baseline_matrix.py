@@ -106,7 +106,7 @@ def summarize_result_rows(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         schema_types = [str(item) for item in stage_meta.get("stage2_schema_event_types", []) if str(item)]
         total_schema_size += len(schema_types)
 
-        if stage_mode != "two_stage":
+        if stage_mode not in {"two_stage", "two_stage_per_type"}:
             continue
 
         stage1_rows += 1

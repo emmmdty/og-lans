@@ -23,6 +23,7 @@ from oglans.utils.academic_eval import (
     extract_report_metrics,
 )
 from oglans.utils.compare_contract import extract_compare_contract, validate_compare_contract_match
+from oglans.utils.experiment_contract import extract_experiment_contract
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -391,10 +392,12 @@ def main() -> None:
                 continue
             summary = load_json(summary_file)
             compare = extract_compare_contract(summary)
+            experiment_contract = extract_experiment_contract(summary)
             summaries.append({
                 "family": family,
                 "variant": variant["name"],
                 "compare": compare,
+                "experiment_contract": experiment_contract,
                 "summary_file": str(summary_file),
                 "metrics": _metric_row(summary),
             })
@@ -410,6 +413,7 @@ def main() -> None:
         variant_contract_hashes[variant_name] = validate_family_records(variant_records)
         variants[variant_name] = {
             "comparable_contract_hash": variant_contract_hashes[variant_name],
+            "experiment_contract": variant_records[0]["experiment_contract"],
             "records": variant_records,
         }
     table_sections = build_table_sections(summaries)
@@ -420,6 +424,10 @@ def main() -> None:
         "split": args.split,
         "seed": args.seed,
         "variant_contract_hashes": variant_contract_hashes,
+        "experiment_contracts": {
+            variant_name: payload["experiment_contract"]
+            for variant_name, payload in variants.items()
+        },
         "records": [record._asdict() for record in records],
         "variants": variants,
         **table_sections,

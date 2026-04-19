@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 from oglans.utils.academic_eval import API_SUITE_REPORT_METRICS, extract_report_metrics
 from oglans.utils.compare_contract import COMPARABLE_CONTRACT_FIELDS
+from oglans.utils.experiment_contract import EXPERIMENT_CONTRACT_FIELDS
 
 
 MINI_SUITE_REPORT_METRICS = (
@@ -86,6 +87,14 @@ def validate_eval_summary(summary: Dict[str, Any]) -> List[str]:
         for field_name in COMPARABLE_CONTRACT_FIELDS:
             if compare.get(field_name) is None:
                 errors.append(f"Missing required field: compare.{field_name}")
+
+    experiment_contract = summary.get("experiment_contract")
+    if not isinstance(experiment_contract, dict):
+        errors.append("Missing experiment_contract block")
+    else:
+        for field_name in EXPERIMENT_CONTRACT_FIELDS:
+            if experiment_contract.get(field_name) is None:
+                errors.append(f"Missing required field: experiment_contract.{field_name}")
 
     diagnostics = summary.get("diagnostics")
     if not isinstance(diagnostics, dict):
@@ -278,6 +287,8 @@ def validate_suite_summary(summary: Dict[str, Any]) -> List[str]:
     for field_name in ("timestamp", "config", "dataset", "split", "primary_metric", "aggregated", "significance"):
         if summary.get(field_name) is None:
             errors.append(f"Missing suite field: {field_name}")
+    if not isinstance(summary.get("experiment_contracts"), Mapping):
+        errors.append("Missing suite field: experiment_contracts")
 
     seeds = summary.get("seeds")
     if not isinstance(seeds, list) or not seeds:

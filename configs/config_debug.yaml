@@ -210,6 +210,7 @@ comparison:
   fewshot_pool_split: "train_fit"
   train_tune_ratio: 0.1
   research_split_manifest_path: "./configs/research_splits/duee_fin_train_seed3407_tune0.1.json"
+  postprocess_profile: "none"
   prompt_builder_version: "phase3_mvp_v1"
   parser_version: "phase3_mvp_v1"
   normalization_version: "phase3_mvp_v1"

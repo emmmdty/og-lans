@@ -138,20 +138,27 @@ from ..utils.model_profile import (
 )
 from ..data.prompt_builder import (
     ChinesePromptBuilder,
+    PROMPT_BUILDER_VERSION,
     build_inference_prompt_payload,
     resolve_prompt_settings,
 )
+from ..utils.json_parser import NORMALIZATION_VERSION, PARSER_VERSION
 from ..utils.research_protocol import (
     DEFAULT_TRAIN_TUNE_RATIO,
     build_fewshot_example_pool,
     resolve_stage_settings,
     select_fewshot_pool_samples,
 )
-from ..utils.run_manifest import compute_file_sha256, compute_json_sha256
+from ..utils.run_manifest import (
+    compute_file_sha256,
+    compute_json_sha256,
+    resolve_semantic_version_meta,
+)
 from ..utils.training_protocol import (
     build_training_cache_metadata,
     expand_training_samples,
-    select_training_fit_samples,
+    resolve_training_resume_settings,
+    resolve_trainer_sample_sources,
     training_cache_metadata_matches,
 )
 import random
@@ -161,6 +168,28 @@ from torch.utils.data import IterableDataset
 from torch.utils.tensorboard import SummaryWriter
 
 logger = logging.getLogger("OGLANS")
+
+
+def _distributed_rank() -> int:
+    try:
+        return int(str(os.environ.get("RANK", "0")).strip())
+    except ValueError:
+        return 0
+
+
+def _distributed_world_size() -> int:
+    try:
+        return int(str(os.environ.get("WORLD_SIZE", "1")).strip())
+    except ValueError:
+        return 1
+
+
+def _is_primary_rank() -> bool:
+    return _distributed_rank() == 0
+
+
+def _rank_suffix() -> str:
+    return f".rank{_distributed_rank()}"
 
 
 def normalize_preference_training_config(
@@ -1079,10 +1108,11 @@ class LANSNegativeSampler:
         
         os.makedirs(export_path, exist_ok=True)
         result = {}
+        file_suffix = "" if _is_primary_rank() else _rank_suffix()
         
         # 导出 LANS 生成的负样本
         if self._generated_samples:
-            neg_samples_file = os.path.join(export_path, "lans_generated_samples.jsonl")
+            neg_samples_file = os.path.join(export_path, f"lans_generated_samples{file_suffix}.jsonl")
             with open(neg_samples_file, 'w', encoding='utf-8') as f:
                 for sample in self._generated_samples:
                     f.write(json.dumps(sample, ensure_ascii=False) + "\n")
@@ -1091,7 +1121,7 @@ class LANSNegativeSampler:
         
         # 导出 SCV 过滤样本
         if self._scv_filtered_samples:
-            scv_filtered_file = os.path.join(export_path, "scv_filtered_samples.jsonl")
+            scv_filtered_file = os.path.join(export_path, f"scv_filtered_samples{file_suffix}.jsonl")
             with open(scv_filtered_file, 'w', encoding='utf-8') as f:
                 for sample in self._scv_filtered_samples:
                     f.write(json.dumps(sample, ensure_ascii=False) + "\n")
@@ -1432,10 +1462,21 @@ class LANSDataCollator:
 
 
 class UnslothDPOTrainerWrapper:
-    def __init__(self, config: dict, data_samples: list):
+    def __init__(
+        self,
+        config: dict,
+        data_samples: list,
+        *,
+        fewshot_source_samples: Optional[list] = None,
+    ):
         init_start_ts = time.perf_counter()
         self.config = config
         self.all_training_samples = list(data_samples)
+        self.gold_source_samples = (
+            list(fewshot_source_samples)
+            if fewshot_source_samples is not None
+            else list(data_samples)
+        )
         self.training_mode = str(self.config.get("training", {}).get("mode", "preference"))
         comparison_cfg = self.config.get("comparison", {})
         self.prompt_settings = resolve_prompt_settings(
@@ -1463,15 +1504,20 @@ class UnslothDPOTrainerWrapper:
             event_type: list(roles)
             for event_type, roles in sorted(self.ds_cns.event_roles.items())
         }
-        self.samples, self.training_split_manifest = select_training_fit_samples(
+        sample_sources = resolve_trainer_sample_sources(
             self.all_training_samples,
+            gold_source_samples=fewshot_source_samples,
             tune_ratio=self.train_tune_ratio,
             seed=int(self.config["project"]["seed"]),
             split_manifest=self.research_split_manifest_path,
         )
+        self.samples = list(sample_sources["training_samples"])
+        self.gold_source_samples = list(sample_sources["fewshot_source_samples"])
+        self.training_split_manifest = dict(sample_sources["split_manifest"])
+        self.input_samples_already_selected = bool(sample_sources["input_samples_already_selected"])
         if self.prompt_settings["use_oneshot"]:
             self.fewshot_pool_samples, self.fewshot_split_manifest = select_fewshot_pool_samples(
-                self.all_training_samples,
+                self.gold_source_samples,
                 pool_split=self.stage_settings["fewshot_pool_split"],
                 tune_ratio=self.train_tune_ratio,
                 seed=int(self.config["project"]["seed"]),
@@ -1528,8 +1574,11 @@ class UnslothDPOTrainerWrapper:
             "fewshot_pool_split": self.stage_settings["fewshot_pool_split"],
             "train_tune_ratio": self.train_tune_ratio,
             "research_split_manifest_path": self.research_split_manifest_path,
+            "resume": resolve_training_resume_settings(self.config.get("training", {})),
             "configured_train_count": len(self.all_training_samples),
+            "gold_source_count": len(self.gold_source_samples),
             "effective_train_count": len(self.samples),
+            "input_samples_already_selected": self.input_samples_already_selected,
             "fewshot_pool_count": len(self.fewshot_pool_samples),
             "effective_lans_enabled": False,
             "effective_scv_enabled": bool(self.scv is not None),
@@ -1543,6 +1592,7 @@ class UnslothDPOTrainerWrapper:
         load_start_ts = time.perf_counter()
         m_cfg = self.config['model']
         l_cfg = self.config['lora']
+        resume_settings = resolve_training_resume_settings(self.config.get("training", {}))
         profile = load_local_model_profile(m_cfg["profile"])
         project_root = Path(__file__).resolve().parents[3]
         model_source = m_cfg.get("source", "modelscope")
@@ -1576,6 +1626,14 @@ class UnslothDPOTrainerWrapper:
             use_gradient_checkpointing = "unsloth",
             random_state = int(self.config['project']['seed']),
         )
+        if resume_settings["mode"] == "warm_start":
+            checkpoint_path = str(resume_settings["checkpoint_path"])
+            if not os.path.isdir(checkpoint_path):
+                raise FileNotFoundError(f"Warm-start checkpoint not found: {checkpoint_path}")
+            if not hasattr(self.model, "load_adapter"):
+                raise RuntimeError("Warm-start requires PEFT load_adapter support on the training model.")
+            self.model.load_adapter(checkpoint_path, adapter_name="default", is_trainable=True)
+            logger.info("♻️ Warm-started model weights from %s", os.path.abspath(checkpoint_path))
         prepare_tokenizer_for_profile(self.tokenizer, profile, mode="train")
         logger.info(
             f"EOS Token: {self.tokenizer.eos_token} | EOS Token ID: {self.tokenizer.eos_token_id}"
@@ -1653,6 +1711,12 @@ class UnslothDPOTrainerWrapper:
         )
         taxonomy_path = self.config["algorithms"]["ds_cns"].get("taxonomy_path")
         taxonomy_hash = compute_file_sha256(taxonomy_path) if taxonomy_path and os.path.exists(taxonomy_path) else None
+        version_meta = resolve_semantic_version_meta(
+            comparison_cfg=self.config.get("comparison", {}),
+            effective_prompt_builder_version=PROMPT_BUILDER_VERSION,
+            effective_parser_version=PARSER_VERSION,
+            effective_normalization_version=NORMALIZATION_VERSION,
+        )
         return build_training_cache_metadata(
             dataset_name=str(self.config.get("project", {}).get("name", "DuEE-Fin")),
             training_mode=str(self.config.get("training", {}).get("mode", "preference")),
@@ -1662,13 +1726,9 @@ class UnslothDPOTrainerWrapper:
             fewshot_selection_mode=self.stage_settings["fewshot_selection_mode"],
             fewshot_pool_split=self.stage_settings["fewshot_pool_split"],
             research_split_manifest_hash=manifest_hash,
-            prompt_builder_version=str(
-                self.config.get("comparison", {}).get("prompt_builder_version", "phase3_mvp_v1")
-            ),
-            parser_version=str(self.config.get("comparison", {}).get("parser_version", "phase3_mvp_v1")),
-            normalization_version=str(
-                self.config.get("comparison", {}).get("normalization_version", "phase3_mvp_v1")
-            ),
+            prompt_builder_version=version_meta["prompt_builder_version"],
+            parser_version=version_meta["parser_version"],
+            normalization_version=version_meta["normalization_version"],
             model_profile=str(self.config.get("model", {}).get("profile", "")),
             max_seq_length=int(self.config.get("model", {}).get("max_seq_length", 4096)),
             use_lans=bool(use_lans),
@@ -1901,6 +1961,8 @@ class UnslothDPOTrainerWrapper:
 
             # 传递导出目录到 LANSNegativeSampler
             export_dir = self.config['project'].get('debug_data_dir')
+            if export_dir and _distributed_world_size() > 1 and not _is_primary_rank():
+                export_dir = os.path.join(str(export_dir), f"rank{_distributed_rank()}")
             self.lans_sampler = LANSNegativeSampler(
                 ds_cns=self.ds_cns,
                 scv=self.scv,
@@ -2022,19 +2084,29 @@ class UnslothDPOTrainerWrapper:
             dataset = Dataset.from_list(records)
             
             # 保存缓存到磁盘
-            if rebuild_cache and os.path.exists(cache_dir):
-                shutil.rmtree(cache_dir, ignore_errors=True)
-            os.makedirs(cache_dir, exist_ok=True)
-            dataset.save_to_disk(cache_dir)
-            with open(cache_meta_path, "w", encoding="utf-8") as handle:
-                json.dump(expected_cache_meta, handle, ensure_ascii=False, indent=2)
-            logger.info(f"   💾 数据集已缓存: {cache_dir}")
+            if _is_primary_rank():
+                if rebuild_cache and os.path.exists(cache_dir):
+                    shutil.rmtree(cache_dir, ignore_errors=True)
+                os.makedirs(cache_dir, exist_ok=True)
+                dataset.save_to_disk(cache_dir)
+                with open(cache_meta_path, "w", encoding="utf-8") as handle:
+                    json.dump(expected_cache_meta, handle, ensure_ascii=False, indent=2)
+                logger.info(f"   💾 数据集已缓存: {cache_dir}")
+            else:
+                logger.info(
+                    "   ℹ️ non-primary rank 跳过共享静态缓存写入: rank=%s, world_size=%s",
+                    _distributed_rank(),
+                    _distributed_world_size(),
+                )
             
             # 导出静态样本日志
             debug_dir = self.config['project'].get('debug_data_dir')
             if debug_dir:
                 os.makedirs(debug_dir, exist_ok=True)
-                static_log_file = os.path.join(debug_dir, "static_dpo_samples.jsonl")
+                static_log_file = os.path.join(
+                    debug_dir,
+                    f"static_dpo_samples{'' if _is_primary_rank() else _rank_suffix()}.jsonl",
+                )
                 with open(static_log_file, 'w', encoding='utf-8') as f:
                     for sample in static_samples_log:
                         f.write(json.dumps(sample, ensure_ascii=False) + "\n")
@@ -2044,6 +2116,24 @@ class UnslothDPOTrainerWrapper:
 
     def train(self, use_lans: bool = True) -> None:
         transformers.set_seed(self.config['project']['seed'])
+        resume_settings = resolve_training_resume_settings(self.config.get("training", {}))
+        resume_training_path = (
+            str(resume_settings["checkpoint_path"])
+            if resume_settings["mode"] == "resume_training"
+            else None
+        )
+        if resume_training_path:
+            required_state_files = ("trainer_state.json", "optimizer.pt", "scheduler.pt")
+            missing_state_files = [
+                file_name
+                for file_name in required_state_files
+                if not os.path.exists(os.path.join(resume_training_path, file_name))
+            ]
+            if missing_state_files:
+                raise FileNotFoundError(
+                    "resume_training_from requires a full trainer checkpoint with "
+                    f"{', '.join(required_state_files)}. Missing: {', '.join(missing_state_files)}"
+                )
         
         base_dataset = self.prepare_dpo_dataset(use_lans=use_lans)
         t_cfg = self.config['training']
@@ -2256,7 +2346,7 @@ class UnslothDPOTrainerWrapper:
         logger.info(f"Starting Training...")
         train_loop_start_ts = time.perf_counter()
         try:
-            trainer.train()
+            trainer.train(resume_from_checkpoint=resume_training_path)
             logger.info("✅ trainer.train() 完成")
             self.runtime_stats["phase_timings_seconds"]["train_loop"] = round(
                 time.perf_counter() - train_loop_start_ts, 4
@@ -2372,6 +2462,24 @@ class UnslothSFTTrainerWrapper(UnslothDPOTrainerWrapper):
     def train(self, use_lans: bool = False) -> None:
         del use_lans
         transformers.set_seed(self.config['project']['seed'])
+        resume_settings = resolve_training_resume_settings(self.config.get("training", {}))
+        resume_training_path = (
+            str(resume_settings["checkpoint_path"])
+            if resume_settings["mode"] == "resume_training"
+            else None
+        )
+        if resume_training_path:
+            required_state_files = ("trainer_state.json", "optimizer.pt", "scheduler.pt")
+            missing_state_files = [
+                file_name
+                for file_name in required_state_files
+                if not os.path.exists(os.path.join(resume_training_path, file_name))
+            ]
+            if missing_state_files:
+                raise FileNotFoundError(
+                    "resume_training_from requires a full trainer checkpoint with "
+                    f"{', '.join(required_state_files)}. Missing: {', '.join(missing_state_files)}"
+                )
         dataset = self.prepare_sft_dataset()
         t_cfg = self.config['training']
         self.runtime_stats["phase_timings_seconds"]["initial_negative_generation"] = 0.0
@@ -2418,7 +2526,7 @@ class UnslothSFTTrainerWrapper(UnslothDPOTrainerWrapper):
 
         logger.info("Starting SFT Training...")
         train_loop_start_ts = time.perf_counter()
-        trainer.train()
+        trainer.train(resume_from_checkpoint=resume_training_path)
         self.runtime_stats["phase_timings_seconds"]["train_loop"] = round(
             time.perf_counter() - train_loop_start_ts, 4
         )

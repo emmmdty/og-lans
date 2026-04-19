@@ -4,11 +4,14 @@ Shared compare-contract and diagnostics helpers for cross-family evaluation.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
+from .experiment_contract import (
+    build_compare_contract_payload,
+    build_experiment_contract,
+    extract_experiment_contract,
+)
 
 COMPARABLE_CONTRACT_FIELDS = (
     "model_family",
@@ -24,7 +27,11 @@ COMPARABLE_CONTRACT_FIELDS = (
     "research_split_manifest_path",
     "research_split_manifest_hash",
     "pipeline_mode",
+    "postprocess_profile",
     "canonical_metric_mode",
+    "prompt_builder_version",
+    "parser_version",
+    "normalization_version",
     "protocol_hash",
     "role_alias_hash",
     "seed",
@@ -44,33 +51,44 @@ COMPARABLE_HASH_FIELDS = (
     "train_tune_ratio",
     "research_split_manifest_hash",
     "pipeline_mode",
+    "postprocess_profile",
     "canonical_metric_mode",
+    "prompt_builder_version",
+    "parser_version",
+    "normalization_version",
     "protocol_hash",
     "role_alias_hash",
 )
 
 
-def _stable_hash(payload: Mapping[str, Any]) -> str:
-    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
 def build_compare_contract(payload: Mapping[str, Any]) -> Dict[str, Any]:
-    normalized = {key: payload.get(key) for key in COMPARABLE_CONTRACT_FIELDS if key != "comparable_contract_hash"}
+    experiment_contract = build_experiment_contract(payload)
+    normalized = build_compare_contract_payload(experiment_contract)
     missing = [key for key, value in normalized.items() if value is None]
     if missing:
         raise ValueError(f"Missing compare-contract fields: {', '.join(sorted(missing))}")
-    normalized["comparable_contract_hash"] = _stable_hash(
-        {key: normalized[key] for key in COMPARABLE_HASH_FIELDS}
-    )
+    normalized["comparable_contract_hash"] = str(experiment_contract["experiment_contract_hash"])
     return normalized
 
 
 def extract_compare_contract(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    if isinstance(payload.get("experiment_contract"), Mapping):
+        return build_compare_contract(extract_experiment_contract(payload))
     compare = payload.get("compare")
     if not isinstance(compare, Mapping):
         raise ValueError("Missing compare block")
-    return build_compare_contract(compare)
+    compare_payload = dict(compare)
+    meta = payload.get("meta")
+    if isinstance(meta, Mapping):
+        for key in (
+            "postprocess_profile",
+            "prompt_builder_version",
+            "parser_version",
+            "normalization_version",
+        ):
+            if compare_payload.get(key) is None and meta.get(key) is not None:
+                compare_payload[key] = meta.get(key)
+    return build_compare_contract(compare_payload)
 
 
 def validate_compare_contract_match(compare_blocks: Sequence[Mapping[str, Any]]) -> str:
@@ -161,7 +179,7 @@ def build_result_diagnostics(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Any
         schema_types = [str(item) for item in stage_meta.get("stage2_schema_event_types", []) if str(item)]
         total_schema_size += len(schema_types)
 
-        if str(stage_meta.get("stage_mode", "single_pass")) != "two_stage":
+        if not str(stage_meta.get("stage_mode", "single_pass")).startswith("two_stage"):
             continue
 
         stage1_rows += 1

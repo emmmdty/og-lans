@@ -62,6 +62,7 @@ LOCAL_SUITE_REPORT_METRICS = (
     + CORE_DIAGNOSTIC_REPORT_METRICS
 )
 API_SUITE_REPORT_METRICS = ACADEMIC_MAIN_TABLE_METRICS + (
+    "legacy_dueefin_overall_f1",
     "strict_f1",
     "relaxed_f1",
     "type_f1",

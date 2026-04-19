@@ -80,6 +80,23 @@ except Exception:  # pragma: no cover - compatibility for tests stubbing utils p
             "pool_split": "train_fit",
         }
 try:
+    from oglans.utils.training_protocol import resolve_training_resume_settings
+except Exception:  # pragma: no cover - compatibility for tests stubbing utils package
+    def resolve_training_resume_settings(training_cfg):
+        del training_cfg
+        return {
+            "mode": "fresh_start",
+            "checkpoint_path": None,
+            "restores_training_state": False,
+        }
+try:
+    from oglans.utils.experiment_contract import build_experiment_contract
+except Exception:  # pragma: no cover - compatibility for tests stubbing utils package
+    def build_experiment_contract(payload):
+        normalized = dict(payload)
+        normalized.setdefault("experiment_contract_hash", "unavailable")
+        return normalized
+try:
     from oglans.utils.teacher_silver import load_teacher_silver_samples
 except Exception:  # pragma: no cover - compatibility for tests stubbing utils package
     def load_teacher_silver_samples(*args, **kwargs):
@@ -112,12 +129,20 @@ import torch
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
-def create_trainer(config, samples):
+def create_trainer(config, samples, *, fewshot_source_samples=None):
     training_mode = str(config.get("training", {}).get("mode", "preference"))
     if training_mode == "sft":
-        return UnslothSFTTrainerWrapper(config, samples)
+        return UnslothSFTTrainerWrapper(
+            config,
+            samples,
+            fewshot_source_samples=fewshot_source_samples,
+        )
     if training_mode == "preference":
-        return UnslothDPOTrainerWrapper(config, samples)
+        return UnslothDPOTrainerWrapper(
+            config,
+            samples,
+            fewshot_source_samples=fewshot_source_samples,
+        )
     raise ValueError(f"Unsupported training.mode: {training_mode}")
 
 
@@ -244,6 +269,7 @@ def main():
     )
     config_hash_sha256 = compute_json_sha256(config)
     run_manifest_path = os.path.join(config['project']['output_dir'], "run_manifest.json")
+    launcher_manifest_path = os.environ.get("OG_LANS_LAUNCHER_MANIFEST")
     effective_model_path = str(config.get("model", {}).get("base_model"))
     contract = build_contract_record(
         model_profile=load_local_model_profile(config["model"]["profile"]).name,
@@ -254,8 +280,10 @@ def main():
     manifest_status = "failed"
     error_message = None
     trainer = None
+    experiment_contract = None
     training_mode = str(config.get("training", {}).get("mode", "preference"))
     comparison_cfg = config.get("comparison", {})
+    resume_settings = resolve_training_resume_settings(config.get("training", {}))
 
     def optional_file_sha256(path: str | None) -> str | None:
         if not path or not os.path.exists(path):
@@ -325,7 +353,11 @@ def main():
     # 训练
     logger.info(">>> Stage 2: Training")
     try:
-        trainer = create_trainer(config, training_input_samples)
+        trainer = create_trainer(
+            config,
+            training_input_samples,
+            fewshot_source_samples=samples,
+        )
         trainer.load_model()
         prompt_payload = build_inference_prompt_payload(
             text=samples[0].text if samples else "",
@@ -347,6 +379,66 @@ def main():
             if trainer and hasattr(trainer, "get_runtime_stats")
             else {}
         )
+        training_protocol_stats = trainer_runtime_stats.get("training_protocol", {})
+        prompt_variant_for_contract = (
+            prompt_payload.get("prompt_variant")
+            if prompt_payload
+            else prompt_settings["prompt_variant"]
+        )
+        fewshot_num_examples_for_contract = (
+            int(prompt_settings["fewshot_num_examples"])
+            if prompt_variant_for_contract == "fewshot"
+            else 0
+        )
+        experiment_contract = build_experiment_contract(
+            {
+                "model_family": "training",
+                "model_kind": training_mode,
+                "split": "train_fit",
+                "primary_metric": str(comparison_cfg.get("report_primary_metric", "doc_role_micro_f1")),
+                "stage_mode": training_protocol_stats.get("stage_mode", stage_settings["stage_mode"]),
+                "prompt_variant": prompt_variant_for_contract,
+                "fewshot_num_examples": fewshot_num_examples_for_contract,
+                "fewshot_selection_mode": training_protocol_stats.get(
+                    "fewshot_selection_mode",
+                    stage_settings["fewshot_selection_mode"],
+                ),
+                "fewshot_pool_split": training_protocol_stats.get(
+                    "fewshot_pool_split",
+                    stage_settings["fewshot_pool_split"],
+                ),
+                "train_tune_ratio": train_tune_ratio,
+                "research_split_manifest_path": (
+                    os.path.abspath(research_split_manifest_path)
+                    if research_split_manifest_path
+                    else "none"
+                ),
+                "research_split_manifest_hash": training_split_manifest_hash or "none",
+                "pipeline_mode": str(config.get("inference", {}).get("pipeline_mode", "e2e")),
+                "postprocess_profile": str(comparison_cfg.get("postprocess_profile", "none")),
+                "canonical_metric_mode": str(comparison_cfg.get("canonical_metric_mode", "analysis_only")),
+                "prompt_builder_version": str(PROMPT_BUILDER_VERSION),
+                "configured_prompt_builder_version": str(
+                    comparison_cfg.get("prompt_builder_version", PROMPT_BUILDER_VERSION)
+                ),
+                "parser_version": str(PARSER_VERSION),
+                "configured_parser_version": str(comparison_cfg.get("parser_version", PARSER_VERSION)),
+                "normalization_version": str(NORMALIZATION_VERSION),
+                "configured_normalization_version": str(
+                    comparison_cfg.get("normalization_version", NORMALIZATION_VERSION)
+                ),
+                "protocol_hash": optional_file_sha256(protocol_path) or "none",
+                "role_alias_hash": optional_file_sha256(role_alias_path) or "none",
+                "seed": seed,
+                "seed_effective": True,
+                "token_usage_kind": "none",
+            }
+        )
+        contract = {
+            **contract,
+            "experiment_contract_hash": experiment_contract["experiment_contract_hash"],
+            "experiment_contract": experiment_contract,
+        }
         run_manifest = build_run_manifest(
             task="train",
             status=manifest_status,
@@ -357,6 +449,7 @@ def main():
                 "seed": seed,
                 "deterministic": bool(deterministic),
                 "command": cmdline,
+                "launcher_manifest_path": os.path.abspath(launcher_manifest_path) if launcher_manifest_path else None,
                 "config_path": os.path.abspath(args.config),
                 "config_hash_sha256": config_hash_sha256,
                 "exp_name": args.exp_name,
@@ -393,6 +486,13 @@ def main():
                     else None
                 ),
                 "research_split_manifest_hash": training_split_manifest_hash,
+                "resume_mode": resume_settings["mode"],
+                "resume_checkpoint_path": (
+                    os.path.abspath(str(resume_settings["checkpoint_path"]))
+                    if resume_settings["checkpoint_path"]
+                    else None
+                ),
+                "resume_restores_training_state": bool(resume_settings["restores_training_state"]),
                 "configured_train_count": len(samples),
                 "effective_gold_train_count": len(effective_train_samples),
                 "teacher_silver_enabled": teacher_silver_enabled,
@@ -433,8 +533,10 @@ def main():
                 "debug_data_dir": os.path.abspath(config['project']['debug_data_dir']),
                 "dataset_cache_dir": os.path.abspath(config['project']['dataset_cache_dir']),
                 "resolved_config": os.path.abspath(resolved_config_path),
+                "launcher_manifest": os.path.abspath(launcher_manifest_path) if launcher_manifest_path else None,
             },
             contract=contract,
+            experiment_contract=experiment_contract,
             runtime={
                 "wall_clock_seconds": round(time.time() - run_start_ts, 4),
                 "phase_timings_seconds": trainer_runtime_stats.get("phase_timings_seconds", {}),

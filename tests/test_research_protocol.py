@@ -142,3 +142,7 @@ def test_restrict_schema_to_event_types_filters_and_preserves_order():
 
     assert list(resolved_schema.keys()) == ["企业收购", "股份回购"]
     assert selected_event_types == ["企业收购", "股份回购"]
+
+
+def test_validate_stage_mode_normalizes_legacy_two_stage_typed_alias():
+    assert research_protocol.validate_stage_mode("two_stage_typed") == "two_stage_per_type"

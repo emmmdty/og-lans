@@ -16,8 +16,10 @@ build_contract_record = run_manifest.build_contract_record
 compute_file_sha256 = run_manifest.compute_file_sha256
 compute_json_sha256 = run_manifest.compute_json_sha256
 append_validation_error = run_manifest.append_validation_error
+collect_distributed_runtime_metadata = run_manifest.collect_distributed_runtime_metadata
 filter_wrapper_cli_args = run_manifest.filter_wrapper_cli_args
 load_effective_config_metadata = run_manifest.load_effective_config_metadata
+resolve_semantic_version_meta = run_manifest.resolve_semantic_version_meta
 make_validation_error = run_manifest.make_validation_error
 save_json = run_manifest.save_json
 
@@ -52,6 +54,7 @@ def test_build_run_manifest_shape():
         meta={"run_id": "abc"},
         artifacts={"output_dir": "/tmp/out"},
         contract={"validation_status": "passed"},
+        experiment_contract={"experiment_contract_hash": "h" * 64},
         runtime={"wall_clock_seconds": 1.23},
         runtime_manifest={"python": {"version": "3.10"}},
     )
@@ -60,6 +63,7 @@ def test_build_run_manifest_shape():
     assert payload["meta"]["run_id"] == "abc"
     assert payload["artifacts"]["output_dir"] == "/tmp/out"
     assert payload["contract"]["validation_status"] == "passed"
+    assert payload["experiment_contract"]["experiment_contract_hash"] == "h" * 64
     assert payload["runtime"]["wall_clock_seconds"] == 1.23
     assert payload["runtime_manifest"]["python"]["version"] == "3.10"
 
@@ -85,6 +89,58 @@ def test_filter_wrapper_cli_args_drops_wrapper_only_options():
     assert filtered == ["--project.seed", "3047", "--algorithms.scv.enabled", "false"]
 
 
+def test_filter_wrapper_cli_args_drops_distributed_launcher_injections():
+    args = [
+        "--config",
+        "configs/config.yaml",
+        "--local-rank=0",
+        "--local_rank=1",
+        "--project.seed",
+        "3047",
+    ]
+
+    filtered = filter_wrapper_cli_args(args)
+
+    assert filtered == ["--project.seed", "3047"]
+
+
+def test_collect_distributed_runtime_metadata_reads_real_topology_from_env():
+    meta = collect_distributed_runtime_metadata(
+        {
+            "LOCAL_RANK": "1",
+            "RANK": "3",
+            "WORLD_SIZE": "8",
+            "LOCAL_WORLD_SIZE": "4",
+        }
+    )
+
+    assert meta["distributed"] is True
+    assert meta["local_rank"] == 1
+    assert meta["rank"] == 3
+    assert meta["world_size"] == 8
+    assert meta["local_world_size"] == 4
+
+
+def test_resolve_semantic_version_meta_records_effective_and_configured_versions():
+    meta = resolve_semantic_version_meta(
+        comparison_cfg={
+            "prompt_builder_version": "phase3_mvp_v1",
+            "parser_version": "phase3_mvp_v1",
+            "normalization_version": "phase3_mvp_v1",
+        },
+        effective_prompt_builder_version="phase3_mvp_v2",
+        effective_parser_version="phase3_mvp_v1",
+        effective_normalization_version="phase3_mvp_v1",
+    )
+
+    assert meta["prompt_builder_version"] == "phase3_mvp_v2"
+    assert meta["configured_prompt_builder_version"] == "phase3_mvp_v1"
+    assert meta["parser_version"] == "phase3_mvp_v1"
+    assert meta["configured_parser_version"] == "phase3_mvp_v1"
+    assert meta["normalization_version"] == "phase3_mvp_v1"
+    assert meta["configured_normalization_version"] == "phase3_mvp_v1"
+
+
 def test_load_effective_config_metadata_applies_cli_overrides(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -96,6 +152,7 @@ model:
   source: modelscope
 training:
   mode: preference
+  warm_start_from_checkpoint: ./logs/DuEE-Fin/checkpoints/bootstrap
   teacher_silver:
     enabled: true
     path: ./logs/DuEE-Fin/silver/train_fit_teacher.jsonl
@@ -146,6 +203,8 @@ evaluation:
     assert meta["fewshot_selection_mode"] == "dynamic"
     assert meta["train_tune_ratio"] == 0.1
     assert meta["research_split_manifest_path"].endswith("duee_fin_train_seed3407_tune0.1.json")
+    assert meta["warm_start_from_checkpoint"].endswith("checkpoints/bootstrap")
+    assert meta["resume_training_from"] is None
     assert meta["teacher_silver_enabled"] is True
     assert meta["teacher_silver_path"].endswith("train_fit_teacher.jsonl")
     assert meta["teacher_silver_max_samples"] == 128

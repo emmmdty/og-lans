@@ -213,11 +213,12 @@ RUN_DIR="${PROJECT_ROOT}/logs/${DATASET_NAME}/train/${RUN_ID}"
 mkdir -p "$RUN_DIR"
 
 LOG_FILE="${RUN_DIR}/run.log"
-RUN_MANIFEST="${RUN_DIR}/run_manifest.json"
+LAUNCHER_MANIFEST="${RUN_DIR}/launcher_manifest.json"
 echo "📝 Terminal output will be saved to: $LOG_FILE"
-echo "🧾 Run manifest: $RUN_MANIFEST"
+echo "🧾 Launcher manifest: $LAUNCHER_MANIFEST"
+export OG_LANS_LAUNCHER_MANIFEST="$LAUNCHER_MANIFEST"
 
-"${PYTHON_CMD[@]}" - "$RUN_MANIFEST" "$TIMESTAMP" "$ORIGINAL_CMD" "$CONFIG_PATH" "$DATA_DIR" "$EXP_NAME" "$RUN_DIR" "$USER_SCHEMA_PATH" -- "$@" <<'PY'
+"${PYTHON_CMD[@]}" - "$LAUNCHER_MANIFEST" "$TIMESTAMP" "$ORIGINAL_CMD" "$CONFIG_PATH" "$DATA_DIR" "$EXP_NAME" "$RUN_DIR" "$USER_SCHEMA_PATH" -- "$@" <<'PY'
 import json
 import os
 import sys
@@ -260,7 +261,7 @@ except Exception:
     pass
 
 manifest = {
-    "task": "train",
+    "task": "train_launcher",
     "status": "running",
     "run_id": os.path.basename(run_dir),
     "timestamp": ts,
@@ -394,7 +395,7 @@ RC=$?
 set -e
 RUN_END_EPOCH="$(date +%s)"
 
-"${PYTHON_CMD[@]}" - "$RUN_MANIFEST" "$RC" "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$CHECKPOINT_ROOT" "$EXP_NAME" <<'PY'
+"${PYTHON_CMD[@]}" - "$LAUNCHER_MANIFEST" "$RC" "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$CHECKPOINT_ROOT" "$EXP_NAME" <<'PY'
 import json
 import os
 import sys

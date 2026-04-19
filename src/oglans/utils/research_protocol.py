@@ -10,21 +10,21 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from oglans.data.prompt_builder import ChinesePromptBuilder, validate_fewshot_selection_mode
+from oglans.utils.experiment_contract import STAGE_MODE_CHOICES, SUPPORTED_STAGE_MODES, normalize_stage_mode
 
 
-SUPPORTED_STAGE_MODES = ("single_pass", "two_stage")
 SUPPORTED_FEWSHOT_POOL_SPLITS = ("train", "train_fit")
 DEFAULT_TRAIN_TUNE_RATIO = 0.1
 
 
 def validate_stage_mode(stage_mode: Optional[str]) -> str:
-    normalized = str(stage_mode or "single_pass").strip().lower()
-    if normalized not in SUPPORTED_STAGE_MODES:
+    try:
+        return normalize_stage_mode(stage_mode)
+    except ValueError as exc:
         raise ValueError(
-            f"Unsupported stage_mode: {normalized}. "
-            f"Expected one of {', '.join(SUPPORTED_STAGE_MODES)}."
-        )
-    return normalized
+            f"Unsupported stage_mode: {str(stage_mode or 'single_pass').strip().lower()}. "
+            f"Expected one of {', '.join(STAGE_MODE_CHOICES)}."
+        ) from exc
 
 
 def validate_fewshot_pool_split(pool_split: Optional[str]) -> str:

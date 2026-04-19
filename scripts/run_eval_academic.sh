@@ -58,6 +58,7 @@ FEWSHOT_NUM_EXAMPLES=""
 DO_SAMPLE=0                     # keep 0 for academic deterministic eval
 COT_EVAL_MODE="self_consistency"
 PIPELINE_MODE="e2e"
+POSTPROCESS_PROFILE="none"
 OUT_DIR=""
 TAG=""
 SEED_POLICY="train_seed"        # train_seed | eval_seed
@@ -91,7 +92,8 @@ Options:
   --fewshot-num-examples <int> Few-shot example count (optional)
   --do-sample                  Enable sampling decode (not recommended for papers)
   --cot-eval-mode <mode>       self_consistency|counterfactual
-  --pipeline-mode <mode>       e2e|cat_lite
+  --pipeline-mode <mode>       e2e|cat_lite|record_corrector|record_corrector+cat_lite
+  --postprocess-profile <mode> none|event_probe_v2
   --out-dir <path>             Output directory (default auto-generated)
   --tag <str>                  Optional run tag appended to output directory
   -h, --help                   Show help
@@ -133,6 +135,7 @@ while [[ $# -gt 0 ]]; do
     --do-sample) DO_SAMPLE=1; shift ;;
     --cot-eval-mode) COT_EVAL_MODE="${2:-}"; shift 2 ;;
     --pipeline-mode) PIPELINE_MODE="${2:-}"; shift 2 ;;
+    --postprocess-profile|--postprocess_profile) POSTPROCESS_PROFILE="${2:-}"; shift 2 ;;
     --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
     --tag) TAG="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -153,8 +156,12 @@ if [[ "$COT_EVAL_MODE" != "self_consistency" && "$COT_EVAL_MODE" != "counterfact
   echo "ERROR: --cot-eval-mode must be self_consistency or counterfactual."
   exit 1
 fi
-if [[ "$PIPELINE_MODE" != "e2e" && "$PIPELINE_MODE" != "cat_lite" ]]; then
-  echo "ERROR: --pipeline-mode must be e2e or cat_lite."
+if [[ "$PIPELINE_MODE" != "e2e" && "$PIPELINE_MODE" != "cat_lite" && "$PIPELINE_MODE" != "record_corrector" && "$PIPELINE_MODE" != "record_corrector+cat_lite" ]]; then
+  echo "ERROR: --pipeline-mode must be e2e, cat_lite, record_corrector, or record_corrector+cat_lite."
+  exit 1
+fi
+if [[ "$POSTPROCESS_PROFILE" != "none" && "$POSTPROCESS_PROFILE" != "event_probe_v2" ]]; then
+  echo "ERROR: --postprocess-profile must be none or event_probe_v2."
   exit 1
 fi
 
@@ -309,12 +316,13 @@ echo "fewshot_num_examples:${FEWSHOT_NUM_EXAMPLES:-<from config>}"
 echo "do_sample:  $DO_SAMPLE"
 echo "cot_eval_mode: $COT_EVAL_MODE"
 echo "pipeline_mode: $PIPELINE_MODE"
+echo "postprocess_profile: $POSTPROCESS_PROFILE"
 echo "output dir: $OUT_DIR"
 echo "tail_on_fail: $TAIL_ON_FAIL lines"
 echo "============================================================"
 
 MANIFEST_JSON="${OUT_DIR}/run_manifest.json"
-"$PYTHON_BIN" - "$MANIFEST_JSON" "$RUN_TS" "$CHECKPOINT" "$SEED_POLICY" "$DATASET" "$DATASET_DIR" "$SCHEMA_FILE" "$SPLIT_FILE" "$CONFIG" "$PROTOCOL" "$ROLE_ALIAS_MAP" "$CANONICAL_MODE" "$PRIMARY_METRIC" "$SPLIT" "$EVAL_MODE" "$BATCH_SIZE" "$SEEDS" "${NUM_SAMPLES:-ALL}" "$USE_ONESHOT" "$DO_SAMPLE" "$COT_EVAL_MODE" "$PIPELINE_MODE" "$OUT_DIR" "${PROMPT_VARIANT:-}" "${FEWSHOT_NUM_EXAMPLES:-}" "$ORIGINAL_CMD" <<'PY'
+"$PYTHON_BIN" - "$MANIFEST_JSON" "$RUN_TS" "$CHECKPOINT" "$SEED_POLICY" "$DATASET" "$DATASET_DIR" "$SCHEMA_FILE" "$SPLIT_FILE" "$CONFIG" "$PROTOCOL" "$ROLE_ALIAS_MAP" "$CANONICAL_MODE" "$PRIMARY_METRIC" "$SPLIT" "$EVAL_MODE" "$BATCH_SIZE" "$SEEDS" "${NUM_SAMPLES:-ALL}" "$USE_ONESHOT" "$DO_SAMPLE" "$COT_EVAL_MODE" "$PIPELINE_MODE" "$POSTPROCESS_PROFILE" "$OUT_DIR" "${PROMPT_VARIANT:-}" "${FEWSHOT_NUM_EXAMPLES:-}" "$ORIGINAL_CMD" <<'PY'
 import hashlib
 import json
 import os
@@ -346,6 +354,7 @@ import sys
     do_sample,
     cot_eval_mode,
     pipeline_mode,
+    postprocess_profile,
     out_dir,
     prompt_variant,
     fewshot_num_examples,
@@ -397,6 +406,7 @@ manifest = {
     "do_sample": int(do_sample),
     "cot_eval_mode": cot_eval_mode,
     "pipeline_mode": pipeline_mode,
+    "postprocess_profile": postprocess_profile,
     "artifacts": {
         "output_dir": os.path.abspath(out_dir),
     },
@@ -449,6 +459,7 @@ for idx in "${!SEED_ARR[@]}"; do
     --canonical_metric_mode "$CANONICAL_MODE"
     --cot_eval_mode "$COT_EVAL_MODE"
     --pipeline_mode "$PIPELINE_MODE"
+    --postprocess_profile "$POSTPROCESS_PROFILE"
     --output_file "$result_file"
   )
   if [[ -n "$PRIMARY_METRIC" ]]; then

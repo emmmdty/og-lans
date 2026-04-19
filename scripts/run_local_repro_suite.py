@@ -18,6 +18,11 @@ from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from oglans.config import ConfigManager
 from oglans.utils.compare_contract import extract_compare_contract, validate_compare_contract_match
+from oglans.utils.experiment_contract import (
+    STAGE_MODE_CHOICES,
+    SUPPORTED_POSTPROCESS_PROFILES,
+    extract_experiment_contract,
+)
 from oglans.utils.pathing import (
     infer_dataset_name_from_config as infer_dataset_name_from_loaded_config,
     infer_eval_root_from_config,
@@ -174,6 +179,7 @@ def build_eval_command(
     fewshot_pool_split: str = "train_fit",
     train_tune_ratio: Optional[float] = None,
     research_split_manifest: Optional[str] = None,
+    postprocess_profile: str = "none",
 ) -> List[str]:
     cmd = [
         sys.executable,
@@ -198,6 +204,8 @@ def build_eval_command(
         report_primary_metric,
         "--stage_mode",
         stage_mode,
+        "--postprocess_profile",
+        postprocess_profile,
         "--fewshot_selection_mode",
         fewshot_selection_mode,
         "--fewshot_pool_split",
@@ -264,10 +272,12 @@ def validate_eval_artifacts(
         validated_compare = extract_compare_contract(summary)
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
+    validated_experiment_contract = extract_experiment_contract(summary)
 
     validated = dict(summary)
     validated["manifest_meta"] = manifest_meta
     validated["compare"] = validated_compare
+    validated["experiment_contract"] = validated_experiment_contract
     return validated
 
 
@@ -422,11 +432,12 @@ def main() -> None:
     parser.add_argument("--role_alias_map", type=str, default="configs/role_aliases_duee_fin.yaml")
     parser.add_argument("--prompt_variant", type=str, default=None, choices=["zeroshot", "fewshot"])
     parser.add_argument("--fewshot_num_examples", type=int, default=3)
-    parser.add_argument("--stage_mode", type=str, default="single_pass", choices=["single_pass", "two_stage"])
+    parser.add_argument("--stage_mode", type=str, default="single_pass", choices=list(STAGE_MODE_CHOICES))
     parser.add_argument("--fewshot_selection_mode", type=str, default="dynamic", choices=["static", "dynamic"])
     parser.add_argument("--fewshot_pool_split", type=str, default="train_fit", choices=["train", "train_fit"])
     parser.add_argument("--train_tune_ratio", type=float, default=None)
     parser.add_argument("--research_split_manifest", type=str, default=None)
+    parser.add_argument("--postprocess_profile", type=str, default="none", choices=list(SUPPORTED_POSTPROCESS_PROFILES))
     parser.add_argument(
         "--canonical_metric_mode",
         type=str,
@@ -495,6 +506,7 @@ def main() -> None:
                 fewshot_pool_split=args.fewshot_pool_split,
                 train_tune_ratio=args.train_tune_ratio,
                 research_split_manifest=args.research_split_manifest,
+                postprocess_profile=args.postprocess_profile,
             )
 
             print(f"[RUN] run={run_key} seed={seed}")
@@ -543,6 +555,11 @@ def main() -> None:
         for summary in per_seed.values():
             compare_contract_hashes.append(summary["compare"])
     comparable_contract_hash = validate_compare_contract_match(compare_contract_hashes)
+    experiment_contracts = {}
+    for run_key, per_seed in validated_by_run.items():
+        for _, summary in sorted(per_seed.items()):
+            experiment_contracts[run_key] = summary["experiment_contract"]
+            break
 
     aggregated: Dict[str, Dict[str, object]] = {}
     for run_key, per_seed in validated_by_run.items():
@@ -582,7 +599,9 @@ def main() -> None:
         "fewshot_pool_split": args.fewshot_pool_split,
         "train_tune_ratio": args.train_tune_ratio,
         "research_split_manifest": args.research_split_manifest,
+        "postprocess_profile": args.postprocess_profile,
         "comparable_contract_hash": comparable_contract_hash,
+        "experiment_contracts": experiment_contracts,
         "runs": [record._asdict() for record in records],
         "aggregated": aggregated,
         "significance": significance,

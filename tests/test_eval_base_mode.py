@@ -34,7 +34,9 @@ def test_parse_args_supports_stage_mode_and_fewshot_pool_split():
         [
             "--base_only",
             "--stage_mode",
-            "two_stage",
+            "two_stage_per_type",
+            "--postprocess_profile",
+            "event_probe_v2",
             "--fewshot_selection_mode",
             "dynamic",
             "--fewshot_pool_split",
@@ -42,7 +44,8 @@ def test_parse_args_supports_stage_mode_and_fewshot_pool_split():
         ]
     )
 
-    assert args.stage_mode == "two_stage"
+    assert args.stage_mode == "two_stage_per_type"
+    assert args.postprocess_profile == "event_probe_v2"
     assert args.fewshot_selection_mode == "dynamic"
     assert args.fewshot_pool_split == "train_fit"
 
@@ -57,6 +60,27 @@ def test_parse_args_supports_research_split_manifest():
     )
 
     assert args.research_split_manifest == "configs/research_splits/frozen.json"
+
+
+def test_build_typed_stage2_prompt_payloads_targets_each_predicted_event_type():
+    payloads = evaluate_module.build_typed_stage2_prompt_payloads(
+        text="华建科技公告称公司中标智慧园区升级项目，并实施股份回购。",
+        schema={"中标": ["中标公司"], "股份回购": ["回购方"]},
+        tokenizer=None,
+        prompt_variant="fewshot",
+        use_fewshot=True,
+        fewshot_num_examples=1,
+        fewshot_selection_mode="dynamic",
+        fewshot_example_pool=[],
+        predicted_event_types=["中标", "股份回购"],
+    )
+
+    assert [row["event_type"] for row in payloads] == ["中标", "股份回购"]
+    assert [row["schema_event_types"] for row in payloads] == [["中标"], ["股份回购"]]
+    assert [
+        row["prompt_payload"]["fewshot_target_event_types"]
+        for row in payloads
+    ] == [["中标"], ["股份回购"]]
 
 
 def test_parse_args_supports_summary_file_override():

@@ -21,6 +21,11 @@ from oglans.utils.pathing import (
     infer_eval_root_from_config,
 )
 from oglans.utils.compare_contract import extract_compare_contract, validate_compare_contract_match
+from oglans.utils.experiment_contract import (
+    STAGE_MODE_CHOICES,
+    SUPPORTED_POSTPROCESS_PROFILES,
+    extract_experiment_contract,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ACADEMIC_EVAL_PATH = PROJECT_ROOT / "src" / "oglans" / "utils" / "academic_eval.py"
@@ -32,14 +37,25 @@ spec.loader.exec_module(academic_eval)
 aggregate_runs = academic_eval.aggregate_runs
 append_efficiency_metrics = academic_eval.append_efficiency_metrics
 build_significance_metadata = academic_eval.build_significance_metadata
-CORE_DIAGNOSTIC_REPORT_METRICS = academic_eval.CORE_DIAGNOSTIC_REPORT_METRICS
-ACADEMIC_MAIN_TABLE_METRICS = academic_eval.ACADEMIC_MAIN_TABLE_METRICS
 EFFICIENCY_REPORT_METRICS = academic_eval.EFFICIENCY_REPORT_METRICS
-API_SUITE_REPORT_METRICS = academic_eval.API_SUITE_REPORT_METRICS
 COST_REPORT_METRICS = academic_eval.COST_REPORT_METRICS
 extract_report_metrics = academic_eval.extract_report_metrics
 MIN_SIGNIFICANCE_PAIRS = academic_eval.MIN_SIGNIFICANCE_PAIRS
 paired_permutation_pvalue = academic_eval.paired_permutation_pvalue
+
+API_OFFICIAL_REPORT_METRICS = (
+    "doc_role_micro_f1",
+    "doc_instance_micro_f1",
+    "legacy_dueefin_overall_f1",
+    "single_event_doc_role_micro_f1",
+    "multi_event_doc_role_micro_f1",
+    "multi_minus_single",
+    "strict_f1",
+    "relaxed_f1",
+    "type_f1",
+    "schema_compliance_rate",
+    "hallucination_rate",
+)
 
 DEFAULT_PROTOCOL = {
     "version": "1.0",
@@ -116,11 +132,23 @@ def load_json(path: Path) -> Dict:
 
 
 def build_metric_row(summary: Dict, target_metrics: List[str], seed: int) -> Dict[str, float]:
+    derived_metrics = {"multi_minus_single"}
+    requested_base_metrics = [metric for metric in target_metrics if metric not in derived_metrics]
     row = extract_report_metrics(
         summary,
-        required_metrics=target_metrics,
+        required_metrics=requested_base_metrics,
         optional_metrics=COST_REPORT_METRICS,
     )
+    single_event = row.get("single_event_doc_role_micro_f1")
+    multi_event = row.get("multi_event_doc_role_micro_f1")
+    if single_event is not None and multi_event is not None:
+        row["multi_minus_single"] = float(multi_event) - float(single_event)
+    missing_derived = [
+        metric for metric in target_metrics
+        if metric in derived_metrics and metric not in row
+    ]
+    if missing_derived:
+        raise ValueError(f"Missing required metrics: {', '.join(sorted(missing_derived))}")
     row = append_efficiency_metrics(row)
     row["seed"] = float(seed)
     return row
@@ -132,6 +160,15 @@ def validate_mode_contracts(by_mode_seed: Dict[str, Dict[int, Dict]]) -> Dict[st
         compare_blocks = [extract_compare_contract(summary) for _, summary in sorted(seed_map.items())]
         hashes[mode] = validate_compare_contract_match(compare_blocks)
     return hashes
+
+
+def collect_mode_experiment_contracts(by_mode_seed: Dict[str, Dict[int, Dict]]) -> Dict[str, Dict]:
+    contracts: Dict[str, Dict] = {}
+    for mode, seed_map in by_mode_seed.items():
+        for _, summary in sorted(seed_map.items()):
+            contracts[mode] = extract_experiment_contract(summary)
+            break
+    return contracts
 
 
 def deep_merge(base: Dict, override: Dict) -> Dict:
@@ -161,6 +198,15 @@ def compute_significance(
     expected_seeds: List[int],
 ) -> Tuple[Dict[str, Dict], Dict[str, object]]:
     significance: Dict[str, Dict] = {}
+    available_modes = sorted(mode for mode, seed_map in by_mode_seed.items() if seed_map)
+    missing_modes = [mode for mode in ("zeroshot", "fewshot") if mode not in available_modes]
+    if missing_modes:
+        metadata = build_significance_metadata([])
+        metadata["significance_skipped_reason"] = (
+            "significance requires both zeroshot and fewshot runs; "
+            f"missing {', '.join(missing_modes)}"
+        )
+        return significance, metadata
     common_seeds = sorted(set(by_mode_seed.get("zeroshot", {}).keys()) & set(by_mode_seed.get("fewshot", {}).keys()))
     if common_seeds != sorted(int(seed) for seed in expected_seeds):
         raise ValueError(
@@ -231,6 +277,7 @@ def build_cmd(
     fewshot_pool_split: str = "train_fit",
     train_tune_ratio: Optional[float] = None,
     research_split_manifest: Optional[str] = None,
+    postprocess_profile: str = "none",
 ) -> List[str]:
     cmd = [
         sys.executable,
@@ -247,6 +294,7 @@ def build_cmd(
         "--canonical_metric_mode", canonical_metric_mode,
         "--report_primary_metric", report_primary_metric,
         "--stage_mode", stage_mode,
+        "--postprocess_profile", postprocess_profile,
         "--fewshot_selection_mode", fewshot_selection_mode,
         "--fewshot_pool_split", fewshot_pool_split,
     ]
@@ -338,8 +386,19 @@ def main():
     parser.add_argument("--json_mode", type=str, default="auto", choices=["auto", "on", "off"])
     parser.add_argument("--bootstrap_samples", type=int, default=None)
     parser.add_argument("--fewshot_num_examples", type=int, default=None)
-    parser.add_argument("--stage_mode", type=str, default="single_pass", choices=["single_pass", "two_stage"])
-    parser.add_argument("--fewshot_selection_mode", type=str, default="dynamic", choices=["static", "dynamic"])
+    parser.add_argument(
+        "--stage_mode",
+        type=str,
+        default="single_pass",
+        choices=list(STAGE_MODE_CHOICES),
+    )
+    parser.add_argument("--postprocess_profile", type=str, default="none", choices=list(SUPPORTED_POSTPROCESS_PROFILES))
+    parser.add_argument(
+        "--fewshot_selection_mode",
+        type=str,
+        default="dynamic",
+        choices=["static", "dynamic", "contrastive"],
+    )
     parser.add_argument("--fewshot_pool_split", type=str, default="train_fit", choices=["train", "train_fit"])
     parser.add_argument("--train_tune_ratio", type=float, default=None)
     parser.add_argument("--research_split_manifest", type=str, default=None)
@@ -422,6 +481,7 @@ def main():
                 report_primary_metric=args.report_primary_metric,
                 fewshot_num_examples=args.fewshot_num_examples,
                 stage_mode=args.stage_mode,
+                postprocess_profile=args.postprocess_profile,
                 fewshot_selection_mode=args.fewshot_selection_mode,
                 fewshot_pool_split=args.fewshot_pool_split,
                 train_tune_ratio=args.train_tune_ratio,
@@ -453,10 +513,9 @@ def main():
     for rec in successful:
         by_mode_seed.setdefault(rec.mode, {})[rec.seed] = load_json(Path(rec.summary_file))
     comparable_contract_hashes = validate_mode_contracts(by_mode_seed) if by_mode_seed else {}
+    experiment_contracts = collect_mode_experiment_contracts(by_mode_seed) if by_mode_seed else {}
 
-    target_metrics = list(ACADEMIC_MAIN_TABLE_METRICS) + [
-        metric for metric in API_SUITE_REPORT_METRICS if metric not in ACADEMIC_MAIN_TABLE_METRICS
-    ]
+    target_metrics = list(API_OFFICIAL_REPORT_METRICS)
     cost_metrics = list(COST_REPORT_METRICS) + list(EFFICIENCY_REPORT_METRICS)
 
     aggregated: Dict[str, Dict] = {}
@@ -493,6 +552,7 @@ def main():
         "bootstrap_samples": args.bootstrap_samples,
         "fewshot_num_examples": args.fewshot_num_examples,
         "stage_mode": args.stage_mode,
+        "postprocess_profile": args.postprocess_profile,
         "fewshot_selection_mode": args.fewshot_selection_mode,
         "fewshot_pool_split": args.fewshot_pool_split,
         "train_tune_ratio": args.train_tune_ratio,
@@ -502,6 +562,7 @@ def main():
         "primary_metric": args.report_primary_metric,
         "canonical_metric_mode": args.canonical_metric_mode,
         "comparable_contract_hashes": comparable_contract_hashes,
+        "experiment_contracts": experiment_contracts,
         "runs": [asdict(r) for r in records],
         "aggregated": aggregated,
         "significance": significance,

@@ -159,6 +159,11 @@ TRAIN_WRAPPER_VALUE_OPTIONS = {
     "--exp-name",
 }
 
+LAUNCHER_INJECTED_PREFIXES = (
+    "--local-rank=",
+    "--local_rank=",
+)
+
 
 def filter_wrapper_cli_args(
     cli_args: Optional[Sequence[str]],
@@ -177,6 +182,12 @@ def filter_wrapper_cli_args(
         if token == "--":
             filtered.extend(args[idx + 1 :])
             break
+        if token in {"--local-rank", "--local_rank"}:
+            idx += 2
+            continue
+        if any(token.startswith(prefix) for prefix in LAUNCHER_INJECTED_PREFIXES):
+            idx += 1
+            continue
         if token in {"-h", "--help"}:
             idx += 1
             continue
@@ -186,6 +197,33 @@ def filter_wrapper_cli_args(
         filtered.append(token)
         idx += 1
     return filtered
+
+
+def resolve_semantic_version_meta(
+    *,
+    comparison_cfg: Optional[Dict[str, Any]],
+    effective_prompt_builder_version: str,
+    effective_parser_version: str,
+    effective_normalization_version: str,
+) -> Dict[str, str]:
+    comparison = dict(comparison_cfg or {})
+    configured_prompt_builder_version = str(
+        comparison.get("prompt_builder_version", effective_prompt_builder_version)
+    )
+    configured_parser_version = str(
+        comparison.get("parser_version", effective_parser_version)
+    )
+    configured_normalization_version = str(
+        comparison.get("normalization_version", effective_normalization_version)
+    )
+    return {
+        "prompt_builder_version": str(effective_prompt_builder_version),
+        "configured_prompt_builder_version": configured_prompt_builder_version,
+        "parser_version": str(effective_parser_version),
+        "configured_parser_version": configured_parser_version,
+        "normalization_version": str(effective_normalization_version),
+        "configured_normalization_version": configured_normalization_version,
+    }
 
 
 def load_effective_config_metadata(
@@ -217,9 +255,37 @@ def load_effective_config_metadata(
         "fewshot_pool_split": str(config.get("comparison", {}).get("fewshot_pool_split", "train_fit")),
         "train_tune_ratio": float(config.get("comparison", {}).get("train_tune_ratio", 0.1)),
         "research_split_manifest_path": config.get("comparison", {}).get("research_split_manifest_path"),
+        "resume_training_from": training_cfg.get("resume_training_from"),
+        "warm_start_from_checkpoint": training_cfg.get("warm_start_from_checkpoint"),
         "teacher_silver_enabled": bool(teacher_silver_cfg.get("enabled", False)),
         "teacher_silver_path": teacher_silver_cfg.get("path"),
         "teacher_silver_max_samples": teacher_silver_cfg.get("max_samples"),
+    }
+
+
+def collect_distributed_runtime_metadata(
+    environ: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    env = dict(environ or os.environ)
+
+    def _parse_int(name: str, default: int) -> int:
+        raw = str(env.get(name, default)).strip()
+        try:
+            return int(raw)
+        except ValueError:
+            return int(default)
+
+    local_rank = _parse_int("LOCAL_RANK", -1)
+    rank = _parse_int("RANK", 0)
+    world_size = _parse_int("WORLD_SIZE", 1)
+    local_world_size = _parse_int("LOCAL_WORLD_SIZE", 1 if world_size <= 1 else world_size)
+    distributed = bool(world_size > 1 or rank > 0 or local_rank >= 0)
+    return {
+        "distributed": distributed,
+        "local_rank": local_rank,
+        "rank": rank,
+        "world_size": world_size,
+        "local_world_size": local_world_size,
     }
 
 
@@ -243,6 +309,7 @@ def collect_runtime_manifest(
             "commit": get_git_commit(repo_dir),
             "dirty": get_git_dirty(repo_dir),
         },
+        "distributed": collect_distributed_runtime_metadata(),
     }
     if package_names:
         manifest["packages"] = get_package_versions(package_names)
@@ -256,6 +323,7 @@ def build_run_manifest(
     meta: Optional[Dict[str, Any]] = None,
     artifacts: Optional[Dict[str, Any]] = None,
     contract: Optional[Dict[str, Any]] = None,
+    experiment_contract: Optional[Dict[str, Any]] = None,
     runtime: Optional[Dict[str, Any]] = None,
     runtime_manifest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -269,6 +337,8 @@ def build_run_manifest(
         payload["artifacts"] = artifacts
     if contract:
         payload["contract"] = contract
+    if experiment_contract:
+        payload["experiment_contract"] = experiment_contract
     if runtime:
         payload["runtime"] = runtime
     if runtime_manifest:

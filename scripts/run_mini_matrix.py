@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from oglans.config import ConfigManager
+from oglans.utils.experiment_contract import extract_experiment_contract
 from oglans.utils.pathing import infer_dataset_name_from_config as infer_dataset_name_from_loaded_config
 
 
@@ -451,13 +452,18 @@ def main() -> None:
                 by_run_prompt_seed.setdefault(experiment, {}).setdefault(prompt_mode, {})[seed] = load_json(summary_path)
 
     aggregated: Dict[str, Dict[str, Any]] = {}
+    experiment_contracts: Dict[str, Dict[str, Any]] = {}
     for run_key, prompt_map in by_run_prompt_seed.items():
         aggregated[run_key] = {}
+        experiment_contracts[run_key] = {}
         for prompt_mode, seed_map in prompt_map.items():
             aggregated[run_key][prompt_mode] = {
                 "n_success_runs": len(seed_map),
                 "metrics": aggregate_mode_results(seed_map),
             }
+            for _, summary in sorted(seed_map.items()):
+                experiment_contracts[run_key][prompt_mode] = extract_experiment_contract(summary)
+                break
 
     significance, significance_meta = compute_significance(
         by_run_prompt_seed=by_run_prompt_seed,
@@ -481,6 +487,7 @@ def main() -> None:
         "fewshot_num_examples": args.fewshot_num_examples,
         "primary_metric": args.report_primary_metric,
         "records": records,
+        "experiment_contracts": experiment_contracts,
         "aggregated": aggregated,
         "significance": significance,
         **significance_meta,

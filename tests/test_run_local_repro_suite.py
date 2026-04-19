@@ -47,6 +47,7 @@ def test_validate_eval_artifacts_requires_protocol_and_version_metadata(tmp_path
                     "research_split_manifest_path": "/tmp/frozen.json",
                     "research_split_manifest_hash": "a" * 64,
                     "pipeline_mode": "e2e",
+                    "postprocess_profile": "none",
                     "canonical_metric_mode": "analysis_only",
                     "protocol_hash": "abc123",
                     "role_alias_hash": "alias123",
@@ -84,6 +85,7 @@ def test_validate_eval_artifacts_requires_protocol_and_version_metadata(tmp_path
     )
 
     assert validated["metrics"]["strict_f1"] == 0.4
+    assert validated["experiment_contract"]["experiment_contract_hash"]
 
 
 def test_validate_eval_artifacts_rejects_missing_checkpoint_for_adapter_runs(tmp_path):
@@ -229,6 +231,7 @@ def test_build_eval_command_forwards_stage_and_pool_controls():
         prompt_variant="fewshot",
         fewshot_num_examples=3,
         stage_mode="two_stage",
+        postprocess_profile="event_probe_v2",
         fewshot_selection_mode="dynamic",
         fewshot_pool_split="train_fit",
         train_tune_ratio=0.1,
@@ -237,6 +240,8 @@ def test_build_eval_command_forwards_stage_and_pool_controls():
 
     assert "--stage_mode" in cmd
     assert "two_stage" in cmd
+    assert "--postprocess_profile" in cmd
+    assert "event_probe_v2" in cmd
     assert "--fewshot_selection_mode" in cmd
     assert "dynamic" in cmd
     assert "--fewshot_pool_split" in cmd

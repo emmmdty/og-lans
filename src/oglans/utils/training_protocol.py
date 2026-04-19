@@ -9,6 +9,7 @@ import json
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from oglans.data.prompt_builder import ChinesePromptBuilder, build_inference_prompt_payload
+from oglans.utils.experiment_contract import is_two_stage_mode
 from oglans.utils.research_protocol import (
     extract_event_types_from_events,
     normalize_research_split_manifest,
@@ -38,6 +39,85 @@ def select_training_fit_samples(
     )
     manifest["pool_split"] = "train_fit"
     return fit_samples, manifest
+
+
+def resolve_trainer_sample_sources(
+    training_input_samples: Sequence[Any],
+    *,
+    gold_source_samples: Optional[Sequence[Any]] = None,
+    tune_ratio: float = 0.1,
+    seed: int = 3407,
+    split_manifest: Any = None,
+) -> Dict[str, Any]:
+    """
+    Resolve the final trainer input and the gold-only source used for split metadata.
+
+    When ``gold_source_samples`` is provided, callers have already selected the
+    final training input. The trainer must not apply train-fit filtering again,
+    otherwise teacher-silver IDs such as ``teacher::<source_id>`` are dropped.
+    """
+    final_training_samples = list(training_input_samples)
+    if gold_source_samples is None:
+        selected, manifest = select_training_fit_samples(
+            final_training_samples,
+            tune_ratio=tune_ratio,
+            seed=seed,
+            split_manifest=split_manifest,
+        )
+        return {
+            "training_samples": selected,
+            "fewshot_source_samples": final_training_samples,
+            "split_manifest": manifest,
+            "input_samples_already_selected": False,
+        }
+
+    source_samples = list(gold_source_samples)
+    _, manifest = select_training_fit_samples(
+        source_samples,
+        tune_ratio=tune_ratio,
+        seed=seed,
+        split_manifest=split_manifest,
+    )
+    return {
+        "training_samples": final_training_samples,
+        "fewshot_source_samples": source_samples,
+        "split_manifest": manifest,
+        "input_samples_already_selected": True,
+    }
+
+
+def resolve_training_resume_settings(training_cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    cfg = dict(training_cfg or {})
+    legacy_resume = str(cfg.get("resume_from_checkpoint") or "").strip()
+    warm_start_from_checkpoint = str(cfg.get("warm_start_from_checkpoint") or "").strip()
+    resume_training_from = str(cfg.get("resume_training_from") or "").strip()
+
+    if legacy_resume:
+        raise ValueError(
+            "training.resume_from_checkpoint is deprecated. "
+            "Use training.resume_training_from or training.warm_start_from_checkpoint."
+        )
+    if warm_start_from_checkpoint and resume_training_from:
+        raise ValueError(
+            "training.resume_training_from and training.warm_start_from_checkpoint are mutually exclusive."
+        )
+    if resume_training_from:
+        return {
+            "mode": "resume_training",
+            "checkpoint_path": resume_training_from,
+            "restores_training_state": True,
+        }
+    if warm_start_from_checkpoint:
+        return {
+            "mode": "warm_start",
+            "checkpoint_path": warm_start_from_checkpoint,
+            "restores_training_state": False,
+        }
+    return {
+        "mode": "fresh_start",
+        "checkpoint_path": None,
+        "restores_training_state": False,
+    }
 
 
 def _stable_choice(options: Sequence[str], key: str) -> str:
@@ -129,6 +209,14 @@ def build_event_type_negative_response(
     return build_event_type_response(event_types=negative_types)
 
 
+def _filter_events_by_type(events: Sequence[Dict[str, Any]], event_type: str) -> List[Dict[str, Any]]:
+    return [
+        dict(event)
+        for event in events
+        if isinstance(event, dict) and str(event.get("event_type", "")).strip() == event_type
+    ]
+
+
 def _exclude_self_from_fewshot_pool(
     fewshot_example_pool: Optional[Iterable[Dict[str, Any]]],
     *,
@@ -180,7 +268,7 @@ def expand_training_samples(
             sample_id=sample_id,
         )
 
-        if resolved_stage_mode == "two_stage":
+        if is_two_stage_mode(resolved_stage_mode):
             stage1_payload = ChinesePromptBuilder.build_event_type_payload(
                 text=text,
                 schema=normalized_schema,
@@ -214,38 +302,53 @@ def expand_training_samples(
                     "stage2_schema_event_types": event_types,
                 }
             )
-            stage2_schema, stage2_schema_event_types = restrict_schema_to_event_types(
-                normalized_schema,
-                event_types,
+            stage2_targets = (
+                [[event_type] for event_type in event_types]
+                if resolved_stage_mode == "two_stage_per_type"
+                else [event_types]
             )
-            payload = build_inference_prompt_payload(
-                text=text,
-                tokenizer=tokenizer,
-                prompt_variant=prompt_variant,
-                schema=stage2_schema,
-                num_examples=fewshot_num_examples,
-                fewshot_selection_mode=fewshot_selection_mode,
-                fewshot_example_pool=sample_pool,
-            )
-            expanded.append(
-                {
-                    "sample_id": sample_id,
-                    "text": text,
-                    "event_types": event_types,
-                    "messages": list(payload.get("messages", [])),
-                    "prompt": payload["formatted_text"],
-                    "chosen": str(getattr(sample, "chosen", "")),
-                    "rejected": str(getattr(sample, "rejected", "")),
-                    "training_stage": "stage2_extraction",
-                    "stage_mode": resolved_stage_mode,
-                    "fewshot_example_ids": list(payload.get("fewshot_example_ids", [])),
-                    "fewshot_selection_mode": str(payload.get("fewshot_selection_mode", "none")),
-                    "fewshot_count": int(payload.get("fewshot_count", 0)),
-                    "lans_eligible": True,
-                    "use_precomputed_rejected": False,
-                    "stage2_schema_event_types": stage2_schema_event_types,
-                }
-            )
+            for target_event_types in stage2_targets:
+                stage2_schema, stage2_schema_event_types = restrict_schema_to_event_types(
+                    normalized_schema,
+                    target_event_types,
+                )
+                payload = build_inference_prompt_payload(
+                    text=text,
+                    tokenizer=tokenizer,
+                    prompt_variant=prompt_variant,
+                    schema=stage2_schema,
+                    num_examples=fewshot_num_examples,
+                    fewshot_selection_mode=fewshot_selection_mode,
+                    fewshot_example_pool=sample_pool,
+                    target_event_types=target_event_types,
+                )
+                if resolved_stage_mode == "two_stage_per_type":
+                    chosen_events = _filter_events_by_type(events, target_event_types[0])
+                    chosen_text = json.dumps(chosen_events, ensure_ascii=False, indent=2)
+                    record_event_types = list(target_event_types)
+                else:
+                    chosen_text = str(getattr(sample, "chosen", ""))
+                    record_event_types = event_types
+                expanded.append(
+                    {
+                        "sample_id": sample_id,
+                        "text": text,
+                        "event_types": record_event_types,
+                        "messages": list(payload.get("messages", [])),
+                        "prompt": payload["formatted_text"],
+                        "chosen": chosen_text,
+                        "rejected": str(getattr(sample, "rejected", "")),
+                        "training_stage": "stage2_extraction",
+                        "stage_mode": resolved_stage_mode,
+                        "fewshot_example_ids": list(payload.get("fewshot_example_ids", [])),
+                        "fewshot_selection_mode": str(payload.get("fewshot_selection_mode", "none")),
+                        "fewshot_count": int(payload.get("fewshot_count", 0)),
+                        "lans_eligible": True,
+                        "use_precomputed_rejected": False,
+                        "target_event_types": list(target_event_types),
+                        "stage2_schema_event_types": stage2_schema_event_types,
+                    }
+                )
             continue
 
         payload = build_inference_prompt_payload(

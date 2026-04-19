@@ -63,7 +63,7 @@ def test_inference_prompt_payload_keeps_materializations_in_sync():
     assert payload["schema_enabled"] is True
     assert payload["formatted_text"].startswith("system::")
     assert "assistant::" in payload["formatted_text"]
-    assert PROMPT_BUILDER_VERSION == "phase3_mvp_v1"
+    assert PROMPT_BUILDER_VERSION == "phase3_mvp_v2"
 
 
 def test_resolve_prompt_settings_prefers_explicit_prompt_variant():
@@ -247,3 +247,76 @@ def test_dynamic_selection_reranks_acquisition_queries_toward_focused_examples()
     )
 
     assert selected[0]["id"] == "focused-acquisition-example"
+
+
+def test_select_fewshot_examples_dynamic_supports_explicit_target_event_types():
+    example_pool = [
+        {
+            "id": "bid-example",
+            "user": "u1",
+            "assistant": "a1",
+            "source_text": "公司中标智慧园区项目。",
+            "event_types": ["中标"],
+            "triggers": ["中标"],
+            "keywords": ["中标", "项目", "招标方"],
+        },
+        {
+            "id": "buyback-example",
+            "user": "u2",
+            "assistant": "a2",
+            "source_text": "公司实施股份回购计划。",
+            "event_types": ["股份回购"],
+            "triggers": ["回购"],
+            "keywords": ["回购", "股份", "交易金额"],
+        },
+    ]
+
+    selected = ChinesePromptBuilder.select_fewshot_examples(
+        num_examples=1,
+        text="董事会审议并发布专项方案。",
+        selection_mode="dynamic",
+        example_pool=example_pool,
+        target_event_types=["中标"],
+    )
+
+    assert [item["id"] for item in selected] == ["bid-example"]
+
+
+def test_build_inference_prompt_payload_contrastive_appends_confusion_guidance():
+    example_pool = [
+        {
+            "id": "bid-example-1",
+            "user": "示例用户1",
+            "assistant": "[]",
+            "source_text": "华建科技公告称公司中标智慧园区项目。",
+            "event_types": ["中标"],
+            "triggers": ["中标"],
+            "keywords": ["中标", "项目", "招标方"],
+        },
+        {
+            "id": "bid-example-2",
+            "user": "示例用户2",
+            "assistant": "[]",
+            "source_text": "另一家公司中标数字基建项目。",
+            "event_types": ["中标"],
+            "triggers": ["中标"],
+            "keywords": ["中标", "项目", "金额"],
+        },
+    ]
+
+    payload = build_inference_prompt_payload(
+        "华建科技公告称公司中标智慧园区升级项目。",
+        prompt_variant="fewshot",
+        num_examples=2,
+        fewshot_selection_mode="contrastive",
+        fewshot_example_pool=example_pool,
+        target_event_types=["中标"],
+    )
+
+    assert payload["fewshot_selection_mode"] == "contrastive"
+    assert payload["fewshot_example_ids"] == ["bid-example-1", "bid-example-2"]
+    assert payload["fewshot_contrastive_warnings"]
+    assert any(
+        "易混淆提醒" in message["content"] and "中标标的" in message["content"]
+        for message in payload["messages"]
+    )

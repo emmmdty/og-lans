@@ -37,14 +37,16 @@ def _install_main_import_stubs(monkeypatch):
     trainer_mod = types.ModuleType("oglans.trainer")
 
     class FakeDPOTrainer:
-        def __init__(self, config, samples):
+        def __init__(self, config, samples, *, fewshot_source_samples=None):
             self.config = config
             self.samples = samples
+            self.fewshot_source_samples = fewshot_source_samples
 
     class FakeSFTTrainer:
-        def __init__(self, config, samples):
+        def __init__(self, config, samples, *, fewshot_source_samples=None):
             self.config = config
             self.samples = samples
+            self.fewshot_source_samples = fewshot_source_samples
 
     trainer_mod.UnslothDPOTrainerWrapper = FakeDPOTrainer
     trainer_mod.UnslothSFTTrainerWrapper = FakeSFTTrainer
@@ -103,6 +105,19 @@ def test_create_trainer_dispatches_by_training_mode(monkeypatch):
 
     assert type(pref_trainer).__name__ == "FakeDPOTrainer"
     assert type(sft_trainer).__name__ == "FakeSFTTrainer"
+
+
+def test_create_trainer_forwards_gold_source_samples_for_fewshot_pool(monkeypatch):
+    module = _load_main_module(monkeypatch)
+
+    trainer = module.create_trainer(
+        {"training": {"mode": "preference"}},
+        ["gold-fit", "teacher::gold-fit"],
+        fewshot_source_samples=["gold-fit", "gold-tune"],
+    )
+
+    assert trainer.samples == ["gold-fit", "teacher::gold-fit"]
+    assert trainer.fewshot_source_samples == ["gold-fit", "gold-tune"]
 
 
 def test_create_trainer_rejects_unknown_training_mode(monkeypatch):

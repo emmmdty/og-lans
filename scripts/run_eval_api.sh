@@ -12,7 +12,20 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="offline"
 export PYTHONUNBUFFERED="1"  # Ensure realtime logging without Python stdout buffering
 export MODELSCOPE_CACHE="${PROJECT_ROOT}/models"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
 resolve_python_bin() {
+  if [[ -n "${CONDA_PREFIX:-}" ]] && command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
+  if [[ -n "${VIRTUAL_ENV:-}" ]] && command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    echo "uv run python"
+    return
+  fi
   if command -v python >/dev/null 2>&1; then
     echo "python"
     return
@@ -23,9 +36,23 @@ resolve_python_bin() {
   fi
   echo ""
 }
-PYTHON_BIN="$(resolve_python_bin)"
-if [[ -z "$PYTHON_BIN" ]]; then
-  echo "ERROR: neither python nor python3 found in PATH."
+resolve_python_cmd() {
+  local resolved
+  resolved="$(resolve_python_bin)"
+  if [[ -z "$resolved" ]]; then
+    return
+  fi
+  if [[ "$resolved" == "uv run python" ]]; then
+    PYTHON_CMD=(uv run python)
+    PYTHON_DISPLAY="uv run python"
+    return
+  fi
+  PYTHON_CMD=("$resolved")
+  PYTHON_DISPLAY="$resolved"
+}
+resolve_python_cmd
+if [[ -z "${PYTHON_DISPLAY:-}" ]]; then
+  echo "ERROR: unable to resolve Python runtime (expected uv run python, python, or python3)."
   exit 1
 fi
 mkdir -p "$MODELSCOPE_CACHE"
@@ -50,7 +77,8 @@ TRAIN_TUNE_RATIO=""             # optional, default from config
 RESEARCH_SPLIT_MANIFEST=""      # optional frozen split manifest path
 JSON_MODE="auto"                # auto | on | off
 COT_EVAL_MODE="self_consistency" # self_consistency | counterfactual
-PIPELINE_MODE="e2e"             # e2e | cat_lite
+PIPELINE_MODE="e2e"             # e2e | cat_lite | record_corrector | record_corrector+cat_lite
+POSTPROCESS_PROFILE="none"      # none | event_probe_v2
 COMPUTE_CI="1"                  # 1 | 0
 ROLE_ALIAS_MAP="configs/role_aliases_duee_fin.yaml"
 CANONICAL_METRIC_MODE="analysis_only"  # off | analysis_only | apply_for_aux_metric
@@ -68,7 +96,7 @@ timestamp() {
 }
 
 infer_dataset_context() {
-  "$PYTHON_BIN" scripts/resolve_config_context.py --config "$CONFIG" --project-root "$PROJECT_ROOT" \
+  "${PYTHON_CMD[@]}" scripts/resolve_config_context.py --config "$CONFIG" --project-root "$PROJECT_ROOT" \
     --field dataset_dir \
     --field dataset_name \
     --field schema_path \
@@ -103,14 +131,15 @@ Core options:
       --seed <int>             Random seed (run action)
   -f, --fewshot                Enable few-shot
   -z, --zeroshot               Force zero-shot
-      --stage-mode <single_pass|two_stage>
+      --stage-mode <single_pass|two_stage|two_stage_per_type>
       --fewshot-selection-mode <static|dynamic>
       --fewshot-pool-split <train|train_fit>
       --train-tune-ratio <float>
       --research-split-manifest <path>
       --json-mode <auto|on|off>
       --cot-eval-mode <self_consistency|counterfactual>
-      --pipeline-mode <e2e|cat_lite>
+      --pipeline-mode <e2e|cat_lite|record_corrector|record_corrector+cat_lite>
+      --postprocess-profile <none|event_probe_v2>
       --role-alias-map <path>  Role alias map path
       --canonical-mode <off|analysis_only|apply_for_aux_metric>
       --primary-metric <name>  Primary metric key for reporting
@@ -154,7 +183,7 @@ preflight() {
   test -f "evaluate_api.py"
   test -f "$CONFIG"
   test -f "$PROTOCOL"
-  if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+  if ! "${PYTHON_CMD[@]}" - <<'PY' >/dev/null 2>&1
 import yaml  # noqa: F401
 PY
   then
@@ -203,7 +232,7 @@ PY
   fi
 
   echo "[4/4] Check Python deps..."
-  "$PYTHON_BIN" - <<'PY'
+  "${PYTHON_CMD[@]}" - <<'PY'
 import importlib
 for m in ["yaml", "openai", "tqdm"]:
     importlib.import_module(m)
@@ -214,7 +243,7 @@ PY
 }
 
 build_run_cmd() {
-  local cmd=("$PYTHON_BIN" evaluate_api.py
+  RUN_CMD=("${PYTHON_CMD[@]}" evaluate_api.py
     --config "$CONFIG"
     --protocol "$PROTOCOL"
     --split "$SPLIT"
@@ -222,60 +251,58 @@ build_run_cmd() {
     --json_mode "$JSON_MODE"
     --cot_eval_mode "$COT_EVAL_MODE"
     --pipeline_mode "$PIPELINE_MODE"
+    --postprocess_profile "$POSTPROCESS_PROFILE"
     --role_alias_map "$ROLE_ALIAS_MAP"
     --canonical_metric_mode "$CANONICAL_METRIC_MODE"
   )
 
   if [[ -n "$MODEL" ]]; then
-    cmd+=(--model "$MODEL")
+    RUN_CMD+=(--model "$MODEL")
   fi
   if [[ -n "$NUM_SAMPLES" ]]; then
-    cmd+=(--num_samples "$NUM_SAMPLES")
+    RUN_CMD+=(--num_samples "$NUM_SAMPLES")
   fi
   if [[ -n "$BASE_URL" ]]; then
-    cmd+=(--base_url "$BASE_URL")
+    RUN_CMD+=(--base_url "$BASE_URL")
   fi
   if [[ -n "$SEED" ]]; then
-    cmd+=(--seed "$SEED")
+    RUN_CMD+=(--seed "$SEED")
   fi
   if [[ "$FEWSHOT" == "1" ]]; then
-    cmd+=(--use_fewshot)
+    RUN_CMD+=(--use_fewshot)
   fi
   if [[ -n "$STAGE_MODE" ]]; then
-    cmd+=(--stage_mode "$STAGE_MODE")
+    RUN_CMD+=(--stage_mode "$STAGE_MODE")
   fi
   if [[ -n "$FEWSHOT_SELECTION_MODE" ]]; then
-    cmd+=(--fewshot_selection_mode "$FEWSHOT_SELECTION_MODE")
+    RUN_CMD+=(--fewshot_selection_mode "$FEWSHOT_SELECTION_MODE")
   fi
   if [[ -n "$FEWSHOT_POOL_SPLIT" ]]; then
-    cmd+=(--fewshot_pool_split "$FEWSHOT_POOL_SPLIT")
+    RUN_CMD+=(--fewshot_pool_split "$FEWSHOT_POOL_SPLIT")
   fi
   if [[ -n "$TRAIN_TUNE_RATIO" ]]; then
-    cmd+=(--train_tune_ratio "$TRAIN_TUNE_RATIO")
+    RUN_CMD+=(--train_tune_ratio "$TRAIN_TUNE_RATIO")
   fi
   if [[ -n "$RESEARCH_SPLIT_MANIFEST" ]]; then
-    cmd+=(--research_split_manifest "$RESEARCH_SPLIT_MANIFEST")
+    RUN_CMD+=(--research_split_manifest "$RESEARCH_SPLIT_MANIFEST")
   fi
   if [[ "$COMPUTE_CI" == "0" ]]; then
-    cmd+=(--no-compute_ci)
+    RUN_CMD+=(--no-compute_ci)
   fi
   if [[ -n "$PRIMARY_METRIC" ]]; then
-    cmd+=(--report_primary_metric "$PRIMARY_METRIC")
+    RUN_CMD+=(--report_primary_metric "$PRIMARY_METRIC")
   fi
   if [[ -n "$OUTPUT_FILE" ]]; then
-    cmd+=(--output_file "$OUTPUT_FILE")
+    RUN_CMD+=(--output_file "$OUTPUT_FILE")
   fi
   if [[ -n "$SUMMARY_FILE" ]]; then
-    cmd+=(--summary_file "$SUMMARY_FILE")
+    RUN_CMD+=(--summary_file "$SUMMARY_FILE")
   fi
-
-  echo "$(join_cmd "${cmd[@]}")"
 }
 
 run_once() {
-  local cmd
   local eval_root
-  cmd="$(build_run_cmd)"
+  build_run_cmd
   mapfile -t ctx < <(infer_dataset_context)
   eval_root="${ctx[4]}"
 
@@ -283,14 +310,14 @@ run_once() {
     mkdir -p "$eval_root"
     local log_path="${eval_root}/nohup_eval_api_$(timestamp).log"
     echo "Running in background:"
-    echo "  $cmd"
-    nohup bash -lc "$cmd" > "$log_path" 2>&1 &
+    echo "  $(join_cmd "${RUN_CMD[@]}")"
+    nohup "${RUN_CMD[@]}" > "$log_path" 2>&1 &
     echo "Started PID: $!"
     echo "Log file: $log_path"
   else
     echo "Running:"
-    echo "  $cmd"
-    bash -lc "$cmd"
+    echo "  $(join_cmd "${RUN_CMD[@]}")"
+    "${RUN_CMD[@]}"
   fi
 }
 
@@ -400,6 +427,8 @@ while [[ $# -gt 0 ]]; do
       COT_EVAL_MODE="${2:-}"; shift 2 ;;
     --pipeline-mode)
       PIPELINE_MODE="${2:-}"; shift 2 ;;
+    --postprocess-profile|--postprocess_profile)
+      POSTPROCESS_PROFILE="${2:-}"; shift 2 ;;
     --role-alias-map)
       ROLE_ALIAS_MAP="${2:-}"; shift 2 ;;
     --canonical-mode)
@@ -442,8 +471,12 @@ if [[ "$COT_EVAL_MODE" != "self_consistency" && "$COT_EVAL_MODE" != "counterfact
   echo "ERROR: --cot-eval-mode must be self_consistency or counterfactual."
   exit 1
 fi
-if [[ "$PIPELINE_MODE" != "e2e" && "$PIPELINE_MODE" != "cat_lite" ]]; then
-  echo "ERROR: --pipeline-mode must be e2e or cat_lite."
+if [[ "$PIPELINE_MODE" != "e2e" && "$PIPELINE_MODE" != "cat_lite" && "$PIPELINE_MODE" != "record_corrector" && "$PIPELINE_MODE" != "record_corrector+cat_lite" ]]; then
+  echo "ERROR: --pipeline-mode must be e2e, cat_lite, record_corrector, or record_corrector+cat_lite."
+  exit 1
+fi
+if [[ "$POSTPROCESS_PROFILE" != "none" && "$POSTPROCESS_PROFILE" != "event_probe_v2" ]]; then
+  echo "ERROR: --postprocess-profile must be none or event_probe_v2."
   exit 1
 fi
 
